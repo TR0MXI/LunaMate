@@ -1,7 +1,10 @@
 //! 渲染运行时、窗口、外观、语言与调试设置页面。
 
-use gpui::{AnyElement, Context, IntoElement, div, prelude::*, px};
-use gpui_component::StyledExt;
+use gpui::{AnyElement, Context, Entity, IntoElement, div, prelude::*, px};
+use gpui_component::{
+    StyledExt,
+    input::{InputState, NumberInput},
+};
 use rust_i18n::t;
 
 use crate::theme::{AppLanguage, ThemePreset, UiPalette};
@@ -13,7 +16,7 @@ use super::{
         toggle_switch,
     },
 };
-use crate::config::{FrameRate, ModelWindowSize};
+use crate::config::{FrameRate, LogLevel, ModelWindowSize};
 
 impl ConfigView {
     pub(super) fn render_system_page(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -388,6 +391,28 @@ impl ConfigView {
 
     pub(super) fn render_debug_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = UiPalette::from_app(cx);
+        let log_level_buttons = [
+            ("log-level-error", LogLevel::Error, t!("debug.level_error")),
+            ("log-level-warn", LogLevel::Warn, t!("debug.level_warn")),
+            ("log-level-info", LogLevel::Info, t!("debug.level_info")),
+            ("log-level-debug", LogLevel::Debug, t!("debug.level_debug")),
+            ("log-level-trace", LogLevel::Trace, t!("debug.level_trace")),
+        ]
+        .into_iter()
+        .map(|(id, level, label)| {
+            frame_rate_button(
+                id,
+                label.to_string(),
+                self.logging.level == level,
+                palette,
+                cx.listener(move |this, _, _, cx| {
+                    let mut settings = this.logging;
+                    settings.level = level;
+                    this.set_logging_settings(settings, cx);
+                }),
+            )
+        })
+        .collect::<Vec<_>>();
         div()
             .size_full()
             .min_w_0()
@@ -415,9 +440,84 @@ impl ConfigView {
                                         }),
                                     ),
                                 ),
+                            )
+                            .child(system_section_label(
+                                t!("debug.logging").to_string(),
+                                palette,
+                            ))
+                            .child(
+                                setting_row(t!("debug.log_level").to_string(), palette).child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .justify_end()
+                                        .gap_1()
+                                        .rounded_md()
+                                        .bg(palette.muted)
+                                        .children(log_level_buttons),
+                                ),
+                            )
+                            .child(
+                                setting_row(t!("debug.rotation").to_string(), palette).child(
+                                    toggle_switch("log-rotation", self.logging.rotation, palette)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            let mut settings = this.logging;
+                                            settings.rotation = !settings.rotation;
+                                            this.set_logging_settings(settings, cx);
+                                        })),
+                                ),
+                            )
+                            .child(
+                                setting_row(t!("debug.rotation_size").to_string(), palette)
+                                    .when_some(self.log_max_size_input.clone(), |this, input| {
+                                        this.child(compact_logging_number_input(&input, palette))
+                                    }),
+                            )
+                            .child(
+                                setting_row(t!("debug.compression").to_string(), palette).child(
+                                    toggle_switch(
+                                        "log-compression",
+                                        self.logging.compression,
+                                        palette,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            let mut settings = this.logging;
+                                            settings.compression = !settings.compression;
+                                            this.set_logging_settings(settings, cx);
+                                        },
+                                    )),
+                                ),
+                            )
+                            .child(
+                                setting_row(t!("debug.keep_files").to_string(), palette).when_some(
+                                    self.log_keep_files_input.clone(),
+                                    |this, input| {
+                                        this.child(compact_logging_number_input(&input, palette))
+                                    },
+                                ),
                             ),
                     ),
             )
             .into_any_element()
     }
+}
+
+fn compact_logging_number_input(input: &Entity<InputState>, palette: UiPalette) -> gpui::Div {
+    div()
+        .relative()
+        .w(px(120.0))
+        .flex_none()
+        .child(NumberInput::new(input).w_full().flex_none())
+        // 内置 Minus 图标在部分渲染环境中不可见，补一条不参与命中测试的横线。
+        .child(
+            div()
+                .absolute()
+                .left(px(11.0))
+                .top(px(15.0))
+                .w(px(10.0))
+                .h(px(2.0))
+                .rounded_full()
+                .bg(palette.foreground),
+        )
 }

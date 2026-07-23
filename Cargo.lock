@@ -1277,6 +1277,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "core_affinity"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a034b3a7b624016c6e13f5df875747cc25f884156aad2abd12b6c46797971342"
+dependencies = [
+ "libc",
+ "num_cpus",
+ "winapi",
+]
+
+[[package]]
 name = "core_maths"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1334,6 +1345,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d85363c37faeca707aef026efa9f3b34d077bce547e48f770770625c6013679e"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -1883,6 +1903,23 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "flexi_logger"
+version = "0.31.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e90140a77c0ffbe2e4839e062983ec4ec60d4473e41a4fcce0884809d1b76d6"
+dependencies = [
+ "chrono",
+ "core_affinity",
+ "crossbeam-channel",
+ "crossbeam-queue",
+ "flate2",
+ "log",
+ "nu-ansi-term",
+ "regex",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -3760,6 +3797,7 @@ dependencies = [
  "arc-swap",
  "async-channel",
  "cocoa 0.26.0",
+ "flexi_logger",
  "futures",
  "genai",
  "gpui",
@@ -3768,6 +3806,7 @@ dependencies = [
  "gpui_tokio",
  "gpui_wgpu",
  "image",
+ "log",
  "mimalloc",
  "mocari",
  "objc",

@@ -27,6 +27,8 @@ parking_lot = "0.12.5"
 rust-i18n = "4.2.1"
 mocari = { version = "0.4.0", path = "vendor/mocari", features = ["wgpu"] }
 gpui_wgpu = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
+log = "0.4.33"
+flexi_logger = { version = "0.31.9", features = ["async", "compress"] }
 
 [patch.crates-io]
 # 上游 PR #14 修复了 2.0.1 中的 Rust future-incompatibility 警告。

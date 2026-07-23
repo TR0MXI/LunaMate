@@ -66,7 +66,7 @@ impl Render for ConfigWindowView {
         if let Some(moved) = self.position_controller.apply_pending_reset(window, cx)
             && !moved
         {
-            eprintln!("当前窗口系统不允许应用主动移动设置窗口");
+            log::debug!("当前窗口系统不允许应用主动移动设置窗口");
         }
         let config = self.config.clone();
         div().size_full().bg(gpui::transparent_black()).child(

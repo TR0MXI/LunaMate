@@ -77,6 +77,8 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
   历史限制消息数和字节或 token 数。
 - 日志默认不记录完整对话、系统提示词或隐私数据，诊断信息必须脱敏。LLM 输出是不可信
   输入，不得直接获得 shell、任意文件或系统控制权限；自动化测试使用 fake backend。
+- 应用日志统一使用 `log` 门面和 `flexi_logger` 异步文件 writer，固定写入工作目录下的
+  `logs/`；轮转、压缩、保留策略和等级由日志配置域管理，Release 构建不做编译期等级裁剪。
 
 ## 代码、安全与资源
 

@@ -50,6 +50,10 @@ fn missing_config_uses_complete_defaults() {
     assert!(config.remember_window_positions());
     assert!(config.eye_tracking());
     assert!(!config.show_fps());
+    assert_eq!(
+        config.logging_settings().as_ref(),
+        &LoggingSettings::default()
+    );
     assert_eq!(config.appearance().as_ref(), &AppearanceSettings::default());
     assert_eq!(config.selected_model(), None);
     assert!(config.startup_warning().is_none());
@@ -129,6 +133,80 @@ fn interaction_and_debug_switches_round_trip() {
     let saved = fs::read_to_string(directory.config_path()).expect("调试配置应当可以读取");
     assert!(saved.contains("eye_tracking = false"));
     assert!(saved.contains("show_fps = true"));
+}
+
+#[test]
+fn logging_settings_load_and_round_trip() {
+    let directory = TestDirectory::new();
+    directory.write(
+        r#"[logging]
+level = "debug"
+rotation = false
+compression = false
+max_size_mb = 25
+keep_files = 20
+"#,
+    );
+    let config = LunaConfig::load_from(directory.config_path());
+    assert_eq!(
+        config.logging_settings().as_ref(),
+        &LoggingSettings {
+            level: LogLevel::Debug,
+            rotation: false,
+            compression: false,
+            max_size_mb: 25,
+            keep_files: 20,
+        }
+    );
+
+    config
+        .set_logging_settings(LoggingSettings {
+            level: LogLevel::Warn,
+            rotation: true,
+            compression: true,
+            max_size_mb: 10,
+            keep_files: 10,
+        })
+        .expect("日志配置应当可以持久化");
+
+    let reloaded = LunaConfig::load_from(directory.config_path());
+    assert_eq!(
+        reloaded.logging_settings().as_ref(),
+        &LoggingSettings {
+            level: LogLevel::Warn,
+            rotation: true,
+            compression: true,
+            max_size_mb: 10,
+            keep_files: 10,
+        }
+    );
+    let saved = fs::read_to_string(directory.config_path()).expect("日志配置应当可以读取");
+    assert!(saved.contains("level = \"warn\""));
+    assert!(saved.contains("rotation = true"));
+    assert!(saved.contains("compression = true"));
+    assert!(saved.contains("max_size_mb = 10"));
+    assert!(saved.contains("keep_files = 10"));
+}
+
+#[test]
+fn invalid_logging_fields_fall_back_independently() {
+    let directory = TestDirectory::new();
+    directory.write(
+        r#"[logging]
+level = "verbose"
+rotation = "yes"
+compression = 1
+max_size_mb = 0
+keep_files = 101
+"#,
+    );
+
+    let config = LunaConfig::load_from(directory.config_path());
+    assert_eq!(
+        config.logging_settings().as_ref(),
+        &LoggingSettings::default()
+    );
+    assert!(config.startup_warning().is_some());
 }
 
 #[test]

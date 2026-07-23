@@ -220,7 +220,7 @@ impl GpuUnderlay {
         if let Some(worker) = self.request_shutdown()
             && worker.join().is_err()
         {
-            eprintln!("Live2D GPU worker 在退出时发生 panic");
+            log::error!("Live2D GPU worker 在退出时发生 panic");
         }
         self.attachment.take();
     }

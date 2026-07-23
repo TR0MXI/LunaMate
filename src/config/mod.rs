@@ -29,14 +29,16 @@ use toml_edit::{DocumentMut, Value};
 use document::{
     default_config_path, document_for_update, ensure_table_like, read_config_file, remove_key,
     set_item_value, validate_relative_path, write_appearance, write_config_file,
-    write_window_position,
+    write_logging_settings, write_window_position,
 };
 pub(crate) use llm::{LLM_PROVIDERS, LlmModelConfig, LlmProvider, LlmSettings, SharedLlmSettings};
 use llm::{parse_llm_settings, write_llm_settings};
 pub(crate) use model_catalog::ModelCatalog;
 use types::UNLIMITED_FRAME_RATE_NAME;
 pub(crate) use types::{
-    ConfigWindow, ConfigWriteError, FrameRate, ModelWindowSize, WindowPosition,
+    ConfigWindow, ConfigWriteError, FrameRate, LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES,
+    LOGGING_MIN_FILE_SIZE_MB, LOGGING_MIN_KEEP_FILES, LogLevel, LoggingSettings, ModelWindowSize,
+    WindowPosition,
 };
 pub(crate) use view::{ConfigEvent, ConfigView, ConfigWindowView};
 
@@ -80,6 +82,7 @@ struct LoadedConfig {
     remember_window_positions: bool,
     eye_tracking: bool,
     show_fps: bool,
+    logging: LoggingSettings,
     appearance: AppearanceSettings,
     snapshot: ConfigSnapshot,
     window_positions: WindowPositions,
@@ -94,6 +97,7 @@ impl Default for LoadedConfig {
             remember_window_positions: true,
             eye_tracking: true,
             show_fps: false,
+            logging: LoggingSettings::default(),
             appearance: AppearanceSettings::default(),
             snapshot: ConfigSnapshot::default(),
             window_positions: WindowPositions::default(),
@@ -110,6 +114,7 @@ pub(crate) struct LunaConfig {
     remember_window_positions: AtomicBool,
     eye_tracking: AtomicBool,
     show_fps: AtomicBool,
+    logging: ArcSwap<LoggingSettings>,
     appearance: ArcSwap<AppearanceSettings>,
     snapshot: ArcSwap<ConfigSnapshot>,
     window_positions: Mutex<WindowPositions>,
@@ -121,6 +126,7 @@ pub(crate) struct LunaConfig {
     remember_positions_request_revision: AtomicU64,
     eye_tracking_request_revision: AtomicU64,
     show_fps_request_revision: AtomicU64,
+    logging_request_revision: AtomicU64,
     appearance_request_revision: AtomicU64,
     reset_positions_request_revision: AtomicU64,
     write_nonce: AtomicU64,
@@ -139,7 +145,7 @@ impl LunaConfig {
     fn load_from(path: PathBuf) -> Self {
         let (loaded, startup_warning) = read_config_file(&path);
         if let Some(warning) = &startup_warning {
-            eprintln!("{warning}");
+            log::warn!("{warning}");
         }
 
         Self {
@@ -149,6 +155,7 @@ impl LunaConfig {
             remember_window_positions: AtomicBool::new(loaded.remember_window_positions),
             eye_tracking: AtomicBool::new(loaded.eye_tracking),
             show_fps: AtomicBool::new(loaded.show_fps),
+            logging: ArcSwap::from_pointee(loaded.logging),
             appearance: ArcSwap::from_pointee(loaded.appearance),
             snapshot: ArcSwap::from_pointee(loaded.snapshot),
             window_positions: Mutex::new(loaded.window_positions),
@@ -160,6 +167,7 @@ impl LunaConfig {
             remember_positions_request_revision: AtomicU64::new(0),
             eye_tracking_request_revision: AtomicU64::new(0),
             show_fps_request_revision: AtomicU64::new(0),
+            logging_request_revision: AtomicU64::new(0),
             appearance_request_revision: AtomicU64::new(0),
             reset_positions_request_revision: AtomicU64::new(0),
             write_nonce: AtomicU64::new(0),
@@ -198,6 +206,11 @@ impl LunaConfig {
     /// 返回是否在桌宠窗口显示运行时帧率。
     pub(crate) fn show_fps(&self) -> bool {
         self.show_fps.load(Ordering::Relaxed)
+    }
+
+    /// 返回当前日志过滤与轮转配置快照。
+    pub(crate) fn logging_settings(&self) -> Arc<LoggingSettings> {
+        self.logging.load_full()
     }
 
     /// 返回当前模型清单的相对路径快照。
@@ -286,6 +299,45 @@ impl LunaConfig {
                 ensure_table_like(&mut document["debug"]);
                 set_item_value(&mut document["debug"]["show_fps"], Value::from(show));
             },
+        )?;
+        Ok(applied.then_some(()))
+    }
+
+    /// 更新完整日志配置并持久化。
+    ///
+    /// # Errors
+    ///
+    /// 配置值不合法，或配置目录和文件无法读写时返回错误。
+    #[cfg(test)]
+    pub(crate) fn set_logging_settings(
+        &self,
+        settings: LoggingSettings,
+    ) -> Result<(), ConfigWriteError> {
+        let revision = self.reserve_logging_settings_revision();
+        self.set_logging_settings_at_revision(settings, revision)?
+            .ok_or(ConfigWriteError::StaleConfigUpdate)
+    }
+
+    /// 为完整日志配置写入分配单调 revision。
+    pub(crate) fn reserve_logging_settings_revision(&self) -> u64 {
+        self.reserve_request_revision(&self.logging_request_revision)
+    }
+
+    /// 仅持久化并发布仍是最新请求的日志配置。
+    pub(crate) fn set_logging_settings_at_revision(
+        &self,
+        settings: LoggingSettings,
+        revision: u64,
+    ) -> Result<Option<()>, ConfigWriteError> {
+        let settings = settings
+            .normalized()
+            .map_err(ConfigWriteError::InvalidValue)?;
+        let published = Arc::new(settings);
+        let applied = self.edit_config_at_revision(
+            &self.logging_request_revision,
+            revision,
+            move || self.logging.store(published),
+            move |document| write_logging_settings(document, &settings),
         )?;
         Ok(applied.then_some(()))
     }

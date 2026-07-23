@@ -225,7 +225,7 @@ impl AnimatedModel {
         diagnostics.extend(animation_diagnostics);
         diagnostics.extend(expression_diagnostics);
         for diagnostic in diagnostics.entries() {
-            eprintln!("Live2D 模型能力警告：{diagnostic}");
+            log::warn!("Live2D 模型能力警告：{diagnostic}");
         }
 
         Ok(Self {

@@ -11,6 +11,12 @@ const MODEL_WINDOW_SIZE_COMPACT: u16 = 240;
 const MODEL_WINDOW_SIZE_STANDARD: u16 = 300;
 const MODEL_WINDOW_SIZE_LARGE: u16 = 360;
 const MODEL_WINDOW_SIZE_EXTRA_LARGE: u16 = 420;
+const LOGGING_DEFAULT_MAX_SIZE_MB: u32 = 10;
+const LOGGING_DEFAULT_KEEP_FILES: u32 = 10;
+pub(crate) const LOGGING_MIN_FILE_SIZE_MB: u32 = 1;
+pub(crate) const LOGGING_MAX_FILE_SIZE_MB: u32 = 1_024;
+pub(crate) const LOGGING_MIN_KEEP_FILES: u32 = 1;
+pub(crate) const LOGGING_MAX_KEEP_FILES: u32 = 100;
 
 /// 区分需要单独恢复位置的应用窗口。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -159,6 +165,95 @@ impl FrameRate {
         } else {
             Self::try_from(value).unwrap_or_default()
         }
+    }
+}
+
+/// 控制日志宏送入 flexi_logger 的最低严重等级。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum LogLevel {
+    /// 只记录错误。
+    Error,
+    /// 记录警告和错误。
+    Warn,
+    /// 记录常规运行信息。
+    #[default]
+    Info,
+    /// 记录调试信息。
+    Debug,
+    /// 记录最详细的跟踪信息。
+    Trace,
+}
+
+impl LogLevel {
+    /// 返回配置文件中的稳定标识和 flexi_logger 可接受的过滤字符串。
+    pub(crate) const fn id(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+
+    pub(super) fn from_id(value: &str) -> Option<Self> {
+        match value {
+            "error" => Some(Self::Error),
+            "warn" => Some(Self::Warn),
+            "info" => Some(Self::Info),
+            "debug" => Some(Self::Debug),
+            "trace" => Some(Self::Trace),
+            _ => None,
+        }
+    }
+}
+
+/// 描述日志过滤和文件轮转策略；文件目录、异步写入和每日轮转周期由运行时固定。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LoggingSettings {
+    /// 当前日志过滤等级。
+    pub(crate) level: LogLevel,
+    /// 是否启用按日期或文件大小轮转。
+    pub(crate) rotation: bool,
+    /// 轮转后的文件是否压缩为 gzip。
+    pub(crate) compression: bool,
+    /// 文件超过多少 MiB 时触发轮转。
+    pub(crate) max_size_mb: u32,
+    /// 最多保留多少个轮转文件。
+    pub(crate) keep_files: u32,
+}
+
+impl Default for LoggingSettings {
+    fn default() -> Self {
+        Self {
+            level: LogLevel::Info,
+            rotation: true,
+            compression: true,
+            max_size_mb: LOGGING_DEFAULT_MAX_SIZE_MB,
+            keep_files: LOGGING_DEFAULT_KEEP_FILES,
+        }
+    }
+}
+
+impl LoggingSettings {
+    /// 校验来自配置文件或 UI 的数值，避免把异常参数传给日志后台线程。
+    pub(crate) fn normalized(self) -> Result<Self, String> {
+        if !(LOGGING_MIN_FILE_SIZE_MB..=LOGGING_MAX_FILE_SIZE_MB).contains(&self.max_size_mb) {
+            return Err(format!(
+                "日志轮转大小必须在 {LOGGING_MIN_FILE_SIZE_MB} 到 {LOGGING_MAX_FILE_SIZE_MB} MiB 之间"
+            ));
+        }
+        if !(LOGGING_MIN_KEEP_FILES..=LOGGING_MAX_KEEP_FILES).contains(&self.keep_files) {
+            return Err(format!(
+                "日志保留数量必须在 {LOGGING_MIN_KEEP_FILES} 到 {LOGGING_MAX_KEEP_FILES} 之间"
+            ));
+        }
+        Ok(self)
+    }
+
+    /// 返回 flexi_logger 使用的字节轮转阈值。
+    pub(crate) fn max_size_bytes(self) -> u64 {
+        u64::from(self.max_size_mb) * 1024 * 1024
     }
 }
 

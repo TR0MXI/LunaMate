@@ -118,7 +118,7 @@ impl GpuSurface {
         device.set_device_lost_callback(move |reason, message| {
             lost_flag.store(true, Ordering::Release);
             lost_wake.wake();
-            eprintln!("Live2D GPU device 已丢失：{reason:?}：{message}");
+            log::error!("Live2D GPU device 已丢失：{reason:?}：{message}");
         });
         let device_error = Arc::new(Mutex::new(None));
         let uncaptured_error = device_error.clone();

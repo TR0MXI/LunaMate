@@ -9,7 +9,7 @@ mod window;
 use std::path::{Path, PathBuf};
 
 use gpui::{AppContext, Context, Entity, EventEmitter, Subscription, Task, Window};
-use gpui_component::input::InputState;
+use gpui_component::input::{InputEvent, InputState, MaskPattern};
 use rust_i18n::t;
 
 use crate::{
@@ -18,7 +18,9 @@ use crate::{
 };
 
 use super::{
-    CONFIG, ConfigWriteError, FrameRate, ModelCatalog, ModelWindowSize, SharedLlmSettings,
+    CONFIG, ConfigWriteError, FrameRate, LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES,
+    LOGGING_MIN_FILE_SIZE_MB, LOGGING_MIN_KEEP_FILES, LoggingSettings, ModelCatalog,
+    ModelWindowSize, SharedLlmSettings,
     llm_view::{LlmSettingsView, LlmViewEvent},
 };
 
@@ -66,6 +68,8 @@ pub(crate) struct ConfigView {
     llm_draft: Option<SharedLlmSettings>,
     custom_accent_input: Option<Entity<InputState>>,
     custom_background_input: Option<Entity<InputState>>,
+    log_max_size_input: Option<Entity<InputState>>,
+    log_keep_files_input: Option<Entity<InputState>>,
     preview_capabilities: ModelPreviewCapabilities,
     active_outfit: Option<String>,
     section: ConfigSection,
@@ -75,6 +79,7 @@ pub(crate) struct ConfigView {
     remember_window_positions: bool,
     eye_tracking: bool,
     show_fps: bool,
+    logging: LoggingSettings,
     appearance: AppearanceSettings,
     is_refreshing: bool,
     revision: u64,
@@ -82,6 +87,7 @@ pub(crate) struct ConfigView {
     refresh_task: Option<Task<()>>,
     write_tasks: Vec<Task<()>>,
     llm_subscription: Option<Subscription>,
+    logging_input_subscriptions: Vec<Subscription>,
     toast_revision: u64,
     toast_task: Option<Task<()>>,
 }
@@ -106,6 +112,8 @@ impl ConfigView {
             llm_draft: None,
             custom_accent_input: None,
             custom_background_input: None,
+            log_max_size_input: None,
+            log_keep_files_input: None,
             preview_capabilities: ModelPreviewCapabilities::default(),
             active_outfit: None,
             section: ConfigSection::Model,
@@ -115,6 +123,7 @@ impl ConfigView {
             remember_window_positions: CONFIG.remember_window_positions(),
             eye_tracking: CONFIG.eye_tracking(),
             show_fps: CONFIG.show_fps(),
+            logging: *CONFIG.logging_settings(),
             appearance: CONFIG.appearance().as_ref().clone(),
             is_refreshing: false,
             revision: 0,
@@ -122,6 +131,7 @@ impl ConfigView {
             refresh_task: None,
             write_tasks: Vec::new(),
             llm_subscription: None,
+            logging_input_subscriptions: Vec::new(),
             toast_revision: 0,
             toast_task: None,
         };
@@ -146,6 +156,48 @@ impl ConfigView {
         self.custom_background_input = Some(cx.new(|cx| {
             InputState::new(window, cx).default_value(self.appearance.custom.background.clone())
         }));
+        let log_max_size_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(self.logging.max_size_mb.to_string())
+                .mask_pattern(MaskPattern::Number {
+                    separator: None,
+                    fraction: Some(0),
+                })
+                .step(1.0)
+                .min(f64::from(LOGGING_MIN_FILE_SIZE_MB))
+                .max(f64::from(LOGGING_MAX_FILE_SIZE_MB))
+        });
+        let log_keep_files_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(self.logging.keep_files.to_string())
+                .mask_pattern(MaskPattern::Number {
+                    separator: None,
+                    fraction: Some(0),
+                })
+                .step(1.0)
+                .min(f64::from(LOGGING_MIN_KEEP_FILES))
+                .max(f64::from(LOGGING_MAX_KEEP_FILES))
+        });
+        self.logging_input_subscriptions = vec![
+            cx.subscribe(
+                &log_max_size_input,
+                |this, input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.set_log_max_size_from_input(&input, cx);
+                    }
+                },
+            ),
+            cx.subscribe(
+                &log_keep_files_input,
+                |this, input, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.set_log_keep_files_from_input(&input, cx);
+                    }
+                },
+            ),
+        ];
+        self.log_max_size_input = Some(log_max_size_input);
+        self.log_keep_files_input = Some(log_keep_files_input);
         self.llm_subscription = Some(cx.subscribe(
             &llm_view,
             |this, _, event: &LlmViewEvent, cx| {
@@ -167,7 +219,10 @@ impl ConfigView {
         }
         self.custom_accent_input = None;
         self.custom_background_input = None;
+        self.log_max_size_input = None;
+        self.log_keep_files_input = None;
         self.llm_subscription = None;
+        self.logging_input_subscriptions.clear();
         cx.notify();
     }
 
@@ -490,6 +545,76 @@ impl ConfigView {
             move || CONFIG.set_show_fps_at_revision(show, config_revision),
             cx,
         );
+    }
+
+    fn set_logging_settings(&mut self, settings: LoggingSettings, cx: &mut Context<Self>) {
+        if self.logging == settings {
+            return;
+        }
+        self.logging = settings;
+        self.revision = self.revision.wrapping_add(1);
+        let revision = self.revision;
+        cx.notify();
+
+        let config_revision = CONFIG.reserve_logging_settings_revision();
+        let background = cx.background_executor().clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = background
+                .spawn(async move {
+                    let persisted = CONFIG
+                        .set_logging_settings_at_revision(settings, config_revision)
+                        .map_err(|error| error.to_string())?;
+                    if persisted.is_some() {
+                        crate::logging::apply_current_settings()?;
+                    }
+                    Ok::<Option<()>, String>(persisted)
+                })
+                .await;
+            if let Err(error) = &result {
+                log::error!("更新日志配置失败：{error}");
+            }
+            let _ = this.update(cx, |this, cx| {
+                if this.revision != revision {
+                    return;
+                }
+                if let Err(error) = result {
+                    this.set_status(t!("status.setting_failed", error = error).to_string(), cx);
+                } else {
+                    cx.notify();
+                }
+            });
+        });
+        self.track_write_task(task);
+    }
+
+    fn set_log_max_size_from_input(&mut self, input: &Entity<InputState>, cx: &mut Context<Self>) {
+        let Ok(max_size_mb) = input.read(cx).value().parse::<u32>() else {
+            return;
+        };
+        let settings = LoggingSettings {
+            max_size_mb,
+            ..self.logging
+        };
+        if settings.normalized().is_ok() {
+            self.set_logging_settings(settings, cx);
+        }
+    }
+
+    fn set_log_keep_files_from_input(
+        &mut self,
+        input: &Entity<InputState>,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(keep_files) = input.read(cx).value().parse::<u32>() else {
+            return;
+        };
+        let settings = LoggingSettings {
+            keep_files,
+            ..self.logging
+        };
+        if settings.normalized().is_ok() {
+            self.set_logging_settings(settings, cx);
+        }
     }
 
     fn reset_window_positions(&mut self, cx: &mut Context<Self>) {

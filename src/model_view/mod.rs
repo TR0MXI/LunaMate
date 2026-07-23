@@ -188,7 +188,7 @@ impl ModelView {
         let gpu_underlay = match GpuUnderlay::attach(window) {
             Ok(underlay) => underlay,
             Err(error) => {
-                eprintln!("Live2D GPU underlay 初始化失败，已回退 CPU：{error}");
+                log::warn!("Live2D GPU underlay 初始化失败，已回退 CPU：{error}");
                 None
             }
         };
@@ -323,7 +323,7 @@ impl ModelView {
                         Err(_) => {
                             let _ = this.update(cx, |this, cx| {
                                 if this.gpu_underlay.is_some() {
-                                    eprintln!("Live2D GPU worker 意外退出，切换到 CPU renderer");
+                                    log::error!("Live2D GPU worker 意外退出，切换到 CPU renderer");
                                     this.fallback_to_cpu(cx);
                                 }
                             });
@@ -472,12 +472,12 @@ impl ModelView {
                     error = error
                 )
                 .to_string();
-                eprintln!("{message}；切换到 CPU renderer");
+                log::error!("{message}；切换到 CPU renderer");
                 self.fallback_to_cpu(cx);
                 return false;
             }
             GpuUnderlayEvent::Unavailable { error } => {
-                eprintln!("Live2D GPU underlay 已失效，切换到 CPU renderer：{error}");
+                log::error!("Live2D GPU underlay 已失效，切换到 CPU renderer：{error}");
                 self.fallback_to_cpu(cx);
                 return false;
             }
@@ -570,7 +570,7 @@ impl ModelView {
                 .await;
             drop(underlay);
             if worker_panicked {
-                eprintln!("Live2D GPU worker 在退出时发生 panic");
+                log::error!("Live2D GPU worker 在退出时发生 panic");
             }
             let _ = this.update_in(cx, |this, window, cx| {
                 this.gpu_shutdown_pending = false;
@@ -752,7 +752,7 @@ impl ModelView {
             },
             move |window, cx| {
                 if let Err(error) = configure_settings_window(window) {
-                    eprintln!("配置设置原生窗口失败：{error}");
+                    log::warn!("配置设置原生窗口失败：{error}");
                 }
                 window.set_window_title("LunaMate");
                 let view = cx.new(|cx| ConfigWindowView::new(config, window, cx));
@@ -765,7 +765,7 @@ impl ModelView {
         );
         match result {
             Ok(handle) => self.config_window = Some(handle.into()),
-            Err(error) => eprintln!("无法创建 LunaMate 设置窗口：{error}"),
+            Err(error) => log::error!("无法创建 LunaMate 设置窗口：{error}"),
         }
     }
 
@@ -783,7 +783,7 @@ impl ModelView {
                 .is_none_or(|current| previous.id != current.id)
             && let Err(error) = window.drop_image(previous)
         {
-            eprintln!("回收旧 Live2D 图像失败：{error}");
+            log::warn!("回收旧 Live2D 图像失败：{error}");
         }
         self.previous_rendered_image = current;
         self.current_rendered_image = next;

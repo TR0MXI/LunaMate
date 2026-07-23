@@ -19,7 +19,7 @@ impl Render for ModelView {
         if let Some(moved) = self.position_controller.apply_pending_reset(window, cx)
             && !moved
         {
-            eprintln!("当前窗口系统不允许应用主动移动桌宠窗口");
+            log::debug!("当前窗口系统不允许应用主动移动桌宠窗口");
         }
         let palette = UiPalette::from_app(cx);
         let control_background = palette.secondary;

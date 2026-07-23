@@ -13,7 +13,8 @@ use crate::persistence::{AtomicReplaceOperation, atomic_replace};
 
 use super::{
     AppLanguage, AppearanceSettings, ConfigWindow, ConfigWriteError, CustomThemeSettings,
-    FrameRate, LoadedConfig, ModelWindowSize, ThemePreset, WindowPosition, parse_llm_settings,
+    FrameRate, LoadedConfig, LogLevel, LoggingSettings, ModelWindowSize, ThemePreset,
+    WindowPosition, parse_llm_settings,
 };
 
 const LEGACY_CONFIG_PATH: &str = "./config.toml";
@@ -74,7 +75,7 @@ pub(super) fn document_for_update(path: &Path) -> Result<DocumentMut, ConfigWrit
         Ok(Some(source)) => match source.parse::<DocumentMut>() {
             Ok(document) => Ok(document),
             Err(error) => {
-                eprintln!(
+                log::warn!(
                     "配置文件 {} 已损坏，本次保存将重建有效 TOML：{}",
                     path.display(),
                     error.message()
@@ -175,6 +176,8 @@ fn parse_document(document: &DocumentMut) -> (LoadedConfig, Option<String>) {
         }
     }
 
+    loaded.logging = parse_logging_settings(document, &mut warnings);
+
     if let Some(item) = nested_item(document, "interaction", "eye_tracking") {
         match item.as_bool() {
             Some(enabled) => loaded.eye_tracking = enabled,
@@ -232,6 +235,59 @@ fn parse_frame_rate(item: &Item) -> Option<FrameRate> {
     item.as_integer()
         .and_then(|fps| u16::try_from(fps).ok())
         .and_then(|fps| FrameRate::try_from(fps).ok())
+}
+
+fn parse_logging_settings(document: &DocumentMut, warnings: &mut Vec<String>) -> LoggingSettings {
+    let mut settings = LoggingSettings::default();
+
+    if let Some(item) = nested_item(document, "logging", "level") {
+        match item.as_str().and_then(LogLevel::from_id) {
+            Some(level) => settings.level = level,
+            None => warnings.push("logging.level 无效，已使用 info".to_owned()),
+        }
+    }
+    if let Some(item) = nested_item(document, "logging", "rotation") {
+        match item.as_bool() {
+            Some(rotation) => settings.rotation = rotation,
+            None => warnings.push("logging.rotation 无效，已启用日志轮转".to_owned()),
+        }
+    }
+    if let Some(item) = nested_item(document, "logging", "compression") {
+        match item.as_bool() {
+            Some(compression) => settings.compression = compression,
+            None => warnings.push("logging.compression 无效，已启用日志压缩".to_owned()),
+        }
+    }
+    if let Some(item) = nested_item(document, "logging", "max_size_mb") {
+        let parsed = item
+            .as_integer()
+            .and_then(|value| u32::try_from(value).ok())
+            .map(|max_size_mb| LoggingSettings {
+                max_size_mb,
+                ..settings
+            })
+            .and_then(|candidate| candidate.normalized().ok());
+        match parsed {
+            Some(candidate) => settings = candidate,
+            None => warnings.push("logging.max_size_mb 无效，已使用 10 MiB".to_owned()),
+        }
+    }
+    if let Some(item) = nested_item(document, "logging", "keep_files") {
+        let parsed = item
+            .as_integer()
+            .and_then(|value| u32::try_from(value).ok())
+            .map(|keep_files| LoggingSettings {
+                keep_files,
+                ..settings
+            })
+            .and_then(|candidate| candidate.normalized().ok());
+        match parsed {
+            Some(candidate) => settings = candidate,
+            None => warnings.push("logging.keep_files 无效，已保留 10 项".to_owned()),
+        }
+    }
+
+    settings
 }
 
 fn parse_appearance(document: &DocumentMut, warnings: &mut Vec<String>) -> AppearanceSettings {
@@ -380,6 +436,30 @@ pub(super) fn write_appearance(document: &mut DocumentMut, settings: &Appearance
     set_item_value(
         &mut document["appearance"]["custom_mode"],
         Value::from(settings.custom.mode.name()),
+    );
+}
+
+pub(super) fn write_logging_settings(document: &mut DocumentMut, settings: &LoggingSettings) {
+    ensure_table_like(&mut document["logging"]);
+    set_item_value(
+        &mut document["logging"]["level"],
+        Value::from(settings.level.id()),
+    );
+    set_item_value(
+        &mut document["logging"]["rotation"],
+        Value::from(settings.rotation),
+    );
+    set_item_value(
+        &mut document["logging"]["compression"],
+        Value::from(settings.compression),
+    );
+    set_item_value(
+        &mut document["logging"]["max_size_mb"],
+        Value::from(i64::from(settings.max_size_mb)),
+    );
+    set_item_value(
+        &mut document["logging"]["keep_files"],
+        Value::from(i64::from(settings.keep_files)),
     );
 }
 

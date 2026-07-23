@@ -12,6 +12,7 @@ mod frame_scheduler;
 mod gpu_underlay;
 mod interaction;
 mod live2d_image;
+mod logging;
 mod model_view;
 mod persistence;
 mod platform_window;
@@ -26,5 +27,10 @@ use mimalloc::MiMalloc;
 static GLOBAL_ALLOCATOR: MiMalloc = MiMalloc;
 
 fn main() {
+    logging::init();
+    if let Err(error) = logging::apply_current_settings() {
+        log::error!("应用日志配置失败，继续使用启动配置：{error}");
+    }
     app::run();
+    logging::shutdown();
 }
