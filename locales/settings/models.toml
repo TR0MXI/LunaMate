@@ -1,0 +1,31 @@
+_version = 2
+
+[settings.model]
+"zh-CN" = "模型"
+"zh-TW" = "模型"
+"en" = "Model"
+"ja" = "モデル"
+
+[settings.conversation]
+"zh-CN" = "对话"
+"zh-TW" = "對話"
+"en" = "Conversation"
+"ja" = "会話"
+
+[settings.model_title]
+"zh-CN" = "模型设置"
+"zh-TW" = "模型設定"
+"en" = "Model Settings"
+"ja" = "モデル設定"
+
+[settings.conversation_title]
+"zh-CN" = "对话设置"
+"zh-TW" = "對話設定"
+"en" = "Conversation Settings"
+"ja" = "会話設定"
+
+[settings.not_initialized]
+"zh-CN" = "对话设置尚未初始化"
+"zh-TW" = "對話設定尚未初始化"
+"en" = "Conversation settings are not initialized"
+"ja" = "会話設定が初期化されていません"

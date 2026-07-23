@@ -1,0 +1,187 @@
+_version = 2
+
+[settings.system]
+"zh-CN" = "系统"
+"zh-TW" = "系統"
+"en" = "System"
+"ja" = "システム"
+
+[settings.system_title]
+"zh-CN" = "系统设置"
+"zh-TW" = "系統設定"
+"en" = "System Settings"
+"ja" = "システム設定"
+
+[system.render]
+"zh-CN" = "渲染"
+"zh-TW" = "渲染"
+"en" = "Rendering"
+"ja" = "レンダリング"
+
+[system.frame_rate]
+"zh-CN" = "模型帧率"
+"zh-TW" = "模型幀率"
+"en" = "Model frame rate"
+"ja" = "モデルのフレームレート"
+
+[system.interaction]
+"zh-CN" = "交互"
+"zh-TW" = "互動"
+"en" = "Interaction"
+"ja" = "インタラクション"
+
+[system.eye_tracking]
+"zh-CN" = "眼部跟随鼠标"
+"zh-TW" = "眼部跟隨滑鼠"
+"en" = "Eyes follow pointer"
+"ja" = "マウスに視線を追従"
+
+[system.unlimited]
+"zh-CN" = "无限制"
+"zh-TW" = "無限制"
+"en" = "Unlimited"
+"ja" = "無制限"
+
+[system.window]
+"zh-CN" = "窗口"
+"zh-TW" = "視窗"
+"en" = "Window"
+"ja" = "ウィンドウ"
+
+[system.model_window_size]
+"zh-CN" = "模型窗口尺寸"
+"zh-TW" = "模型視窗尺寸"
+"en" = "Model window size"
+"ja" = "モデルウィンドウサイズ"
+
+[system.size_auto]
+"zh-CN" = "自动"
+"zh-TW" = "自動"
+"en" = "Auto"
+"ja" = "自動"
+
+[system.size_compact]
+"zh-CN" = "紧凑"
+"zh-TW" = "精簡"
+"en" = "Compact"
+"ja" = "コンパクト"
+
+[system.size_standard]
+"zh-CN" = "标准"
+"zh-TW" = "標準"
+"en" = "Standard"
+"ja" = "標準"
+
+[system.size_large]
+"zh-CN" = "大"
+"zh-TW" = "大"
+"en" = "Large"
+"ja" = "大"
+
+[system.size_extra_large]
+"zh-CN" = "特大"
+"zh-TW" = "特大"
+"en" = "Extra Large"
+"ja" = "特大"
+
+[system.remember_positions]
+"zh-CN" = "记住窗口位置"
+"zh-TW" = "記住視窗位置"
+"en" = "Remember window positions"
+"ja" = "ウィンドウ位置を記憶"
+
+[system.saved_positions]
+"zh-CN" = "已保存位置"
+"zh-TW" = "已儲存位置"
+"en" = "Saved positions"
+"ja" = "保存された位置"
+
+[system.reset_positions]
+"zh-CN" = "重置窗口位置"
+"zh-TW" = "重設視窗位置"
+"en" = "Reset window positions"
+"ja" = "ウィンドウ位置をリセット"
+
+[system.appearance]
+"zh-CN" = "外观"
+"zh-TW" = "外觀"
+"en" = "Appearance"
+"ja" = "外観"
+
+[system.theme]
+"zh-CN" = "主题"
+"zh-TW" = "主題"
+"en" = "Theme"
+"ja" = "テーマ"
+
+[system.theme_system]
+"zh-CN" = "跟随系统"
+"zh-TW" = "跟隨系統"
+"en" = "System"
+"ja" = "システム"
+
+[system.theme_light]
+"zh-CN" = "日间"
+"zh-TW" = "日間"
+"en" = "Light"
+"ja" = "ライト"
+
+[system.theme_dark]
+"zh-CN" = "夜间"
+"zh-TW" = "夜間"
+"en" = "Dark"
+"ja" = "ダーク"
+
+[system.theme_graphite]
+"zh-CN" = "石墨"
+"zh-TW" = "石墨"
+"en" = "Graphite"
+"ja" = "グラファイト"
+
+[system.theme_sakura]
+"zh-CN" = "樱花"
+"zh-TW" = "櫻花"
+"en" = "Sakura"
+"ja" = "桜"
+
+[system.theme_ocean]
+"zh-CN" = "海洋"
+"zh-TW" = "海洋"
+"en" = "Ocean"
+"ja" = "オーシャン"
+
+[system.theme_high_contrast]
+"zh-CN" = "高对比度"
+"zh-TW" = "高對比度"
+"en" = "High Contrast"
+"ja" = "ハイコントラスト"
+
+[system.theme_custom]
+"zh-CN" = "自定义"
+"zh-TW" = "自訂"
+"en" = "Custom"
+"ja" = "カスタム"
+
+[system.custom_mode]
+"zh-CN" = "自定义模式"
+"zh-TW" = "自訂模式"
+"en" = "Custom mode"
+"ja" = "カスタムモード"
+
+[system.custom_accent]
+"zh-CN" = "强调色"
+"zh-TW" = "強調色"
+"en" = "Accent color"
+"ja" = "アクセントカラー"
+
+[system.custom_background]
+"zh-CN" = "背景色"
+"zh-TW" = "背景色"
+"en" = "Background color"
+"ja" = "背景色"
+
+[system.language]
+"zh-CN" = "界面语言"
+"zh-TW" = "介面語言"
+"en" = "Interface language"
+"ja" = "表示言語"

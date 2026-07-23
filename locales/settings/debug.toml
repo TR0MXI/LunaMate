@@ -1,0 +1,25 @@
+_version = 2
+
+[settings.debug]
+"zh-CN" = "调试"
+"zh-TW" = "除錯"
+"en" = "Debug"
+"ja" = "デバッグ"
+
+[settings.debug_title]
+"zh-CN" = "调试设置"
+"zh-TW" = "除錯設定"
+"en" = "Debug Settings"
+"ja" = "デバッグ設定"
+
+[debug.runtime]
+"zh-CN" = "运行时"
+"zh-TW" = "執行階段"
+"en" = "Runtime"
+"ja" = "ランタイム"
+
+[debug.show_fps]
+"zh-CN" = "显示实际帧率"
+"zh-TW" = "顯示實際幀率"
+"en" = "Show actual frame rate"
+"ja" = "実測フレームレートを表示"

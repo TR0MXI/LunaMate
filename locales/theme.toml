@@ -1,0 +1,7 @@
+_version = 2
+
+[theme.invalid_color]
+"zh-CN" = "%{label}必须是 #RRGGBB 或 #RRGGBBAA"
+"zh-TW" = "%{label}必須是 #RRGGBB 或 #RRGGBBAA"
+"en" = "%{label} must use #RRGGBB or #RRGGBBAA"
+"ja" = "%{label} は #RRGGBB または #RRGGBBAA 形式で指定してください"

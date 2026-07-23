@@ -1,0 +1,217 @@
+_version = 2
+
+[chat.input_placeholder]
+"zh-CN" = "输入消息"
+"zh-TW" = "輸入訊息"
+"en" = "Type a message"
+"ja" = "メッセージを入力"
+
+[chat.configure_model]
+"zh-CN" = "请先在设置中添加并选择语言模型"
+"zh-TW" = "請先在設定中新增並選擇語言模型"
+"en" = "Add and select a language model in Settings first"
+"ja" = "設定で言語モデルを追加して選択してください"
+
+[chat.restore_failed]
+"zh-CN" = "会话恢复失败：%{error}"
+"zh-TW" = "對話還原失敗：%{error}"
+"en" = "Could not restore the conversation: %{error}"
+"ja" = "会話を復元できませんでした: %{error}"
+
+[chat.thinking]
+"zh-CN" = "正在思考"
+"zh-TW" = "正在思考"
+"en" = "Thinking"
+"ja" = "考えています"
+
+[chat.stopped]
+"zh-CN" = "已停止"
+"zh-TW" = "已停止"
+"en" = "Stopped"
+"ja" = "停止しました"
+
+[chat.interrupted]
+"zh-CN" = "回复已中断"
+"zh-TW" = "回覆已中斷"
+"en" = "Response interrupted"
+"ja" = "応答が中断されました"
+
+[chat.unconfigured]
+"zh-CN" = "未配置模型"
+"zh-TW" = "未設定模型"
+"en" = "No model configured"
+"ja" = "モデル未設定"
+
+[chat.start]
+"zh-CN" = "开始对话"
+"zh-TW" = "開始對話"
+"en" = "Start a conversation"
+"ja" = "会話を始める"
+
+[chat.generation_stopped]
+"zh-CN" = "已停止生成"
+"zh-TW" = "已停止生成"
+"en" = "Generation stopped"
+"ja" = "生成を停止しました"
+
+[chat.stream_ended]
+"zh-CN" = "模型流意外终止"
+"zh-TW" = "模型串流意外終止"
+"en" = "Model stream ended unexpectedly"
+"ja" = "モデルストリームが予期せず終了しました"
+
+[chat.task_ended]
+"zh-CN" = "模型任务异常终止：%{kind}"
+"zh-TW" = "模型工作異常終止：%{kind}"
+"en" = "Model task ended unexpectedly: %{kind}"
+"ja" = "モデルタスクが異常終了しました: %{kind}"
+
+[chat.reply_too_large]
+"zh-CN" = "回复超过会话上限"
+"zh-TW" = "回覆超過會話上限"
+"en" = "Response exceeded the conversation limit"
+"ja" = "応答が会話の上限を超えました"
+
+[chat.task_cancelled]
+"zh-CN" = "任务已取消"
+"zh-TW" = "工作已取消"
+"en" = "Task cancelled"
+"ja" = "タスクはキャンセルされました"
+
+[chat.task_panicked]
+"zh-CN" = "任务发生异常"
+"zh-TW" = "工作發生異常"
+"en" = "Task failed"
+"ja" = "タスクで異常が発生しました"
+
+[chat.task_unknown]
+"zh-CN" = "未知任务错误"
+"zh-TW" = "未知工作錯誤"
+"en" = "Unknown task error"
+"ja" = "不明なタスクエラー"
+
+[chat.error.total_timeout]
+"zh-CN" = "模型响应超过最长等待时间"
+"zh-TW" = "模型回應超過最長等待時間"
+"en" = "The model response exceeded the maximum wait time"
+"ja" = "モデルの応答が最大待機時間を超えました"
+
+[chat.error.first_content_timeout]
+"zh-CN" = "等待模型首段回复超时"
+"zh-TW" = "等待模型首段回覆逾時"
+"en" = "Timed out waiting for the model's first response"
+"ja" = "モデルの最初の応答を待機中にタイムアウトしました"
+
+[chat.error.idle_timeout]
+"zh-CN" = "模型回复流长时间没有新内容"
+"zh-TW" = "模型回覆串流長時間沒有新內容"
+"en" = "The model response stream was idle for too long"
+"ja" = "モデルの応答ストリームが長時間停止しました"
+
+[chat.error.empty_response]
+"zh-CN" = "模型没有返回可用正文"
+"zh-TW" = "模型沒有傳回可用正文"
+"en" = "The model returned no usable content"
+"ja" = "モデルから利用可能な本文が返されませんでした"
+
+[chat.error.stream_ended]
+"zh-CN" = "模型流意外结束"
+"zh-TW" = "模型串流意外結束"
+"en" = "The model stream ended unexpectedly"
+"ja" = "モデルストリームが予期せず終了しました"
+
+[chat.error.missing_api_key]
+"zh-CN" = "当前 Provider 缺少 API key"
+"zh-TW" = "目前 Provider 缺少 API key"
+"en" = "The current provider is missing an API key"
+"ja" = "現在の Provider に API key がありません"
+
+[chat.error.invalid_provider]
+"zh-CN" = "Provider 凭据或目标配置无效"
+"zh-TW" = "Provider 認證或目標設定無效"
+"en" = "The provider credentials or target configuration are invalid"
+"ja" = "Provider の認証情報または対象設定が無効です"
+
+[chat.error.http]
+"zh-CN" = "Provider 返回 HTTP %{status}"
+"zh-TW" = "Provider 傳回 HTTP %{status}"
+"en" = "Provider returned HTTP %{status}"
+"ja" = "Provider が HTTP %{status} を返しました"
+
+[chat.error.provider_mismatch]
+"zh-CN" = "模型与 Provider 不匹配"
+"zh-TW" = "模型與 Provider 不相符"
+"en" = "The model does not match the provider"
+"ja" = "モデルと Provider が一致しません"
+
+[chat.error.unsupported_request]
+"zh-CN" = "当前模型不支持该对话请求"
+"zh-TW" = "目前模型不支援此對話要求"
+"en" = "The current model does not support this chat request"
+"ja" = "現在のモデルはこの会話リクエストに対応していません"
+
+[chat.error.connection]
+"zh-CN" = "无法连接到模型服务"
+"zh-TW" = "無法連線到模型服務"
+"en" = "Could not connect to the model service"
+"ja" = "モデルサービスに接続できませんでした"
+
+[chat.error.invalid_response]
+"zh-CN" = "模型返回了无法解析的响应"
+"zh-TW" = "模型傳回了無法解析的回應"
+"en" = "The model returned an unreadable response"
+"ja" = "モデルから解析できない応答が返されました"
+
+[chat.error.request_failed]
+"zh-CN" = "模型请求失败"
+"zh-TW" = "模型要求失敗"
+"en" = "Model request failed"
+"ja" = "モデルリクエストに失敗しました"
+
+[chat.error.invalid_limits]
+"zh-CN" = "聊天限制必须至少容纳一轮对话和一个字节"
+"zh-TW" = "聊天限制必須至少容納一輪對話和一個位元組"
+"en" = "Chat limits must allow at least one turn and one byte"
+"ja" = "会話制限には少なくとも1ターンと1バイトが必要です"
+
+[chat.error.empty_message]
+"zh-CN" = "消息不能为空"
+"zh-TW" = "訊息不能為空"
+"en" = "Message cannot be empty"
+"ja" = "メッセージを空にすることはできません"
+
+[chat.error.busy]
+"zh-CN" = "当前回复尚未结束"
+"zh-TW" = "目前回覆尚未結束"
+"en" = "The current response is still in progress"
+"ja" = "現在の応答はまだ完了していません"
+
+[chat.error.message_too_large]
+"zh-CN" = "消息超过聊天上下文上限"
+"zh-TW" = "訊息超過聊天內容上限"
+"en" = "Message exceeds the chat context limit"
+"ja" = "メッセージが会話コンテキストの上限を超えています"
+
+[chat.error.stale_response]
+"zh-CN" = "流式响应已经过期"
+"zh-TW" = "串流回應已過期"
+"en" = "The streaming response has expired"
+"ja" = "ストリーミング応答は期限切れです"
+
+[chat.error.missing_response]
+"zh-CN" = "当前流式响应缺少助手消息"
+"zh-TW" = "目前串流回應缺少助理訊息"
+"en" = "The streaming response is missing an assistant message"
+"ja" = "ストリーミング応答にアシスタントメッセージがありません"
+
+[chat.error.unsupported_snapshot]
+"zh-CN" = "聊天会话快照版本不受支持"
+"zh-TW" = "不支援此聊天工作階段快照版本"
+"en" = "This chat session snapshot version is unsupported"
+"ja" = "この会話スナップショットのバージョンは対応していません"
+
+[chat.error.invalid_snapshot]
+"zh-CN" = "聊天会话快照结构无效"
+"zh-TW" = "聊天工作階段快照結構無效"
+"en" = "The chat session snapshot is invalid"
+"ja" = "会話スナップショットの構造が無効です"

@@ -1,0 +1,241 @@
+_version = 2
+
+[llm.language_models]
+"zh-CN" = "语言模型  %{count}"
+"zh-TW" = "語言模型  %{count}"
+"en" = "Language models  %{count}"
+"ja" = "言語モデル  %{count}"
+
+[llm.models]
+"zh-CN" = "语言模型"
+"zh-TW" = "語言模型"
+"en" = "Language models"
+"ja" = "言語モデル"
+
+[llm.add_model]
+"zh-CN" = "添加模型"
+"zh-TW" = "新增模型"
+"en" = "Add model"
+"ja" = "モデルを追加"
+
+[llm.none]
+"zh-CN" = "尚未添加语言模型"
+"zh-TW" = "尚未新增語言模型"
+"en" = "No language models added"
+"ja" = "言語モデルが追加されていません"
+
+[llm.no_model_selected]
+"zh-CN" = "未选择语言模型"
+"zh-TW" = "未選擇語言模型"
+"en" = "No language model selected"
+"ja" = "言語モデルが選択されていません"
+
+[llm.model_unset]
+"zh-CN" = "尚未指定模型"
+"zh-TW" = "尚未指定模型"
+"en" = "Model not specified"
+"ja" = "モデル未指定"
+
+[llm.selected]
+"zh-CN" = "已选择"
+"zh-TW" = "已選擇"
+"en" = "Selected"
+"ja" = "選択中"
+
+[llm.connection]
+"zh-CN" = "模型连接"
+"zh-TW" = "模型連線"
+"en" = "Model Connection"
+"ja" = "モデル接続"
+
+[llm.name]
+"zh-CN" = "名称"
+"zh-TW" = "名稱"
+"en" = "Name"
+"ja" = "名前"
+
+[llm.provider]
+"zh-CN" = "Provider"
+"zh-TW" = "Provider"
+"en" = "Provider"
+"ja" = "Provider"
+
+[llm.endpoint]
+"zh-CN" = "Endpoint"
+"zh-TW" = "Endpoint"
+"en" = "Endpoint"
+"ja" = "Endpoint"
+
+[llm.model_name_placeholder]
+"zh-CN" = "模型名称"
+"zh-TW" = "模型名稱"
+"en" = "Model name"
+"ja" = "モデル名"
+
+[llm.provider_model_id]
+"zh-CN" = "Provider 模型 ID"
+"zh-TW" = "Provider 模型 ID"
+"en" = "Provider model ID"
+"ja" = "Provider モデル ID"
+
+[llm.default_endpoint]
+"zh-CN" = "使用 Provider 默认 Endpoint"
+"zh-TW" = "使用 Provider 預設 Endpoint"
+"en" = "Use the Provider default endpoint"
+"ja" = "Provider のデフォルト Endpoint を使用"
+
+[llm.no_api_key]
+"zh-CN" = "无需 API key"
+"zh-TW" = "不需要 API key"
+"en" = "No API key required"
+"ja" = "API key は不要です"
+
+[llm.system_prompt]
+"zh-CN" = "系统提示词"
+"zh-TW" = "系統提示詞"
+"en" = "System Prompt"
+"ja" = "システムプロンプト"
+
+[llm.search_provider]
+"zh-CN" = "搜索 Provider"
+"zh-TW" = "搜尋 Provider"
+"en" = "Search providers"
+"ja" = "Provider を検索"
+
+[llm.model_id]
+"zh-CN" = "模型 ID"
+"zh-TW" = "模型 ID"
+"en" = "Model ID"
+"ja" = "モデル ID"
+
+[llm.api_key]
+"zh-CN" = "API key"
+"zh-TW" = "API key"
+"en" = "API key"
+"ja" = "API key"
+
+[llm.api_key_placeholder]
+"zh-CN" = "直接输入 API key（可选）"
+"zh-TW" = "直接輸入 API key（可選）"
+"en" = "Enter the API key directly (optional)"
+"ja" = "API key を直接入力（任意）"
+
+[llm.delete_model]
+"zh-CN" = "删除模型"
+"zh-TW" = "刪除模型"
+"en" = "Delete model"
+"ja" = "モデルを削除"
+
+[llm.draft_selected]
+"zh-CN" = "模型草稿已切换"
+"zh-TW" = "模型草稿已切換"
+"en" = "Model draft selected"
+"ja" = "モデル下書きを切り替えました"
+
+[llm.draft_added]
+"zh-CN" = "已添加模型草稿"
+"zh-TW" = "已新增模型草稿"
+"en" = "Model draft added"
+"ja" = "モデル下書きを追加しました"
+
+[llm.draft_deleted]
+"zh-CN" = "模型草稿已删除"
+"zh-TW" = "模型草稿已刪除"
+"en" = "Model draft deleted"
+"ja" = "モデル下書きを削除しました"
+
+[llm.saving]
+"zh-CN" = "正在保存对话配置"
+"zh-TW" = "正在儲存對話設定"
+"en" = "Saving conversation settings"
+"ja" = "会話設定を保存しています"
+
+[llm.saved]
+"zh-CN" = "对话配置已保存"
+"zh-TW" = "對話設定已儲存"
+"en" = "Conversation settings saved"
+"ja" = "会話設定を保存しました"
+
+[llm.save_replaced]
+"zh-CN" = "保存请求已被更新草稿替代"
+"zh-TW" = "儲存要求已被新的草稿取代"
+"en" = "Save was superseded by a newer draft"
+"ja" = "保存は新しい下書きに置き換えられました"
+
+[llm.save_failed]
+"zh-CN" = "对话配置保存失败：%{error}"
+"zh-TW" = "對話設定儲存失敗：%{error}"
+"en" = "Could not save conversation settings: %{error}"
+"ja" = "会話設定を保存できませんでした: %{error}"
+
+[llm.error.required]
+"zh-CN" = "%{field}不能为空"
+"zh-TW" = "%{field}不能為空"
+"en" = "%{field} cannot be empty"
+"ja" = "%{field}を空にすることはできません"
+
+[llm.error.max_models]
+"zh-CN" = "语言模型数量不能超过 %{max}"
+"zh-TW" = "語言模型數量不能超過 %{max}"
+"en" = "The number of language models cannot exceed %{max}"
+"ja" = "言語モデルは %{max} 件以内にしてください"
+
+[llm.error.system_prompt_too_long]
+"zh-CN" = "系统提示词不能超过 %{max} 个 UTF-8 字节"
+"zh-TW" = "系統提示詞不能超過 %{max} 個 UTF-8 位元組"
+"en" = "The system prompt cannot exceed %{max} UTF-8 bytes"
+"ja" = "システムプロンプトは UTF-8 で %{max} バイト以内にしてください"
+
+[llm.error.too_long]
+"zh-CN" = "%{field}不能超过 %{max} 个 UTF-8 字节"
+"zh-TW" = "%{field}不能超過 %{max} 個 UTF-8 位元組"
+"en" = "%{field} cannot exceed %{max} UTF-8 bytes"
+"ja" = "%{field} は UTF-8 で %{max} バイト以内にしてください"
+
+[llm.error.id_characters]
+"zh-CN" = "模型配置 ID 只能包含 ASCII 字母、数字、- 和 _"
+"zh-TW" = "模型設定 ID 只能包含 ASCII 字母、數字、- 和 _"
+"en" = "Model configuration IDs may contain only ASCII letters, digits, - and _"
+"ja" = "モデル設定 ID には ASCII の英字、数字、-、_ のみ使用できます"
+
+[llm.error.duplicate_id]
+"zh-CN" = "模型配置 ID 重复：%{id}"
+"zh-TW" = "模型設定 ID 重複：%{id}"
+"en" = "Duplicate model configuration ID: %{id}"
+"ja" = "モデル設定 ID が重複しています: %{id}"
+
+[llm.error.missing_selected]
+"zh-CN" = "当前模型不存在：%{id}"
+"zh-TW" = "目前模型不存在：%{id}"
+"en" = "Selected model does not exist: %{id}"
+"ja" = "選択したモデルが存在しません: %{id}"
+
+[llm.error.endpoint_unsupported]
+"zh-CN" = "%{provider} 在当前 genai 版本中不支持可靠的自定义 endpoint"
+"zh-TW" = "%{provider} 在目前 genai 版本中不支援可靠的自訂 endpoint"
+"en" = "%{provider} does not reliably support custom endpoints in this genai version"
+"ja" = "この genai バージョンでは %{provider} のカスタム endpoint を安定して使用できません"
+
+[llm.error.endpoint_invalid]
+"zh-CN" = "Endpoint 无效：%{error}"
+"zh-TW" = "Endpoint 無效：%{error}"
+"en" = "Invalid endpoint: %{error}"
+"ja" = "Endpoint が無効です: %{error}"
+
+[llm.error.endpoint_requirements]
+"zh-CN" = "Endpoint 必须包含主机，且不能包含凭据、查询参数或片段"
+"zh-TW" = "Endpoint 必須包含主機，且不能包含認證、查詢參數或片段"
+"en" = "Endpoint must include a host and cannot contain credentials, query parameters, or fragments"
+"ja" = "Endpoint にはホストが必要で、認証情報、クエリパラメータ、フラグメントは使用できません"
+
+[llm.error.endpoint_https]
+"zh-CN" = "远端 Endpoint 必须使用 HTTPS"
+"zh-TW" = "遠端 Endpoint 必須使用 HTTPS"
+"en" = "Remote endpoints must use HTTPS"
+"ja" = "リモート Endpoint には HTTPS が必要です"
+
+[llm.new_model]
+"zh-CN" = "新模型"
+"zh-TW" = "新模型"
+"en" = "New model"
+"ja" = "新しいモデル"

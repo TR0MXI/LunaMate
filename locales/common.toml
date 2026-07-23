@@ -1,0 +1,43 @@
+_version = 2
+
+[common.save]
+"zh-CN" = "保存"
+"zh-TW" = "儲存"
+"en" = "Save"
+"ja" = "保存"
+
+[common.saving]
+"zh-CN" = "保存中"
+"zh-TW" = "儲存中"
+"en" = "Saving"
+"ja" = "保存中"
+
+[common.apply]
+"zh-CN" = "应用"
+"zh-TW" = "套用"
+"en" = "Apply"
+"ja" = "適用"
+
+[common.delete]
+"zh-CN" = "删除"
+"zh-TW" = "刪除"
+"en" = "Delete"
+"ja" = "削除"
+
+[common.clear]
+"zh-CN" = "清空"
+"zh-TW" = "清除"
+"en" = "Clear"
+"ja" = "クリア"
+
+[common.status_separator]
+"zh-CN" = "；"
+"zh-TW" = "；"
+"en" = "; "
+"ja" = "；"
+
+[common.default]
+"zh-CN" = "默认"
+"zh-TW" = "預設"
+"en" = "Default"
+"ja" = "デフォルト"

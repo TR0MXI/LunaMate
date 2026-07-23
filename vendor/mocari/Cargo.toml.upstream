@@ -1,0 +1,36 @@
+[package]
+name = "mocari"
+version = "0.4.0"
+edition = "2024"
+description = "A pure Rust Live2D/Cubism-compatible runtime"
+license = "MIT"
+repository = "https://github.com/Eatgrapes/Mocari"
+readme = "README.md"
+keywords = ["live2d", "cubism", "runtime", "renderer", "wgpu"]
+categories = ["rendering", "game-development", "graphics"]
+exclude = ["assets/", ".github/"]
+
+[features]
+default = []
+wgpu = ["dep:wgpu"]
+
+[dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }
+png = { version = "0.18.1", features = ["zlib-rs"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2"
+wgpu = { version = "30.0.0", features = ["noop"], optional = true }
+
+[dev-dependencies]
+ab_glyph = "0.2.31"
+pollster = "0.4.0"
+winit = "0.30.13"
+
+[[example]]
+name = "show_model"
+required-features = ["wgpu"]
+
+[[test]]
+name = "wgpu_renderer"
+required-features = ["wgpu"]

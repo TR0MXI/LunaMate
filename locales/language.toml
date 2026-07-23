@@ -1,0 +1,25 @@
+_version = 2
+
+[language.zh_cn]
+"zh-CN" = "简体中文"
+"zh-TW" = "簡體中文"
+"en" = "Simplified Chinese"
+"ja" = "簡体字中国語"
+
+[language.zh_tw]
+"zh-CN" = "繁体中文"
+"zh-TW" = "繁體中文"
+"en" = "Traditional Chinese"
+"ja" = "繁体字中国語"
+
+[language.en]
+"zh-CN" = "英语"
+"zh-TW" = "英語"
+"en" = "English"
+"ja" = "英語"
+
+[language.ja]
+"zh-CN" = "日语"
+"zh-TW" = "日語"
+"en" = "Japanese"
+"ja" = "日本語"

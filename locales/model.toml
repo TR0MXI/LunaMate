@@ -1,0 +1,79 @@
+_version = 2
+
+[model.rescan]
+"zh-CN" = "重新扫描"
+"zh-TW" = "重新掃描"
+"en" = "Rescan"
+"ja" = "再スキャン"
+
+[model.scanning]
+"zh-CN" = "扫描中"
+"zh-TW" = "掃描中"
+"en" = "Scanning"
+"ja" = "スキャン中"
+
+[model.count]
+"zh-CN" = "模型  %{count}"
+"zh-TW" = "模型  %{count}"
+"en" = "Models  %{count}"
+"ja" = "モデル  %{count}"
+
+[model.none]
+"zh-CN" = "未发现模型"
+"zh-TW" = "找不到模型"
+"en" = "No models found"
+"ja" = "モデルが見つかりません"
+
+[model.outfit_count]
+"zh-CN" = "%{count} 套服装"
+"zh-TW" = "%{count} 套服裝"
+"en" = "%{count} outfits"
+"ja" = "衣装 %{count} 着"
+
+[model.outfits]
+"zh-CN" = "服装"
+"zh-TW" = "服裝"
+"en" = "Outfits"
+"ja" = "衣装"
+
+[model.default_outfit]
+"zh-CN" = "默认服装"
+"zh-TW" = "預設服裝"
+"en" = "Default outfit"
+"ja" = "デフォルト衣装"
+
+[model.no_outfits]
+"zh-CN" = "无可用服装"
+"zh-TW" = "沒有可用服裝"
+"en" = "No outfits available"
+"ja" = "利用可能な衣装はありません"
+
+[model.action_preview]
+"zh-CN" = "动作预览"
+"zh-TW" = "動作預覽"
+"en" = "Motion Preview"
+"ja" = "モーションプレビュー"
+
+[model.no_actions]
+"zh-CN" = "无可用动作"
+"zh-TW" = "沒有可用動作"
+"en" = "No motions available"
+"ja" = "利用可能なモーションはありません"
+
+[model.expression_preview]
+"zh-CN" = "表情预览"
+"zh-TW" = "表情預覽"
+"en" = "Expression Preview"
+"ja" = "表情プレビュー"
+
+[model.no_expressions]
+"zh-CN" = "无可用表情"
+"zh-TW" = "沒有可用表情"
+"en" = "No expressions available"
+"ja" = "利用可能な表情はありません"
+
+[model.preview_on_pet]
+"zh-CN" = "预览会直接显示在桌宠主窗口"
+"zh-TW" = "預覽會直接顯示在桌寵主視窗"
+"en" = "Previews are shown directly in the desktop pet window"
+"ja" = "プレビューはデスクトップペットのウィンドウに直接表示されます"
