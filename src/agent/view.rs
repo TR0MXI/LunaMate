@@ -39,6 +39,7 @@ pub(crate) struct AgentView {
     session: ChatSession,
     store: Arc<ChatSessionStore>,
     persist_revision: u64,
+    shutdown_revision: Option<u64>,
     last_persist: Instant,
     settings: SharedLlmSettings,
     backend: Arc<dyn ChatBackend>,
@@ -82,19 +83,19 @@ impl AgentView {
         );
         cx.on_release(|this, cx| {
             let shutdown = this.shutdown_snapshot();
-            cx.background_executor()
-                .spawn(async move {
-                    if let Err(error) = shutdown.persist() {
-                        log::error!("{}", t!("log.chat_close_save_failed", error = error));
-                    }
-                })
-                .detach();
+            Tokio::spawn(cx, async move {
+                if let Err(error) = shutdown.persist().await {
+                    log::error!("{}", t!("log.chat_close_save_failed", error = error));
+                }
+            })
+            .detach();
         })
         .detach();
 
         Self {
             session,
             persist_revision: store.latest_revision(),
+            shutdown_revision: None,
             store,
             last_persist: Instant::now(),
             settings,
@@ -128,11 +129,15 @@ impl AgentView {
     pub(crate) fn shutdown_snapshot(&mut self) -> AgentShutdown {
         self.cancel_network_request();
         self.session.interrupt_active_response();
-        self.persist_revision = self.persist_revision.saturating_add(1);
-        AgentShutdown::new(
-            self.store.clone(),
-            self.session.snapshot(self.persist_revision),
-        )
+        let revision = match self.shutdown_revision {
+            Some(revision) => revision,
+            None => {
+                self.persist_revision = self.persist_revision.saturating_add(1).max(1);
+                self.shutdown_revision = Some(self.persist_revision);
+                self.persist_revision
+            }
+        };
+        AgentShutdown::new(self.store.clone(), self.session.snapshot(revision))
     }
 
     fn submit_from_input(
@@ -154,6 +159,9 @@ impl AgentView {
 
     /// 通过 Agent façade 提交用户消息；调用方无需了解会话、存储或 Provider。
     pub(crate) fn send_message(&mut self, text: String, cx: &mut Context<Self>) -> bool {
+        if self.shutdown_revision.is_some() {
+            return false;
+        }
         self.settings = CONFIG.llm_settings();
         let Some(model) = self.settings.selected().cloned() else {
             self.status = Some(t!("chat.configure_model").to_string());
@@ -270,6 +278,9 @@ impl AgentView {
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
+        if self.shutdown_revision.is_some() {
+            return;
+        }
         self.cancel_network_request();
         if let Some(response_id) = self.session.active_response_id() {
             self.session.cancel_response(response_id);
@@ -280,6 +291,9 @@ impl AgentView {
     }
 
     fn clear(&mut self, cx: &mut Context<Self>) {
+        if self.shutdown_revision.is_some() {
+            return;
+        }
         self.cancel_network_request();
         self.session.clear();
         self.status = None;
@@ -312,13 +326,12 @@ impl AgentView {
         self.last_persist = Instant::now();
         let snapshot = self.session.snapshot(self.persist_revision);
         let store = self.store.clone();
-        cx.background_executor()
-            .spawn(async move {
-                if let Err(error) = store.save(snapshot) {
-                    log::error!("{}", t!("log.chat_save_failed", error = error));
-                }
-            })
-            .detach();
+        Tokio::spawn(cx, async move {
+            if let Err(error) = store.save(snapshot).await {
+                log::error!("{}", t!("log.chat_save_failed", error = error));
+            }
+        })
+        .detach();
     }
 
     fn render_message(message: &ChatMessage, palette: AgentPalette) -> AnyElement {

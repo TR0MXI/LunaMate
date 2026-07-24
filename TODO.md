@@ -160,6 +160,19 @@ GPUI 点击
 - [ ] 对话表情、点击表情和系统预览使用明确的优先级规则。
 - [ ] 日志不得记录完整对话或未脱敏的用户内容。
 
+## 数据与 Agent 记忆
+
+- [x] 使用 SurrealKV 作为生产嵌入式数据库，并仅在测试中启用 Mem 后端。
+- [x] 生产依赖只启用 SurrealKV 与 Rustls，不启用远程协议、原生 TLS、HTTP、脚本、ML
+  或 SurrealDB allocator。
+- [x] 通过 `database` façade 隐藏 SurrealDB 类型，并提供有界版本化文档存储。
+- [x] 建立 `agent_memory` 的中期、长期记忆字段及标量、标签和全文检索索引。
+- [x] 将 Agent 会话保存到固定的 `./data/lunamate.db`，不保留旧文件兼容路径。
+- [x] 串行提交会话 revision，拒绝迟到快照覆盖当前进程中的新状态。
+- [ ] 选定 embedding 模型和稳定维度后，为 `agent_memory.embedding` 创建向量索引。
+- [ ] 定义记忆提取、合并、过期、召回和删除策略，并限制每个 Agent 的记录数与总字节数。
+- [ ] 将检索结果转换为有界、可诊断且不包含凭据的 Provider 上下文。
+
 ## 平台输入与窗口行为
 
 - [ ] 将系统级透明区域点击穿透作为独立平台功能设计。

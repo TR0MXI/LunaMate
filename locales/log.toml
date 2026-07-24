@@ -6,6 +6,18 @@ _version = 2
 "en" = "Failed to apply logging settings; continuing with startup settings: %{error}"
 "ja" = "ログ設定の適用に失敗しました。起動時の設定を使用します: %{error}"
 
+[log.async_runtime_init_failed]
+"zh-CN" = "无法初始化异步运行时，应用未启动：%{error}"
+"zh-TW" = "無法初始化非同步執行環境，應用程式未啟動：%{error}"
+"en" = "Could not initialize the async runtime; the application was not started: %{error}"
+"ja" = "非同期ランタイムを初期化できないため、アプリケーションを起動しませんでした: %{error}"
+
+[log.database_init_failed]
+"zh-CN" = "嵌入式数据库初始化失败，存储功能已禁用：%{error}"
+"zh-TW" = "嵌入式資料庫初始化失敗，儲存功能已停用：%{error}"
+"en" = "The embedded database could not be initialized; persistence is disabled: %{error}"
+"ja" = "組み込みデータベースを初期化できないため、永続化を無効にしました: %{error}"
+
 [log.file_fallback]
 "zh-CN" = "无法写入日志文件，已降级为 stderr：%{reason}"
 "zh-TW" = "無法寫入日誌檔案，已改用 stderr：%{reason}"

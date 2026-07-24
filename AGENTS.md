@@ -23,7 +23,8 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 - 对话能力和 Provider 设置编辑器收口在 `src/agent`；应用与其他 UI 模块只通过
   `Agent`、`AgentView`、`AgentShutdown`、`AgentSettingsView`、`AgentSettingsDraft`
   和 `AgentSettingsEvent` 交互，不得构造或依赖内部会话、存储、快照或 Provider 配置类型。
-- 配置和 Agent 的原子文件替换统一通过 `src/database`，调用方负责转换各自的领域错误。
+- `src/database` 统一提供嵌入式数据库 façade 和配置文件原子替换；外部模块不得依赖
+  SurrealDB 类型，调用方负责转换各自的领域错误。
 - 模块按稳定职责拆分，跨模块使用明确的状态、事件或接口；避免循环依赖、隐藏全局状态
   和双向调用。公共接口默认最小可见性，不为规划中的能力预建抽象。
 
@@ -37,6 +38,8 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 - `vendor/mocari` 是第三方源码边界；保留 MIT `LICENSE`、原始 manifest 和
   `LUNAMATE.md`，本地修改限于必要的兼容或安全修复，并同步记录差异。升级相关依赖时
   检查 `[patch.crates-io]` 是否可以移除。
+- SurrealDB 生产依赖只启用 SurrealKV 与 Rustls，测试才启用 Mem；不要启用远程协议、
+  原生 TLS、HTTP、脚本、ML 或其 allocator，除非对应能力已有明确需求和验收。
 
 ## 工作区与 Git
 
@@ -77,8 +80,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 
 ## 配置与 LLM
 
-- 默认在用户配置目录保存 `config.toml`，兼容工作目录中的旧文件；相邻的
-  `chat-session.json` 单独保存有界会话。写入必须原子化并限制本地文件权限。
+- 默认在用户配置目录保存 `config.toml`，兼容工作目录中的旧文件；有界 Agent 会话仅保存到
+  工作目录下固定的 `./data/lunamate.db` 嵌入式数据库。配置写入必须原子化，数据库目录和
+  配置文件必须限制本地访问权限。
 - Provider、endpoint、模型和系统提示词来自配置；持久化 LunaMate 稳定 Provider ID，
   不直接序列化 `AdapterKind`，也不把用户输入当作环境变量名。
 - API key、access token 和 endpoint 凭据只从本地配置读取，并在 UI 中默认遮蔽；不得写入

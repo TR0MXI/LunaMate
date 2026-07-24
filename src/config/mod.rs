@@ -226,11 +226,6 @@ impl LunaConfig {
         self.llm.load_full()
     }
 
-    /// 返回与配置文件同目录的单会话快照路径。
-    pub(crate) fn chat_session_path(&self) -> PathBuf {
-        self.path.with_file_name("chat-session.json")
-    }
-
     /// 返回指定窗口最近一次观察到的位置。
     pub(crate) fn window_position(&self, window: ConfigWindow) -> Option<WindowPosition> {
         self.window_positions.lock().window_position(window)

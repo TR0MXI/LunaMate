@@ -294,6 +294,7 @@ impl InitializationCancellation for WorkerMailbox {
         self.state.lock().shutdown
     }
 
+    #[cfg(target_os = "linux")]
     fn wait_for_shutdown(&self, timeout: Duration) -> bool {
         let mut state = self.state.lock();
         if !state.shutdown {

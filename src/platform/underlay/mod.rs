@@ -1,5 +1,6 @@
 //! 隔离原生 underlay attachment，并向模型 worker 提供窄 WGPU surface 契约。
 
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 use gpui::Window;
@@ -37,6 +38,7 @@ pub(crate) struct UnderlaySize {
 /// 允许平台初始化等待 worker 关闭，但不暴露 mailbox 的其他状态。
 pub(crate) trait InitializationCancellation {
     fn is_shutdown(&self) -> bool;
+    #[cfg(target_os = "linux")]
     fn wait_for_shutdown(&self, timeout: Duration) -> bool;
 }
 

@@ -3,6 +3,8 @@
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
 };
 
 use gpui::{
@@ -12,11 +14,14 @@ use gpui::{
 };
 use gpui_component::Root;
 use gpui_platform::application;
+use gpui_tokio::Tokio;
+use parking_lot::Mutex;
 use rust_i18n::t;
 
 use crate::{
-    agent::Agent,
+    agent::{Agent, AgentShutdown},
     config::{CONFIG, ConfigWindow},
+    database::Database,
     model::ModelCatalog,
     platform::configure_desktop_pet_window,
     ui::{
@@ -26,6 +31,10 @@ use crate::{
 };
 
 const MODELS_DIRECTORY: &str = "models";
+const ASYNC_WORKER_THREADS: usize = 2;
+const FINAL_AGENT_SAVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+type FinalAgentSave = Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>;
 
 const APP_ASSETS: &[(&str, &[u8])] = &[
     ("icons/bot.svg", include_bytes!("../assets/icons/bot.svg")),
@@ -117,6 +126,15 @@ fn join_status(first: Option<String>, second: Option<String>) -> Option<String> 
     }
 }
 
+fn spawn_final_agent_save(
+    shutdown: AgentShutdown,
+    runtime: &tokio::runtime::Handle,
+    final_save: &FinalAgentSave,
+) {
+    let task = runtime.spawn(async move { shutdown.persist().await });
+    *final_save.lock() = Some(task);
+}
+
 /// 启动 LunaMate 应用并运行 GPUI 事件循环。
 ///
 pub(super) fn run() {
@@ -130,13 +148,33 @@ pub(super) fn run() {
             .map(|warning| t!("status.startup_warning", warning = warning).to_string()),
         Some(t!("status.scanning_models").to_string()),
     );
-    let agent = Agent::load();
+    let async_runtime = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(ASYNC_WORKER_THREADS)
+        .thread_name("lunamate-async")
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            log::error!(
+                "{}",
+                t!("log.async_runtime_init_failed", error = error.to_string())
+            );
+            return;
+        }
+    };
+    let database = async_runtime.block_on(Database::open_default());
+    let agent = async_runtime.block_on(Agent::load(database));
+    let async_handle = async_runtime.handle().clone();
+    let final_agent_save: FinalAgentSave = Arc::new(Mutex::new(None));
+    let final_agent_save_for_app = final_agent_save.clone();
+    let async_handle_for_app = async_handle.clone();
 
     application()
         .with_assets(AppAssets)
         .with_quit_mode(QuitMode::LastWindowClosed)
         .run(move |cx: &mut App| {
-            gpui_tokio::init(cx);
+            gpui_tokio::init_from_handle(cx, async_handle.clone());
             gpui_component::init(cx);
             let appearance = CONFIG.appearance();
             apply(&appearance, None, cx);
@@ -150,6 +188,8 @@ pub(super) fn run() {
                 desktop_pet_window_size(display_width, display_height, CONFIG.model_window_size());
             let window_size = size(px(window_width), px(window_height));
             let window_min_size = desktop_pet_window_min_size(display_width, display_height);
+            let final_agent_save = final_agent_save_for_app.clone();
+            let async_handle = async_handle_for_app.clone();
 
             let result = cx.open_window(
                 WindowOptions {
@@ -182,28 +222,38 @@ pub(super) fn run() {
                     let config_for_quit = config.downgrade();
                     let agent_view = agent.mount(window, cx);
                     let agent_for_quit = agent_view.downgrade();
+                    let agent_for_window_close = agent_view.downgrade();
+                    let final_agent_save_for_quit = final_agent_save.clone();
+                    let async_handle_for_quit = async_handle.clone();
                     cx.on_app_quit(move |cx| {
                         let config_tasks = config_for_quit
                             .update(cx, |config, cx| config.take_pending_write_tasks(cx))
                             .unwrap_or_default();
-                        let agent_shutdown = agent_for_quit
-                            .update(cx, |agent, _| agent.shutdown_snapshot())
-                            .ok();
-                        let background = cx.background_executor().clone();
-                        let persistence_task = background.spawn(async move {
-                            let agent_result = agent_shutdown
-                                .map(|shutdown| shutdown.persist())
-                                .transpose();
-                            (agent_result, CONFIG.persist_window_positions())
+                        if let Ok(shutdown) =
+                            agent_for_quit.update(cx, |agent, _| agent.shutdown_snapshot())
+                        {
+                            spawn_final_agent_save(
+                                shutdown,
+                                &async_handle_for_quit,
+                                &final_agent_save_for_quit,
+                            );
+                        }
+                        let persistence_task = Tokio::spawn(cx, async move {
+                            tokio::task::spawn_blocking(|| {
+                                CONFIG
+                                    .persist_window_positions()
+                                    .map_err(|error| error.to_string())
+                            })
+                            .await
+                            .unwrap_or_else(|error| Err(error.to_string()))
                         });
                         async move {
                             for task in config_tasks {
                                 task.await;
                             }
-                            let (agent_result, window_result) = persistence_task.await;
-                            if let Err(error) = agent_result {
-                                log::error!("{}", t!("log.exit_chat_save_failed", error = error));
-                            }
+                            let window_result = persistence_task
+                                .await
+                                .unwrap_or_else(|error| Err(error.to_string()));
                             if let Err(error) = window_result {
                                 log::error!(
                                     "{}",
@@ -227,7 +277,18 @@ pub(super) fn run() {
                         config.start_initial_scan(configured_model, cx);
                     });
                     let model_for_window_close = model_view.downgrade();
+                    let final_agent_save_for_window_close = final_agent_save.clone();
+                    let async_handle_for_window_close = async_handle.clone();
                     window.on_window_should_close(cx, move |_, cx| {
+                        if let Ok(shutdown) =
+                            agent_for_window_close.update(cx, |agent, _| agent.shutdown_snapshot())
+                        {
+                            spawn_final_agent_save(
+                                shutdown,
+                                &async_handle_for_window_close,
+                                &final_agent_save_for_window_close,
+                            );
+                        }
                         model_for_window_close
                             .update(cx, |model, cx| model.request_window_close(cx))
                             .unwrap_or(true)
@@ -253,4 +314,24 @@ pub(super) fn run() {
                 cx.quit();
             }
         });
+
+    let final_save = final_agent_save.lock().take();
+    if let Some(final_save) = final_save {
+        let result = async_runtime.block_on(async move {
+            let mut final_save = final_save;
+            match tokio::time::timeout(FINAL_AGENT_SAVE_TIMEOUT, &mut final_save).await {
+                Ok(result) => result.unwrap_or_else(|error| Err(error.to_string())),
+                Err(_) => {
+                    final_save.abort();
+                    Err(format!(
+                        "等待最终会话保存超过 {} 秒",
+                        FINAL_AGENT_SAVE_TIMEOUT.as_secs()
+                    ))
+                }
+            }
+        });
+        if let Err(error) = result {
+            log::error!("{}", t!("log.exit_chat_save_failed", error = error));
+        }
+    }
 }

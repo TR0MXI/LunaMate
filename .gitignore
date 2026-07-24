@@ -1,7 +1,7 @@
 /target
 /models
 /config.toml
-/chat-session.json
+/data
 /dev
 /profile
 /logs

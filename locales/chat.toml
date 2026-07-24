@@ -12,11 +12,11 @@ _version = 2
 "en" = "Add and select a language model in Settings first"
 "ja" = "設定で言語モデルを追加して選択してください"
 
-[chat.restore_failed]
-"zh-CN" = "会话恢复失败：%{error}"
-"zh-TW" = "對話還原失敗：%{error}"
-"en" = "Could not restore the conversation: %{error}"
-"ja" = "会話を復元できませんでした: %{error}"
+[chat.persistence_unavailable]
+"zh-CN" = "本次运行无法保存会话：%{error}"
+"zh-TW" = "本次執行無法儲存對話：%{error}"
+"en" = "Conversation persistence is unavailable for this run: %{error}"
+"ja" = "今回の実行では会話を保存できません: %{error}"
 
 [chat.thinking]
 "zh-CN" = "正在思考"

@@ -17,7 +17,7 @@ arc-swap = "1.9.2"
 toml_edit = "0.25.13"
 gpui_tokio = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
 futures = "0.3.33"
-tokio = { version = "1.53.0", features = ["time", "sync"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync"] }
 url = "2.5.8"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -29,6 +29,8 @@ mocari = { version = "0.4.0", path = "vendor/mocari", features = ["wgpu"] }
 gpui_wgpu = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
 log = "0.4.33"
 flexi_logger = { version = "0.31.9", features = ["async", "compress"] }
+# 生产构建仅包含本地 SurrealKV 和 Rustls，不引入远程协议、原生 TLS、脚本或 ML。
+surrealdb = { version = "3.2.3", default-features = false, features = ["kv-surrealkv"] }
 
 [patch.crates-io]
 # 上游 PR #14 修复了 2.0.1 中的 Rust future-incompatibility 警告。
@@ -42,7 +44,7 @@ cocoa = "0.26.0"
 objc = "0.2.7"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-wayland-client = { version = "0.31.14", features = ["system"] }
+wayland-client = { version = "0.31.15", features = ["system"] }
 wayland-protocols = { version = "0.32.13", features = ["client"] }
 
 [profile.release]
@@ -58,5 +60,7 @@ debug = true
 strip = "none"
 
 [dev-dependencies]
+# 内存引擎只在本 crate 的测试目标中启用，常规 build 不会统一该 feature。
+surrealdb = { version = "3.2.3", default-features = false, features = ["kv-mem"] }
 # 仅为无图形会话的 pipeline 单元测试启用同一份 WGPU 29 noop backend。
 wgpu = { version = "=29.0.4", features = ["noop"] }

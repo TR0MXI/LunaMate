@@ -15,7 +15,10 @@ use std::sync::Arc;
 use gpui::{App, AppContext, Entity, Window};
 use rust_i18n::t;
 
-use crate::config::{CONFIG, SharedLlmSettings};
+use crate::{
+    config::{CONFIG, SharedLlmSettings},
+    database::{Database, DatabaseError},
+};
 
 use session::{ChatSession, ChatSessionSnapshot};
 pub(crate) use settings::{AgentSettingsDraft, AgentSettingsEvent, AgentSettingsView};
@@ -31,17 +34,21 @@ pub(crate) struct Agent {
 }
 
 impl Agent {
-    /// 从全局配置读取 LLM 设置和会话路径，并在快照损坏时降级为空会话。
-    pub(crate) fn load() -> Self {
+    /// 从全局配置读取 LLM 设置，并从数据库恢复会话。
+    pub(crate) async fn load(database: Result<Arc<Database>, DatabaseError>) -> Self {
         let settings = CONFIG.llm_settings();
-        let session_path = CONFIG.chat_session_path();
-        let (session, store, initial_status) = match ChatSessionStore::load(session_path.clone()) {
-            Ok((session, store)) => (session, store, None),
-            Err(error) => (
-                ChatSession::default(),
-                ChatSessionStore::empty(session_path),
-                Some(t!("chat.restore_failed", error = error.to_string()).to_string()),
-            ),
+        let (session, store, initial_status) = match database {
+            Ok(database) => match ChatSessionStore::load(database).await {
+                Ok((session, store)) => (session, store, None),
+                Err(error) => Self::without_persistence(error.to_string()),
+            },
+            Err(error) => {
+                log::error!(
+                    "{}",
+                    t!("log.database_init_failed", error = error.to_string())
+                );
+                Self::without_persistence(error.to_string())
+            }
         };
         Self {
             settings,
@@ -49,6 +56,14 @@ impl Agent {
             store,
             initial_status,
         }
+    }
+
+    fn without_persistence(error: String) -> (ChatSession, Arc<ChatSessionStore>, Option<String>) {
+        (
+            ChatSession::default(),
+            ChatSessionStore::unavailable(),
+            Some(t!("chat.persistence_unavailable", error = error).to_string()),
+        )
     }
 
     /// 将已加载的 Agent 状态挂载为桌宠窗口中的视图实体。
@@ -75,9 +90,10 @@ impl AgentShutdown {
     }
 
     /// 在后台执行最终会话保存。
-    pub(crate) fn persist(self) -> Result<(), String> {
+    pub(crate) async fn persist(self) -> Result<(), String> {
         self.store
             .save(self.snapshot)
+            .await
             .map_err(|error| error.to_string())
     }
 }
