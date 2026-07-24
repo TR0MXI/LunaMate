@@ -1,0 +1,243 @@
+name: CI 与发布
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rust_targets: x86_64-unknown-linux-gnu
+            artifact: lunamate-linux-x86_64
+            archive: dist/lunamate-linux-x86_64.tar.gz
+            run_quality: true
+          - name: Windows x86_64
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
+            artifact: lunamate-windows-x86_64
+            archive: dist/lunamate-windows-x86_64.zip
+            run_quality: false
+          - name: macOS Universal
+            os: macos-14
+            target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            artifact: lunamate-macos-universal
+            archive: dist/lunamate-macos-universal.zip
+            run_quality: false
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: ${{ matrix.rust_targets }}
+
+      - name: 安装 Linux 原生依赖
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            clang \
+            cmake \
+            gettext-base \
+            libasound2-dev \
+            libfontconfig-dev \
+            libgit2-dev \
+            libglib2.0-dev \
+            libsqlite3-dev \
+            libssl-dev \
+            libstdc++-12-dev \
+            libva-dev \
+            libvulkan1 \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxkbcommon-x11-dev \
+            libzstd-dev \
+            lld \
+            llvm \
+            pkg-config
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
+
+      - name: 启用 sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+        with:
+          version: v0.16.0
+
+      - name: 恢复 Cargo 缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}
+          cache-on-failure: true
+          # 编译结果由 sccache 保存，避免两份大型缓存争用 GitHub 缓存配额。
+          cache-targets: false
+
+      - name: Cargo check
+        if: matrix.run_quality
+        run: cargo check --locked
+
+      - name: Clippy
+        if: matrix.run_quality
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: 检查格式
+        if: matrix.run_quality
+        run: cargo fmt --all -- --check
+
+      - name: 运行测试
+        if: matrix.run_quality
+        run: cargo test --locked
+
+      - name: 构建 Release 二进制
+        if: runner.os != 'macOS'
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: 构建 macOS Universal 二进制
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: 打包 Linux 产物
+        if: runner.os == 'Linux'
+        run: |
+          package="dist/lunamate-linux-x86_64"
+          mkdir -p "$package"
+          install -m 755 "target/${{ matrix.target }}/release/lunamate" "$package/lunamate"
+          install -m 644 README.md LICENSE "$package/"
+          tar -C dist -czf "${{ matrix.archive }}" lunamate-linux-x86_64
+
+      - name: 打包 Windows 产物
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $package = "dist/lunamate-windows-x86_64"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/lunamate.exe" "$package/LunaMate.exe"
+          Copy-Item README.md, LICENSE -Destination $package
+          Compress-Archive -Path $package -DestinationPath "${{ matrix.archive }}" -CompressionLevel Optimal
+
+      - name: 读取应用版本
+        if: runner.os == 'macOS'
+        id: package_metadata
+        run: |
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "lunamate") | .version')"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: 打包 macOS 应用
+        if: runner.os == 'macOS'
+        run: |
+          app="dist/LunaMate.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          lipo -create \
+            target/aarch64-apple-darwin/release/lunamate \
+            target/x86_64-apple-darwin/release/lunamate \
+            -output "$app/Contents/MacOS/LunaMate"
+          chmod 755 "$app/Contents/MacOS/LunaMate"
+          cp README.md LICENSE "$app/Contents/Resources/"
+          plutil -create xml1 "$app/Contents/Info.plist"
+          plutil -insert CFBundleDisplayName -string LunaMate "$app/Contents/Info.plist"
+          plutil -insert CFBundleExecutable -string LunaMate "$app/Contents/Info.plist"
+          plutil -insert CFBundleIdentifier -string io.github.tr0mxi.lunamate "$app/Contents/Info.plist"
+          plutil -insert CFBundleName -string LunaMate "$app/Contents/Info.plist"
+          plutil -insert CFBundlePackageType -string APPL "$app/Contents/Info.plist"
+          plutil -insert CFBundleShortVersionString -string "${{ steps.package_metadata.outputs.version }}" "$app/Contents/Info.plist"
+          plutil -insert CFBundleVersion -string "${{ github.run_number }}" "$app/Contents/Info.plist"
+          plutil -insert NSHighResolutionCapable -bool YES "$app/Contents/Info.plist"
+          codesign --force --deep --sign - "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "${{ matrix.archive }}"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  release:
+    name: 发布 GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 校验版本标签
+        run: |
+          version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "lunamate") | .version')"
+          expected_tag="v${version}"
+          if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+            echo "版本标签 $GITHUB_REF_NAME 与 Cargo.toml 中的版本 $version 不一致" >&2
+            exit 1
+          fi
+
+      - name: 下载三平台产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lunamate-*
+          path: release
+          merge-multiple: true
+
+      - name: 生成 SHA-256 校验文件
+        working-directory: release
+        run: sha256sum -- *.tar.gz *.zip > SHA256SUMS
+
+      - name: 创建或更新 GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            prerelease=()
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+              prerelease=(--prerelease)
+            fi
+            gh release create "$GITHUB_REF_NAME" release/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --generate-notes \
+              --title "LunaMate $GITHUB_REF_NAME" \
+              "${prerelease[@]}"
+          fi
