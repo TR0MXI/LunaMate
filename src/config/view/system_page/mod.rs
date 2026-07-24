@@ -44,6 +44,20 @@ impl ConfigView {
                 cx.listener(|this, _, _, cx| this.set_frame_rate(FrameRate::Fps120, cx)),
             ),
             frame_rate_button(
+                "frame-rate-display",
+                t!("system.follow_display").to_string(),
+                self.frame_rate == FrameRate::FollowDisplay,
+                palette,
+                cx.listener(|this, _, _, cx| this.set_frame_rate(FrameRate::FollowDisplay, cx)),
+            ),
+            frame_rate_button(
+                "frame-rate-custom",
+                t!("system.custom").to_string(),
+                matches!(self.frame_rate, FrameRate::Custom(_)),
+                palette,
+                cx.listener(|this, _, window, cx| this.select_custom_frame_rate(window, cx)),
+            ),
+            frame_rate_button(
                 "frame-rate-unlimited",
                 t!("system.unlimited").to_string(),
                 self.frame_rate == FrameRate::Unlimited,
@@ -159,6 +173,7 @@ impl ConfigView {
         .collect::<Vec<_>>();
         let accent_input = self.custom_accent_input.clone();
         let background_input = self.custom_background_input.clone();
+        let custom_frame_rate_input = self.custom_frame_rate_input.clone();
 
         div()
             .size_full()
@@ -194,6 +209,20 @@ impl ConfigView {
                                         .children(frame_rate_buttons),
                                 ),
                             )
+                            .when(matches!(self.frame_rate, FrameRate::Custom(_)), |this| {
+                                this.child(
+                                    setting_row(
+                                        t!("system.custom_frame_rate").to_string(),
+                                        palette,
+                                    )
+                                    .when_some(
+                                        custom_frame_rate_input,
+                                        |this, input| {
+                                            this.child(compact_number_input(&input, palette))
+                                        },
+                                    ),
+                                )
+                            })
                             .child(
                                 setting_row(t!("system.model_window_size").to_string(), palette)
                                     .child(
@@ -470,7 +499,7 @@ impl ConfigView {
                             .child(
                                 setting_row(t!("debug.rotation_size").to_string(), palette)
                                     .when_some(self.log_max_size_input.clone(), |this, input| {
-                                        this.child(compact_logging_number_input(&input, palette))
+                                        this.child(compact_number_input(&input, palette))
                                     }),
                             )
                             .child(
@@ -490,12 +519,10 @@ impl ConfigView {
                                 ),
                             )
                             .child(
-                                setting_row(t!("debug.keep_files").to_string(), palette).when_some(
-                                    self.log_keep_files_input.clone(),
-                                    |this, input| {
-                                        this.child(compact_logging_number_input(&input, palette))
-                                    },
-                                ),
+                                setting_row(t!("debug.keep_files").to_string(), palette)
+                                    .when_some(self.log_keep_files_input.clone(), |this, input| {
+                                        this.child(compact_number_input(&input, palette))
+                                    }),
                             ),
                     ),
             )
@@ -503,7 +530,7 @@ impl ConfigView {
     }
 }
 
-fn compact_logging_number_input(input: &Entity<InputState>, palette: UiPalette) -> gpui::Div {
+fn compact_number_input(input: &Entity<InputState>, palette: UiPalette) -> gpui::Div {
     div()
         .relative()
         .w(px(120.0))

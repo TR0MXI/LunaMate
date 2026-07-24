@@ -24,6 +24,24 @@ _version = 2
 "en" = "Model frame rate"
 "ja" = "モデルのフレームレート"
 
+[system.follow_display]
+"zh-CN" = "跟随显示器"
+"zh-TW" = "跟隨顯示器"
+"en" = "Follow display"
+"ja" = "ディスプレイに追従"
+
+[system.custom]
+"zh-CN" = "自定义"
+"zh-TW" = "自訂"
+"en" = "Custom"
+"ja" = "カスタム"
+
+[system.custom_frame_rate]
+"zh-CN" = "自定义帧率"
+"zh-TW" = "自訂幀率"
+"en" = "Custom frame rate"
+"ja" = "カスタムフレームレート"
+
 [system.interaction]
 "zh-CN" = "交互"
 "zh-TW" = "互動"

@@ -567,6 +567,14 @@ mod tests {
                 "system.eye_tracking"
             );
             assert_ne!(
+                rust_i18n::t!("system.follow_display", locale = locale),
+                "system.follow_display"
+            );
+            assert_ne!(
+                rust_i18n::t!("system.custom_frame_rate", locale = locale),
+                "system.custom_frame_rate"
+            );
+            assert_ne!(
                 rust_i18n::t!("llm.add_model", locale = locale),
                 "llm.add_model"
             );

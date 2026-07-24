@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock,
-        atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering},
     },
 };
 
@@ -35,11 +35,14 @@ use document::{
 pub(crate) use llm::{LLM_PROVIDERS, LlmModelConfig, LlmProvider, LlmSettings, SharedLlmSettings};
 use llm::{parse_llm_settings, write_llm_settings};
 pub(crate) use model_catalog::ModelCatalog;
-use types::UNLIMITED_FRAME_RATE_NAME;
+use types::{
+    CUSTOM_FRAME_RATE_KEY, CUSTOM_FRAME_RATE_NAME, FOLLOW_DISPLAY_FRAME_RATE_NAME,
+    UNLIMITED_FRAME_RATE_NAME,
+};
 pub(crate) use types::{
-    ConfigWindow, ConfigWriteError, FrameRate, LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES,
-    LOGGING_MIN_FILE_SIZE_MB, LOGGING_MIN_KEEP_FILES, LogLevel, LoggingSettings, ModelWindowSize,
-    WindowPosition,
+    CUSTOM_FRAME_RATE_MAX, CUSTOM_FRAME_RATE_MIN, ConfigWindow, ConfigWriteError, FrameRate,
+    LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES, LOGGING_MIN_FILE_SIZE_MB,
+    LOGGING_MIN_KEEP_FILES, LogLevel, LoggingSettings, ModelWindowSize, WindowPosition,
 };
 pub(crate) use view::{ConfigEvent, ConfigView, ConfigWindowView};
 
@@ -110,7 +113,7 @@ impl Default for LoadedConfig {
 /// 保存 LunaMate 的全部运行时配置，并提供无锁读取与受控持久化。
 pub(crate) struct LunaConfig {
     path: PathBuf,
-    frame_rate: AtomicU16,
+    frame_rate: AtomicU32,
     model_window_size: AtomicU16,
     remember_window_positions: AtomicBool,
     eye_tracking: AtomicBool,
@@ -151,7 +154,7 @@ impl LunaConfig {
 
         Self {
             path,
-            frame_rate: AtomicU16::new(loaded.frame_rate.atomic_value()),
+            frame_rate: AtomicU32::new(loaded.frame_rate.atomic_value()),
             model_window_size: AtomicU16::new(loaded.model_window_size.atomic_value()),
             remember_window_positions: AtomicBool::new(loaded.remember_window_positions),
             eye_tracking: AtomicBool::new(loaded.eye_tracking),
@@ -271,9 +274,22 @@ impl LunaConfig {
             },
             |document| {
                 ensure_table_like(&mut document["render"]);
-                let value = match frame_rate.limit() {
-                    Some(fps) => Value::from(i64::from(fps)),
-                    None => Value::from(UNLIMITED_FRAME_RATE_NAME),
+                if !matches!(frame_rate, FrameRate::Custom(_)) {
+                    remove_key(document, "render", CUSTOM_FRAME_RATE_KEY);
+                }
+                let value = match frame_rate {
+                    FrameRate::Fps30 => Value::from(30_i64),
+                    FrameRate::Fps60 => Value::from(60_i64),
+                    FrameRate::Fps120 => Value::from(120_i64),
+                    FrameRate::FollowDisplay => Value::from(FOLLOW_DISPLAY_FRAME_RATE_NAME),
+                    FrameRate::Custom(fps) => {
+                        set_item_value(
+                            &mut document["render"][CUSTOM_FRAME_RATE_KEY],
+                            Value::from(i64::from(fps.get())),
+                        );
+                        Value::from(CUSTOM_FRAME_RATE_NAME)
+                    }
+                    FrameRate::Unlimited => Value::from(UNLIMITED_FRAME_RATE_NAME),
                 };
                 set_item_value(&mut document["render"]["frame_rate"], value);
             },

@@ -133,6 +133,7 @@ impl FrameTier {
 /// 跟踪绝对帧时刻与当前帧率档位，并通过滞回避免超预算边界附近频繁切换。
 pub(crate) struct FramePacer {
     target_fps: Option<u16>,
+    allow_degradation: bool,
     tiers: [FrameTier; MAX_FRAME_TIERS],
     tier_count: usize,
     current_tier: usize,
@@ -142,13 +143,14 @@ pub(crate) struct FramePacer {
 }
 
 impl FramePacer {
-    /// 根据可选目标帧率预计算最多三个由快到慢的唯一档位。
+    /// 根据可选目标帧率和降档策略预计算由快到慢的唯一档位。
     ///
-    /// `None` 表示无限制模式，不设置帧预算，也不触发超预算降档。
-    pub(crate) fn new(target_fps: Option<u16>) -> Self {
+    /// `None` 表示没有软件帧预算；严格目标只保留用户指定的唯一档位。
+    pub(crate) fn new(target_fps: Option<u16>, allow_degradation: bool) -> Self {
         let Some(target_fps) = target_fps else {
             return Self {
                 target_fps: None,
+                allow_degradation,
                 tiers: [FrameTier::new(1); MAX_FRAME_TIERS],
                 tier_count: 0,
                 current_tier: 0,
@@ -159,11 +161,15 @@ impl FramePacer {
         };
         let middle_floor = MIDDLE_TIER_FLOOR_FPS.min(target_fps);
         let low_floor = LOW_TIER_FLOOR_FPS.min(target_fps);
-        let candidates = [
-            target_fps,
-            rounded_div(target_fps, 2).max(middle_floor),
-            rounded_div(target_fps, 4).max(low_floor),
-        ];
+        let candidates = if allow_degradation {
+            [
+                target_fps,
+                rounded_div(target_fps, 2).max(middle_floor),
+                rounded_div(target_fps, 4).max(low_floor),
+            ]
+        } else {
+            [target_fps; MAX_FRAME_TIERS]
+        };
         let mut tiers = [FrameTier::new(target_fps); MAX_FRAME_TIERS];
         let mut tier_count = 0;
         for fps in candidates {
@@ -176,6 +182,7 @@ impl FramePacer {
 
         Self {
             target_fps: Some(target_fps),
+            allow_degradation,
             tiers,
             tier_count,
             current_tier: 0,
@@ -198,9 +205,9 @@ impl FramePacer {
     }
 
     /// 在 UI 热更新帧率后重建调度档位；目标未变化时保留当前滞回状态。
-    pub(crate) fn set_target_fps(&mut self, target_fps: Option<u16>) {
-        if self.target_fps != target_fps {
-            *self = Self::new(target_fps);
+    pub(crate) fn set_target_fps(&mut self, target_fps: Option<u16>, allow_degradation: bool) {
+        if self.target_fps != target_fps || self.allow_degradation != allow_degradation {
+            *self = Self::new(target_fps, allow_degradation);
         }
     }
 
@@ -217,7 +224,7 @@ impl FramePacer {
         };
         let cadence_anchor = self.next_frame_at.take().unwrap_or(frame_started);
         let cadence_deadline = cadence_anchor + current.interval;
-        let earliest_deadline = if elapsed >= current.interval {
+        let earliest_deadline = if self.allow_degradation && elapsed >= current.interval {
             completed_at + MIN_OVER_BUDGET_REST
         } else {
             completed_at
@@ -238,6 +245,11 @@ impl FramePacer {
         let Some(current) = self.current() else {
             return;
         };
+        if !self.allow_degradation {
+            self.consecutive_overruns = 0;
+            self.consecutive_recovery_frames = 0;
+            return;
+        }
         if elapsed >= current.interval {
             self.consecutive_overruns = self.consecutive_overruns.saturating_add(1);
             self.consecutive_recovery_frames = 0;
@@ -301,7 +313,8 @@ impl FramePacer {
 }
 
 fn rounded_div(value: u16, divisor: u16) -> u16 {
-    value.saturating_add(divisor / 2) / divisor
+    let rounded = (u32::from(value) + u32::from(divisor / 2)) / u32::from(divisor);
+    u16::try_from(rounded).unwrap_or(u16::MAX)
 }
 
 /// UI 侧持有的合并唤醒端；已有未消费信号时重复唤醒不会扩张队列。
@@ -433,21 +446,28 @@ mod tests {
 
     #[test]
     fn standard_rates_precompute_expected_degradation_tiers() {
-        assert_eq!(FramePacer::new(Some(30)).tier_fps(), vec![30, 15, 10]);
-        assert_eq!(FramePacer::new(Some(60)).tier_fps(), vec![60, 30, 15]);
-        assert_eq!(FramePacer::new(Some(120)).tier_fps(), vec![120, 60, 30]);
+        assert_eq!(FramePacer::new(Some(30), true).tier_fps(), vec![30, 15, 10]);
+        assert_eq!(FramePacer::new(Some(60), true).tier_fps(), vec![60, 30, 15]);
+        assert_eq!(
+            FramePacer::new(Some(120), true).tier_fps(),
+            vec![120, 60, 30]
+        );
     }
 
     #[test]
-    fn custom_rates_precompute_and_deduplicate_tiers() {
-        assert_eq!(FramePacer::new(Some(75)).tier_fps(), vec![75, 38, 19]);
-        assert_eq!(FramePacer::new(Some(24)).tier_fps(), vec![24, 15, 10]);
-        assert_eq!(FramePacer::new(Some(10)).tier_fps(), vec![10]);
+    fn arbitrary_adaptive_targets_precompute_and_deduplicate_tiers() {
+        assert_eq!(FramePacer::new(Some(75), true).tier_fps(), vec![75, 38, 19]);
+        assert_eq!(FramePacer::new(Some(24), true).tier_fps(), vec![24, 15, 10]);
+        assert_eq!(FramePacer::new(Some(10), true).tier_fps(), vec![10]);
+        assert_eq!(
+            FramePacer::new(Some(u16::MAX), true).tier_fps(),
+            vec![u16::MAX, 32_768, 16_384]
+        );
     }
 
     #[test]
     fn unlimited_rate_skips_budget_delays_and_degradation() {
-        let mut pacer = FramePacer::new(None);
+        let mut pacer = FramePacer::new(None, false);
         let mut now = Instant::now();
 
         assert_eq!(pacer.delay_until_next_frame(now), Duration::ZERO);
@@ -466,7 +486,7 @@ mod tests {
 
     #[test]
     fn repeated_overruns_downshift_one_tier_at_a_time() {
-        let mut pacer = FramePacer::new(Some(60));
+        let mut pacer = FramePacer::new(Some(60), true);
         let mut now = Instant::now();
         let over_budget = Duration::from_millis(20);
 
@@ -504,8 +524,56 @@ mod tests {
     }
 
     #[test]
+    fn strict_custom_rate_never_degrades_to_half_the_target() {
+        let mut pacer = FramePacer::new(Some(240), false);
+        let mut now = Instant::now();
+        assert_eq!(pacer.tier_fps(), vec![240]);
+
+        for _ in 0..OVERRUNS_BEFORE_DOWNSHIFT * 3 {
+            run_frame(
+                &mut pacer,
+                &mut now,
+                Duration::from_millis(5),
+                Duration::ZERO,
+                Duration::ZERO,
+            );
+            assert_eq!(pacer.current_fps(), 240);
+            assert_eq!(pacer.delay_until_next_frame(now), Duration::ZERO);
+        }
+    }
+
+    #[test]
+    fn strict_custom_rate_can_hold_a_target_above_120() {
+        let mut pacer = FramePacer::new(Some(240), false);
+        let mut now = Instant::now();
+        let first_frame = run_frame(
+            &mut pacer,
+            &mut now,
+            Duration::from_millis(1),
+            Duration::from_micros(500),
+            Duration::from_micros(250),
+        );
+        let mut last_frame = first_frame;
+        for _ in 0..240 {
+            last_frame = run_frame(
+                &mut pacer,
+                &mut now,
+                Duration::from_millis(1),
+                Duration::from_micros(500),
+                Duration::from_micros(250),
+            );
+        }
+
+        let measured = 240.0 / last_frame.duration_since(first_frame).as_secs_f64();
+        assert!(
+            (measured - 240.0).abs() < 0.01,
+            "严格自定义节拍下的实际测量值为 {measured}"
+        );
+    }
+
+    #[test]
     fn sustained_headroom_recovers_without_oscillating() {
-        let mut pacer = FramePacer::new(Some(60));
+        let mut pacer = FramePacer::new(Some(60), true);
         let mut now = Instant::now();
         for _ in 0..OVERRUNS_BEFORE_DOWNSHIFT {
             run_frame(
@@ -540,7 +608,7 @@ mod tests {
 
     #[test]
     fn idle_reset_restores_configured_tier() {
-        let mut pacer = FramePacer::new(Some(120));
+        let mut pacer = FramePacer::new(Some(120), true);
         let mut now = Instant::now();
         for _ in 0..OVERRUNS_BEFORE_DOWNSHIFT {
             run_frame(
@@ -563,29 +631,49 @@ mod tests {
 
     #[test]
     fn changed_target_rebuilds_tiers_immediately() {
-        let mut pacer = FramePacer::new(Some(30));
-        pacer.set_target_fps(Some(60));
+        let mut pacer = FramePacer::new(Some(30), true);
+        pacer.set_target_fps(Some(60), true);
 
         assert_eq!(pacer.tier_fps(), vec![60, 30, 15]);
         assert_eq!(pacer.current_fps(), 60);
     }
 
     #[test]
+    fn changing_to_strict_pacing_rebuilds_the_same_numeric_target() {
+        let mut pacer = FramePacer::new(Some(240), true);
+        let mut now = Instant::now();
+        for _ in 0..OVERRUNS_BEFORE_DOWNSHIFT {
+            run_frame(
+                &mut pacer,
+                &mut now,
+                Duration::from_millis(5),
+                Duration::ZERO,
+                Duration::ZERO,
+            );
+        }
+        assert_eq!(pacer.current_fps(), 120);
+
+        pacer.set_target_fps(Some(240), false);
+        assert_eq!(pacer.current_fps(), 240);
+        assert_eq!(pacer.tier_fps(), vec![240]);
+    }
+
+    #[test]
     fn changing_to_and_from_unlimited_rebuilds_scheduler() {
-        let mut pacer = FramePacer::new(Some(60));
+        let mut pacer = FramePacer::new(Some(60), true);
         let now = Instant::now();
-        pacer.set_target_fps(None);
+        pacer.set_target_fps(None, false);
         assert_eq!(pacer.delay_until_next_frame(now), Duration::ZERO);
         assert!(pacer.tier_fps().is_empty());
 
-        pacer.set_target_fps(Some(30));
+        pacer.set_target_fps(Some(30), true);
         assert_eq!(pacer.tier_fps(), vec![30, 15, 10]);
         assert_eq!(pacer.current_fps(), 30);
     }
 
     #[test]
     fn absolute_deadlines_prevent_timer_overshoot_from_accumulating() {
-        let mut pacer = FramePacer::new(Some(120));
+        let mut pacer = FramePacer::new(Some(120), true);
         let mut now = Instant::now();
         let render_time = Duration::from_millis(2);
         let wake_overshoot = Duration::from_millis(1);
@@ -605,7 +693,7 @@ mod tests {
 
     #[test]
     fn postponed_frame_is_honored_even_without_a_rate_limit() {
-        let mut pacer = FramePacer::new(None);
+        let mut pacer = FramePacer::new(None, false);
         let now = Instant::now();
         let retry_delay = Duration::from_millis(16);
         pacer.postpone_next_frame(now, retry_delay);

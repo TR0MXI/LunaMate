@@ -256,11 +256,118 @@ custom_background = "#f8fafc"
 }
 
 #[test]
-fn custom_frame_rates_are_rejected() {
+fn custom_frame_rates_accept_every_positive_u16_and_preserve_their_mode() {
     assert!(matches!(FrameRate::try_from(30), Ok(FrameRate::Fps30)));
     assert!(matches!(FrameRate::try_from(60), Ok(FrameRate::Fps60)));
     assert!(matches!(FrameRate::try_from(120), Ok(FrameRate::Fps120)));
-    assert!(FrameRate::try_from(75).is_err());
+    assert_eq!(
+        FrameRate::try_from(75).expect("正整数应当可以作为自定义帧率"),
+        FrameRate::custom(75).expect("测试帧率必须有效")
+    );
+    assert!(matches!(FrameRate::custom(60), Ok(FrameRate::Custom(_))));
+    assert!(FrameRate::custom(u16::MAX).is_ok());
+    assert!(FrameRate::custom(0).is_err());
+    assert!(FrameRate::try_from(0).is_err());
+}
+
+#[test]
+fn frame_rate_atomic_encoding_preserves_non_numeric_modes() {
+    let custom = FrameRate::custom(60).expect("测试帧率必须有效");
+    for frame_rate in [custom, FrameRate::FollowDisplay, FrameRate::Unlimited] {
+        assert_eq!(
+            FrameRate::from_atomic_value(frame_rate.atomic_value()),
+            frame_rate
+        );
+    }
+}
+
+#[test]
+fn custom_frame_rate_round_trips_with_an_explicit_mode_marker() {
+    let directory = TestDirectory::new();
+    directory.write(
+        r#"[render]
+frame_rate = "custom"
+custom_frame_rate = 240
+"#,
+    );
+    let config = LunaConfig::load_from(directory.config_path());
+    assert_eq!(
+        config.frame_rate(),
+        FrameRate::custom(240).expect("测试帧率必须有效")
+    );
+
+    config
+        .set_frame_rate(FrameRate::custom(360).expect("测试帧率必须有效"))
+        .expect("自定义帧率应当可以持久化");
+
+    let reloaded = LunaConfig::load_from(directory.config_path());
+    assert!(matches!(reloaded.frame_rate(), FrameRate::Custom(fps) if fps.get() == 360));
+    let saved = fs::read_to_string(directory.config_path()).expect("帧率配置应当可以读取");
+    assert!(saved.contains("frame_rate = \"custom\""));
+    assert!(saved.contains("custom_frame_rate = 360"));
+
+    config
+        .set_frame_rate(FrameRate::FollowDisplay)
+        .expect("离开自定义档位时应当可以保存新模式");
+    let saved = fs::read_to_string(directory.config_path()).expect("帧率配置应当可以读取");
+    assert!(saved.contains("frame_rate = \"display\""));
+    assert!(!saved.contains("custom_frame_rate"));
+}
+
+#[test]
+fn invalid_custom_frame_rate_payloads_fall_back_to_default() {
+    for source in [
+        "[render]\nframe_rate = \"custom\"\n",
+        "[render]\nframe_rate = \"custom\"\ncustom_frame_rate = 0\n",
+        "[render]\nframe_rate = \"custom\"\ncustom_frame_rate = 65536\n",
+        "[render]\nframe_rate = \"custom\"\ncustom_frame_rate = \"60\"\n",
+    ] {
+        let directory = TestDirectory::new();
+        directory.write(source);
+        let config = LunaConfig::load_from(directory.config_path());
+
+        assert_eq!(config.frame_rate(), FrameRate::Fps30);
+        assert!(config.startup_warning().is_some());
+    }
+}
+
+#[test]
+fn legacy_integer_custom_frame_rate_loads_as_custom_mode() {
+    let directory = TestDirectory::new();
+    directory.write(
+        r#"[render]
+frame_rate = 75
+"#,
+    );
+
+    assert_eq!(
+        LunaConfig::load_from(directory.config_path()).frame_rate(),
+        FrameRate::custom(75).expect("测试帧率必须有效")
+    );
+}
+
+#[test]
+fn follow_display_frame_rate_loads_and_persists_as_named_mode() {
+    let directory = TestDirectory::new();
+    directory.write(
+        r#"[render]
+frame_rate = "display"
+"#,
+    );
+    let config = LunaConfig::load_from(directory.config_path());
+    assert_eq!(config.frame_rate(), FrameRate::FollowDisplay);
+
+    config
+        .set_frame_rate(FrameRate::Fps60)
+        .expect("固定帧率应当可以覆盖跟随显示器模式");
+    config
+        .set_frame_rate(FrameRate::FollowDisplay)
+        .expect("跟随显示器模式应当可以持久化");
+
+    let reloaded = LunaConfig::load_from(directory.config_path());
+    assert_eq!(reloaded.frame_rate(), FrameRate::FollowDisplay);
+    let saved = fs::read_to_string(directory.config_path()).expect("帧率配置应当可以读取");
+    assert!(saved.contains("frame_rate = \"display\""));
 }
 
 #[test]
@@ -292,7 +399,7 @@ fn invalid_fields_fall_back_without_rejecting_valid_fields() {
     let directory = TestDirectory::new();
     directory.write(
         r#"[render]
-frame_rate = 500
+frame_rate = 0
 
 [window]
 remember_position = false

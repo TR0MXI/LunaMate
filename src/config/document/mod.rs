@@ -161,7 +161,7 @@ fn parse_document(document: &DocumentMut) -> (LoadedConfig, Option<String>) {
     let mut warnings = Vec::new();
 
     if let Some(item) = nested_item(document, "render", "frame_rate") {
-        loaded.frame_rate = match parse_frame_rate(item) {
+        loaded.frame_rate = match parse_frame_rate(document, item) {
             Some(frame_rate) => frame_rate,
             None => {
                 warnings.push(format!(
@@ -232,9 +232,17 @@ fn parse_document(document: &DocumentMut) -> (LoadedConfig, Option<String>) {
     (loaded, warning)
 }
 
-fn parse_frame_rate(item: &Item) -> Option<FrameRate> {
-    if item.as_str() == Some(super::UNLIMITED_FRAME_RATE_NAME) {
-        return Some(FrameRate::Unlimited);
+fn parse_frame_rate(document: &DocumentMut, item: &Item) -> Option<FrameRate> {
+    match item.as_str() {
+        Some(super::UNLIMITED_FRAME_RATE_NAME) => return Some(FrameRate::Unlimited),
+        Some(super::FOLLOW_DISPLAY_FRAME_RATE_NAME) => return Some(FrameRate::FollowDisplay),
+        Some(super::CUSTOM_FRAME_RATE_NAME) => {
+            return nested_item(document, "render", super::CUSTOM_FRAME_RATE_KEY)
+                .and_then(Item::as_integer)
+                .and_then(|fps| u16::try_from(fps).ok())
+                .and_then(|fps| FrameRate::custom(fps).ok());
+        }
+        Some(_) | None => {}
     }
     item.as_integer()
         .and_then(|fps| u16::try_from(fps).ok())

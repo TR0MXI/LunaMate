@@ -6,7 +6,10 @@ mod render;
 mod system_page;
 mod window;
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use gpui::{AppContext, Context, Entity, EventEmitter, Subscription, Task, Window};
 use gpui_component::input::{InputEvent, InputState, MaskPattern};
@@ -18,11 +21,13 @@ use crate::{
 };
 
 use super::{
-    CONFIG, ConfigWriteError, FrameRate, LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES,
-    LOGGING_MIN_FILE_SIZE_MB, LOGGING_MIN_KEEP_FILES, LoggingSettings, ModelCatalog,
-    ModelWindowSize, SharedLlmSettings,
+    CONFIG, CUSTOM_FRAME_RATE_MAX, CUSTOM_FRAME_RATE_MIN, ConfigWriteError, FrameRate,
+    LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES, LOGGING_MIN_FILE_SIZE_MB,
+    LOGGING_MIN_KEEP_FILES, LoggingSettings, ModelCatalog, ModelWindowSize, SharedLlmSettings,
     llm_view::{LlmSettingsView, LlmViewEvent},
 };
+
+const CUSTOM_FRAME_RATE_SAVE_DELAY: Duration = Duration::from_millis(250);
 
 pub(crate) use window::ConfigWindowView;
 
@@ -68,6 +73,7 @@ pub(crate) struct ConfigView {
     llm_draft: Option<SharedLlmSettings>,
     custom_accent_input: Option<Entity<InputState>>,
     custom_background_input: Option<Entity<InputState>>,
+    custom_frame_rate_input: Option<Entity<InputState>>,
     log_max_size_input: Option<Entity<InputState>>,
     log_keep_files_input: Option<Entity<InputState>>,
     preview_capabilities: ModelPreviewCapabilities,
@@ -87,6 +93,9 @@ pub(crate) struct ConfigView {
     refresh_task: Option<Task<()>>,
     write_tasks: Vec<Task<()>>,
     llm_subscription: Option<Subscription>,
+    custom_frame_rate_subscription: Option<Subscription>,
+    custom_frame_rate_input_revision: u64,
+    custom_frame_rate_save_task: Option<Task<()>>,
     logging_input_subscriptions: Vec<Subscription>,
     toast_revision: u64,
     toast_task: Option<Task<()>>,
@@ -112,6 +121,7 @@ impl ConfigView {
             llm_draft: None,
             custom_accent_input: None,
             custom_background_input: None,
+            custom_frame_rate_input: None,
             log_max_size_input: None,
             log_keep_files_input: None,
             preview_capabilities: ModelPreviewCapabilities::default(),
@@ -131,6 +141,9 @@ impl ConfigView {
             refresh_task: None,
             write_tasks: Vec::new(),
             llm_subscription: None,
+            custom_frame_rate_subscription: None,
+            custom_frame_rate_input_revision: 0,
+            custom_frame_rate_save_task: None,
             logging_input_subscriptions: Vec::new(),
             toast_revision: 0,
             toast_task: None,
@@ -156,6 +169,30 @@ impl ConfigView {
         self.custom_background_input = Some(cx.new(|cx| {
             InputState::new(window, cx).default_value(self.appearance.custom.background.clone())
         }));
+        let custom_frame_rate = custom_frame_rate_seed(self.frame_rate);
+        let custom_frame_rate_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(custom_frame_rate.to_string())
+                .mask_pattern(MaskPattern::Number {
+                    separator: None,
+                    fraction: Some(0),
+                })
+                .step(1.0)
+                .min(f64::from(CUSTOM_FRAME_RATE_MIN))
+                .max(f64::from(CUSTOM_FRAME_RATE_MAX))
+        });
+        self.custom_frame_rate_subscription = Some(cx.subscribe_in(
+            &custom_frame_rate_input,
+            window,
+            |this, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Change => this.schedule_custom_frame_rate_save(input, cx),
+                InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                    this.commit_custom_frame_rate_input(input, window, cx);
+                }
+                InputEvent::Focus => {}
+            },
+        ));
+        self.custom_frame_rate_input = Some(custom_frame_rate_input);
         let log_max_size_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(self.logging.max_size_mb.to_string())
@@ -217,17 +254,22 @@ impl ConfigView {
             self.llm_draft = Some(draft);
             self.write_tasks.extend(pending);
         }
+        self.flush_custom_frame_rate_input(cx);
         self.custom_accent_input = None;
         self.custom_background_input = None;
+        self.custom_frame_rate_input = None;
+        self.custom_frame_rate_save_task = None;
         self.log_max_size_input = None;
         self.log_keep_files_input = None;
         self.llm_subscription = None;
+        self.custom_frame_rate_subscription = None;
         self.logging_input_subscriptions.clear();
         cx.notify();
     }
 
     /// 取出配置主体和当前语言模型编辑器中尚未完成的写入任务。
     pub(crate) fn take_pending_write_tasks(&mut self, cx: &mut Context<Self>) -> Vec<Task<()>> {
+        self.flush_custom_frame_rate_input(cx);
         if let Some(llm_view) = &self.llm_view {
             let llm_view = llm_view.clone();
             let (draft, pending) =
@@ -442,6 +484,11 @@ impl ConfigView {
     }
 
     fn set_frame_rate(&mut self, frame_rate: FrameRate, cx: &mut Context<Self>) {
+        if !matches!(frame_rate, FrameRate::Custom(_)) {
+            self.custom_frame_rate_input_revision =
+                self.custom_frame_rate_input_revision.wrapping_add(1);
+            self.custom_frame_rate_save_task = None;
+        }
         if self.frame_rate == frame_rate {
             return;
         }
@@ -475,6 +522,102 @@ impl ConfigView {
             });
         });
         self.track_write_task(task);
+    }
+
+    fn select_custom_frame_rate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.frame_rate, FrameRate::Custom(_)) {
+            return;
+        }
+        self.custom_frame_rate_input_revision =
+            self.custom_frame_rate_input_revision.wrapping_add(1);
+        self.custom_frame_rate_save_task = None;
+        let fps = custom_frame_rate_seed(self.frame_rate);
+        if let Some(input) = &self.custom_frame_rate_input
+            && input.read(cx).value() != fps.to_string()
+        {
+            input.update(cx, |input, cx| {
+                input.set_value(fps.to_string(), window, cx);
+            });
+        }
+        if let Ok(frame_rate) = FrameRate::custom(fps) {
+            self.set_frame_rate(frame_rate, cx);
+        }
+    }
+
+    fn schedule_custom_frame_rate_save(
+        &mut self,
+        input: &Entity<InputState>,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.frame_rate, FrameRate::Custom(_)) {
+            return;
+        }
+        self.custom_frame_rate_input_revision =
+            self.custom_frame_rate_input_revision.wrapping_add(1);
+        let revision = self.custom_frame_rate_input_revision;
+        self.custom_frame_rate_save_task = None;
+        let input = input.clone();
+        let background = cx.background_executor().clone();
+        self.custom_frame_rate_save_task = Some(cx.spawn(async move |this, cx| {
+            background.timer(CUSTOM_FRAME_RATE_SAVE_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.custom_frame_rate_input_revision == revision {
+                    this.apply_custom_frame_rate_input(&input, cx);
+                }
+            });
+        }));
+    }
+
+    fn commit_custom_frame_rate_input(
+        &mut self,
+        input: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.custom_frame_rate_input_revision =
+            self.custom_frame_rate_input_revision.wrapping_add(1);
+        self.custom_frame_rate_save_task = None;
+        if self.apply_custom_frame_rate_input(input, cx) {
+            let Some(fps) = self.frame_rate.limit() else {
+                return;
+            };
+            if input.read(cx).value() != fps.to_string() {
+                input.update(cx, |input, cx| {
+                    input.set_value(fps.to_string(), window, cx);
+                });
+            }
+            return;
+        }
+        let Some(fps) = self.frame_rate.limit() else {
+            return;
+        };
+        input.update(cx, |input, cx| {
+            input.set_value(fps.to_string(), window, cx);
+        });
+    }
+
+    fn apply_custom_frame_rate_input(
+        &mut self,
+        input: &Entity<InputState>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !matches!(self.frame_rate, FrameRate::Custom(_)) {
+            return false;
+        }
+        let Some(frame_rate) = parse_custom_frame_rate(&input.read(cx).value()) else {
+            return false;
+        };
+        self.set_frame_rate(frame_rate, cx);
+        true
+    }
+
+    fn flush_custom_frame_rate_input(&mut self, cx: &mut Context<Self>) {
+        self.custom_frame_rate_input_revision =
+            self.custom_frame_rate_input_revision.wrapping_add(1);
+        self.custom_frame_rate_save_task = None;
+        if let Some(input) = self.custom_frame_rate_input.clone() {
+            self.apply_custom_frame_rate_input(&input, cx);
+        }
     }
 
     fn set_model_window_size(&mut self, size: ModelWindowSize, cx: &mut Context<Self>) {
@@ -740,3 +883,49 @@ impl ConfigView {
 }
 
 impl EventEmitter<ConfigEvent> for ConfigView {}
+
+fn parse_custom_frame_rate(value: &str) -> Option<FrameRate> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value
+        .parse::<u16>()
+        .ok()
+        .and_then(|fps| FrameRate::custom(fps).ok())
+}
+
+fn custom_frame_rate_seed(frame_rate: FrameRate) -> u16 {
+    frame_rate.limit().unwrap_or(60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_frame_rate_input_accepts_only_positive_u16_digits() {
+        assert!(matches!(
+            parse_custom_frame_rate("60"),
+            Some(FrameRate::Custom(fps)) if fps.get() == 60
+        ));
+        assert!(matches!(
+            parse_custom_frame_rate("65535"),
+            Some(FrameRate::Custom(fps)) if fps.get() == u16::MAX
+        ));
+        for invalid in ["", "0", "-1", "+60", "60.0", "65536", "６０"] {
+            assert_eq!(parse_custom_frame_rate(invalid), None);
+        }
+    }
+
+    #[test]
+    fn custom_frame_rate_seed_uses_fixed_rate_or_sixty() {
+        assert_eq!(custom_frame_rate_seed(FrameRate::Fps30), 30);
+        assert_eq!(custom_frame_rate_seed(FrameRate::Fps120), 120);
+        assert_eq!(custom_frame_rate_seed(FrameRate::FollowDisplay), 60);
+        assert_eq!(custom_frame_rate_seed(FrameRate::Unlimited), 60);
+        assert_eq!(
+            custom_frame_rate_seed(FrameRate::custom(75).expect("测试帧率必须有效")),
+            75
+        );
+    }
+}

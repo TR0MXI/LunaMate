@@ -1,11 +1,19 @@
 //! 定义配置模块对内外共享的领域值与持久化错误。
 
-use std::{error::Error, fmt, io, path::PathBuf};
+use std::{error::Error, fmt, io, num::NonZeroU16, path::PathBuf};
 
 use rust_i18n::t;
 
 pub(super) const UNLIMITED_FRAME_RATE_NAME: &str = "unlimited";
-const UNLIMITED_FRAME_RATE_VALUE: u16 = 0;
+pub(super) const FOLLOW_DISPLAY_FRAME_RATE_NAME: &str = "display";
+pub(super) const CUSTOM_FRAME_RATE_NAME: &str = "custom";
+pub(super) const CUSTOM_FRAME_RATE_KEY: &str = "custom_frame_rate";
+pub(crate) const CUSTOM_FRAME_RATE_MIN: u16 = 1;
+pub(crate) const CUSTOM_FRAME_RATE_MAX: u16 = u16::MAX;
+const UNLIMITED_FRAME_RATE_VALUE: u32 = 0;
+const CUSTOM_FRAME_RATE_TAG: u32 = 1 << 16;
+const FOLLOW_DISPLAY_FRAME_RATE_VALUE: u32 = 2 << 16;
+const FRAME_RATE_PAYLOAD_MASK: u32 = 0xFFFF;
 const MODEL_WINDOW_SIZE_AUTO: u16 = 0;
 const MODEL_WINDOW_SIZE_COMPACT: u16 = 240;
 const MODEL_WINDOW_SIZE_STANDARD: u16 = 300;
@@ -123,7 +131,7 @@ impl ModelWindowSize {
     }
 }
 
-/// 表示三个内置档位或无帧率上限模式。
+/// 表示内置、自定义、显示器同步或无帧率上限模式。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum FrameRate {
     /// 低功耗内置档位。
@@ -133,37 +141,90 @@ pub(crate) enum FrameRate {
     Fps60,
     /// 面向高刷新率设备的内置档位。
     Fps120,
+    /// 由显示系统的帧回调或 FIFO presentation 驱动。
+    FollowDisplay,
+    /// 用户指定的正整数目标帧率；只受 `u16` 技术表示范围约束。
+    Custom(NonZeroU16),
     /// 不增加人工帧间隔，由实际渲染耗时决定帧率。
     Unlimited,
 }
 
 impl FrameRate {
-    /// 返回有限模式的每秒目标渲染帧数；无限制模式返回 `None`。
+    /// 创建保留自定义档位身份的正整数帧率。
+    pub(crate) fn custom(fps: u16) -> Result<Self, FrameRateError> {
+        NonZeroU16::new(fps)
+            .map(Self::Custom)
+            .ok_or(FrameRateError { fps })
+    }
+
+    /// 返回软件限帧模式的每秒目标渲染帧数。
     pub(crate) fn limit(self) -> Option<u16> {
         match self {
             Self::Fps30 => Some(30),
             Self::Fps60 => Some(60),
             Self::Fps120 => Some(120),
-            Self::Unlimited => None,
+            Self::Custom(fps) => Some(fps.get()),
+            Self::FollowDisplay | Self::Unlimited => None,
         }
+    }
+
+    /// 返回是否由显示系统而不是软件定时器决定下一帧时刻。
+    pub(crate) fn follows_display(self) -> bool {
+        matches!(self, Self::FollowDisplay)
+    }
+
+    /// 返回是否允许在持续超预算时自动降低到半帧或四分之一帧。
+    pub(crate) fn allows_frame_rate_degradation(self) -> bool {
+        matches!(self, Self::Fps30 | Self::Fps60 | Self::Fps120)
+    }
+
+    /// 返回 GPU presentation 是否必须使用无撕裂 FIFO 模式。
+    pub(crate) fn uses_vsync(self) -> bool {
+        matches!(
+            self,
+            Self::Fps30 | Self::Fps60 | Self::Fps120 | Self::FollowDisplay
+        )
     }
 
     /// 返回适合界面状态提示的简短名称。
     pub(crate) fn display_name(self) -> String {
-        self.limit()
-            .map(|fps| format!("{fps} FPS"))
-            .unwrap_or_else(|| t!("system.unlimited").to_string())
+        match self {
+            Self::Fps30 => "30 FPS".to_owned(),
+            Self::Fps60 => "60 FPS".to_owned(),
+            Self::Fps120 => "120 FPS".to_owned(),
+            Self::FollowDisplay => t!("system.follow_display").to_string(),
+            Self::Custom(fps) => format!("{} FPS", fps.get()),
+            Self::Unlimited => t!("system.unlimited").to_string(),
+        }
     }
 
-    pub(super) fn atomic_value(self) -> u16 {
-        self.limit().unwrap_or(UNLIMITED_FRAME_RATE_VALUE)
+    pub(super) fn atomic_value(self) -> u32 {
+        match self {
+            Self::Fps30 => 30,
+            Self::Fps60 => 60,
+            Self::Fps120 => 120,
+            Self::FollowDisplay => FOLLOW_DISPLAY_FRAME_RATE_VALUE,
+            Self::Custom(fps) => CUSTOM_FRAME_RATE_TAG | u32::from(fps.get()),
+            Self::Unlimited => UNLIMITED_FRAME_RATE_VALUE,
+        }
     }
 
-    pub(super) fn from_atomic_value(value: u16) -> Self {
-        if value == UNLIMITED_FRAME_RATE_VALUE {
-            Self::Unlimited
-        } else {
-            Self::try_from(value).unwrap_or_default()
+    pub(super) fn from_atomic_value(value: u32) -> Self {
+        match value {
+            UNLIMITED_FRAME_RATE_VALUE => Self::Unlimited,
+            30 => Self::Fps30,
+            60 => Self::Fps60,
+            120 => Self::Fps120,
+            FOLLOW_DISPLAY_FRAME_RATE_VALUE => Self::FollowDisplay,
+            value if value & !FRAME_RATE_PAYLOAD_MASK == CUSTOM_FRAME_RATE_TAG => {
+                let payload = value & FRAME_RATE_PAYLOAD_MASK;
+                u16::try_from(payload)
+                    .ok()
+                    .and_then(NonZeroU16::new)
+                    .map(Self::Custom)
+                    .unwrap_or_default()
+            }
+            _ => Self::default(),
         }
     }
 }
@@ -262,10 +323,11 @@ impl TryFrom<u16> for FrameRate {
 
     fn try_from(fps: u16) -> Result<Self, Self::Error> {
         match fps {
+            0 => Err(FrameRateError { fps }),
             30 => Ok(Self::Fps30),
             60 => Ok(Self::Fps60),
             120 => Ok(Self::Fps120),
-            _ => Err(FrameRateError { fps }),
+            _ => Self::custom(fps),
         }
     }
 }
@@ -278,11 +340,7 @@ pub(crate) struct FrameRateError {
 
 impl fmt::Display for FrameRateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "帧率只能是 30、60、120 FPS 或无限制，当前为 {} FPS",
-            self.fps
-        )
+        write!(formatter, "自定义帧率必须是正整数，当前为 {} FPS", self.fps)
     }
 }
 

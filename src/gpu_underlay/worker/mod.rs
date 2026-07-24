@@ -15,7 +15,7 @@ use parking_lot::Mutex;
 use rust_i18n::t;
 
 use crate::{
-    config::CONFIG,
+    config::{CONFIG, FrameRate},
     frame_scheduler::FramePacer,
     interaction::MAX_COMMANDS_PER_FRAME,
     live2d_image::{AnimatedModel, GpuModelRenderer, SurfaceAlphaMode},
@@ -74,10 +74,10 @@ enum ClearSurfaceResult {
 
 /// 按帧率设置选择呈现模式；无限制模式优先避免 FIFO 的垂直同步节流。
 fn present_mode_for_frame_rate(
-    frame_rate_limit: Option<u16>,
+    frame_rate: FrameRate,
     supported_modes: &[wgpu::PresentMode],
 ) -> wgpu::PresentMode {
-    if frame_rate_limit.is_some() {
+    if frame_rate.uses_vsync() {
         return wgpu::PresentMode::Fifo;
     }
 
@@ -166,7 +166,7 @@ impl GpuSurface {
         config.format = format;
         config.alpha_mode = composite_alpha;
         config.present_mode =
-            present_mode_for_frame_rate(CONFIG.frame_rate().limit(), &capabilities.present_modes);
+            present_mode_for_frame_rate(CONFIG.frame_rate(), &capabilities.present_modes);
         seed.surface.configure(&device, &config);
         if let Some(error) = device_error.lock().take() {
             return Err(format!("配置 Live2D GPU surface 失败：{error}"));
@@ -212,12 +212,8 @@ impl GpuSurface {
     }
 
     /// 在运行时切换限帧设置时同步更新 swapchain 呈现模式。
-    fn set_present_mode_for_frame_rate(
-        &mut self,
-        frame_rate_limit: Option<u16>,
-    ) -> Result<(), String> {
-        let present_mode =
-            present_mode_for_frame_rate(frame_rate_limit, &self.supported_present_modes);
+    fn set_present_mode_for_frame_rate(&mut self, frame_rate: FrameRate) -> Result<(), String> {
+        let present_mode = present_mode_for_frame_rate(frame_rate, &self.supported_present_modes);
         if self.config.present_mode == present_mode {
             return Ok(());
         }
@@ -509,13 +505,20 @@ pub(super) fn run(
         }
 
         let mut previous_frame = Instant::now();
-        let mut pacer = FramePacer::new(CONFIG.frame_rate().limit());
+        let initial_frame_rate = CONFIG.frame_rate();
+        let mut pacer = FramePacer::new(
+            initial_frame_rate.limit(),
+            initial_frame_rate.allows_frame_rate_degradation(),
+        );
         let mut needs_next_frame = model.needs_continuous_frames();
         let mut render_requested = false;
         loop {
-            let frame_rate_limit = CONFIG.frame_rate().limit();
-            pacer.set_target_fps(frame_rate_limit);
-            if let Err(error) = surface.set_present_mode_for_frame_rate(frame_rate_limit) {
+            let frame_rate = CONFIG.frame_rate();
+            pacer.set_target_fps(
+                frame_rate.limit(),
+                frame_rate.allows_frame_rate_degradation(),
+            );
+            if let Err(error) = surface.set_present_mode_for_frame_rate(frame_rate) {
                 let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
                 break 'worker;
             }
@@ -528,6 +531,15 @@ pub(super) fn run(
             if let Some(replacement) = update.replacement {
                 request = replacement;
                 continue 'worker;
+            }
+            let frame_rate = CONFIG.frame_rate();
+            pacer.set_target_fps(
+                frame_rate.limit(),
+                frame_rate.allows_frame_rate_degradation(),
+            );
+            if let Err(error) = surface.set_present_mode_for_frame_rate(frame_rate) {
+                let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
+                break 'worker;
             }
             render_requested |= update.woken;
             if !needs_next_frame && !render_requested {
@@ -683,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn finite_frame_rates_keep_fifo_presentation() {
+    fn preset_frame_rates_keep_fifo_presentation() {
         let modes = [
             wgpu::PresentMode::Fifo,
             wgpu::PresentMode::Immediate,
@@ -691,7 +703,40 @@ mod tests {
         ];
 
         assert_eq!(
-            present_mode_for_frame_rate(Some(120), &modes),
+            present_mode_for_frame_rate(FrameRate::Fps120, &modes),
+            wgpu::PresentMode::Fifo
+        );
+    }
+
+    #[test]
+    fn custom_frame_rate_avoids_the_display_vsync_cap() {
+        let modes = [
+            wgpu::PresentMode::Fifo,
+            wgpu::PresentMode::Mailbox,
+            wgpu::PresentMode::Immediate,
+        ];
+        let custom = FrameRate::custom(240).expect("测试帧率必须有效");
+
+        assert_eq!(custom.limit(), Some(240));
+        assert!(!custom.allows_frame_rate_degradation());
+        assert_eq!(
+            present_mode_for_frame_rate(custom, &modes),
+            wgpu::PresentMode::Immediate
+        );
+    }
+
+    #[test]
+    fn follow_display_keeps_fifo_presentation_without_a_software_limit() {
+        let modes = [
+            wgpu::PresentMode::Fifo,
+            wgpu::PresentMode::Immediate,
+            wgpu::PresentMode::Mailbox,
+        ];
+
+        assert_eq!(FrameRate::FollowDisplay.limit(), None);
+        assert!(!FrameRate::FollowDisplay.allows_frame_rate_degradation());
+        assert_eq!(
+            present_mode_for_frame_rate(FrameRate::FollowDisplay, &modes),
             wgpu::PresentMode::Fifo
         );
     }
@@ -705,7 +750,7 @@ mod tests {
         ];
 
         assert_eq!(
-            present_mode_for_frame_rate(None, &modes),
+            present_mode_for_frame_rate(FrameRate::Unlimited, &modes),
             wgpu::PresentMode::Immediate
         );
     }
@@ -714,13 +759,13 @@ mod tests {
     fn unlimited_presentation_uses_mailbox_before_fifo_fallback() {
         assert_eq!(
             present_mode_for_frame_rate(
-                None,
+                FrameRate::Unlimited,
                 &[wgpu::PresentMode::Fifo, wgpu::PresentMode::Mailbox]
             ),
             wgpu::PresentMode::Mailbox
         );
         assert_eq!(
-            present_mode_for_frame_rate(None, &[wgpu::PresentMode::Fifo]),
+            present_mode_for_frame_rate(FrameRate::Unlimited, &[wgpu::PresentMode::Fifo]),
             wgpu::PresentMode::Fifo
         );
     }

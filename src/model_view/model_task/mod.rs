@@ -3,19 +3,21 @@
 use std::{
     error::Error,
     fmt,
+    future::Future,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
+use futures::{FutureExt as _, future::select};
 use gpui::Context;
 use rust_i18n::t;
 
 use super::{ModelLoadState, ModelView, model_display_name};
 use crate::{
     capabilities::ModelLoadDiagnostics,
-    config::CONFIG,
-    frame_scheduler::{FramePacer, frame_wake_channel},
+    config::{CONFIG, FrameRate},
+    frame_scheduler::{FramePacer, FrameWakeReceiver, frame_wake_channel},
     interaction::{MAX_COMMANDS_PER_FRAME, ModelCommand, RenderedModelFrame, command_channel},
     live2d_image::{
         AnimatedModel, ModelLoadError, ModelPreviewCapabilities, RenderCancellation, RenderError,
@@ -27,6 +29,39 @@ struct LoadedModelGeneration {
     frame: RenderedModelFrame,
     diagnostics: ModelLoadDiagnostics,
     needs_continuous_frames: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameWaitResult {
+    FrameReady,
+    FrameRateChanged,
+    Closed,
+}
+
+async fn wait_for_frame_or_rate_change(
+    frame: impl Future<Output = bool>,
+    frame_rate_receiver: &FrameWakeReceiver,
+) -> FrameWaitResult {
+    let frame = frame
+        .map(|ready| ready.then_some(FrameWaitResult::FrameReady))
+        .boxed_local();
+    let changed = frame_rate_receiver
+        .wait()
+        .map(|ready| ready.then_some(FrameWaitResult::FrameRateChanged))
+        .boxed_local();
+    // 配置已经发布时优先重建节拍，避免边界上再渲染一帧旧模式。
+    select(changed, frame)
+        .await
+        .factor_first()
+        .0
+        .unwrap_or(FrameWaitResult::Closed)
+}
+
+fn frame_pacer(frame_rate: FrameRate) -> FramePacer {
+    FramePacer::new(
+        frame_rate.limit(),
+        frame_rate.allows_frame_rate_degradation(),
+    )
 }
 
 #[derive(Debug)]
@@ -85,6 +120,9 @@ impl ModelView {
             cancellation.cancel();
         }
         if let Some(wake) = self.model_wake.take() {
+            wake.close();
+        }
+        if let Some(wake) = self.frame_rate_wake.take() {
             wake.close();
         }
         self.model_task = None;
@@ -148,7 +186,9 @@ impl ModelView {
         }
 
         let (model_wake, wake_receiver) = frame_wake_channel();
+        let (frame_rate_wake, frame_rate_receiver) = frame_wake_channel();
         self.model_wake = Some(model_wake);
+        self.frame_rate_wake = Some(frame_rate_wake);
 
         self.model_task = Some(cx.spawn(async move |this, cx| {
             let loaded = background
@@ -199,6 +239,9 @@ impl ModelView {
                             if let Some(wake) = this.model_wake.take() {
                                 wake.close();
                             }
+                            if let Some(wake) = this.frame_rate_wake.take() {
+                                wake.close();
+                            }
                             cx.notify();
                         }
                     });
@@ -230,19 +273,80 @@ impl ModelView {
             }
 
             let mut previous_frame = Instant::now();
-            let mut pacer = FramePacer::new(CONFIG.frame_rate().limit());
+            let mut pacer = frame_pacer(CONFIG.frame_rate());
             let mut reset_delta = false;
             loop {
-                pacer.set_target_fps(CONFIG.frame_rate().limit());
-                if needs_next_frame {
-                    let next_delay = pacer.delay_until_next_frame(Instant::now());
-                    background.timer(next_delay).await;
+                let mut frame_rate = CONFIG.frame_rate();
+                pacer.set_target_fps(
+                    frame_rate.limit(),
+                    frame_rate.allows_frame_rate_degradation(),
+                );
+                let wait_for_display = if needs_next_frame {
+                    if frame_rate.follows_display() {
+                        true
+                    } else {
+                        let next_delay = pacer.delay_until_next_frame(Instant::now());
+                        let timer = background.timer(next_delay).map(|()| true);
+                        match wait_for_frame_or_rate_change(timer, &frame_rate_receiver).await {
+                            FrameWaitResult::FrameReady => {}
+                            FrameWaitResult::FrameRateChanged => {
+                                pacer = frame_pacer(CONFIG.frame_rate());
+                                continue;
+                            }
+                            FrameWaitResult::Closed => break,
+                        }
+                        false
+                    }
                 } else {
-                    if !wake_receiver.wait().await {
-                        break;
+                    match wait_for_frame_or_rate_change(wake_receiver.wait(), &frame_rate_receiver)
+                        .await
+                    {
+                        FrameWaitResult::FrameReady => {}
+                        FrameWaitResult::FrameRateChanged => {
+                            pacer = frame_pacer(CONFIG.frame_rate());
+                            continue;
+                        }
+                        FrameWaitResult::Closed => break,
                     }
                     pacer.reset_after_idle();
                     reset_delta = true;
+                    // 已消费的输入必须跨过后续帧率切换继续保留，直到真正完成一帧。
+                    needs_next_frame = true;
+                    frame_rate = CONFIG.frame_rate();
+                    pacer.set_target_fps(
+                        frame_rate.limit(),
+                        frame_rate.allows_frame_rate_degradation(),
+                    );
+                    frame_rate.follows_display()
+                };
+
+                if wait_for_display {
+                    // 每轮只挂一个一次性回调；后台渲染期间错过的显示帧不会排队追赶。
+                    let (frame_wake, frame_receiver) = frame_wake_channel();
+                    let armed = this
+                        .update_in(cx, move |this, window, _| {
+                            if this.model_generation != generation || this.gpu_underlay.is_some() {
+                                return false;
+                            }
+                            window.on_next_frame(move |_, _| {
+                                frame_wake.wake();
+                            });
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !armed {
+                        break;
+                    }
+                    match wait_for_frame_or_rate_change(frame_receiver.wait(), &frame_rate_receiver)
+                        .await
+                    {
+                        FrameWaitResult::FrameReady => {}
+                        FrameWaitResult::FrameRateChanged => {
+                            pacer = frame_pacer(CONFIG.frame_rate());
+                            continue;
+                        }
+                        FrameWaitResult::Closed => break,
+                    }
                 }
                 wake_receiver.drain();
                 let frame_started = Instant::now();
@@ -302,6 +406,9 @@ impl ModelView {
                                 if let Some(wake) = this.model_wake.take() {
                                     wake.close();
                                 }
+                                if let Some(wake) = this.frame_rate_wake.take() {
+                                    wake.close();
+                                }
                                 this.model_state = ModelLoadState::Failed(
                                     t!(
                                         "model_state.render_failed",
@@ -329,5 +436,44 @@ impl ModelView {
                 }
             }
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::{pending, ready};
+
+    use futures::executor::block_on;
+
+    use super::*;
+
+    #[test]
+    fn frame_rate_change_interrupts_a_pending_frame_wait() {
+        let (wake, receiver) = frame_wake_channel();
+        wake.wake();
+
+        assert_eq!(
+            block_on(wait_for_frame_or_rate_change(pending(), &receiver)),
+            FrameWaitResult::FrameRateChanged
+        );
+        let (wake, receiver) = frame_wake_channel();
+        wake.wake();
+        assert_eq!(
+            block_on(wait_for_frame_or_rate_change(ready(true), &receiver)),
+            FrameWaitResult::FrameRateChanged
+        );
+    }
+
+    #[test]
+    fn completed_and_closed_frame_waits_are_distinguished() {
+        let (_wake, receiver) = frame_wake_channel();
+        assert_eq!(
+            block_on(wait_for_frame_or_rate_change(ready(true), &receiver)),
+            FrameWaitResult::FrameReady
+        );
+        assert_eq!(
+            block_on(wait_for_frame_or_rate_change(ready(false), &receiver)),
+            FrameWaitResult::Closed
+        );
     }
 }

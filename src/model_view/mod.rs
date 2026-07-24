@@ -122,6 +122,7 @@ pub(super) struct ModelView {
     fps_task: Option<Task<()>>,
     model_commands: Option<ModelCommandSender>,
     model_wake: Option<FrameWake>,
+    frame_rate_wake: Option<FrameWake>,
     model_cancellation: Option<RenderCancellation>,
     gpu_underlay: Option<GpuUnderlay>,
     gpu_event_task: Option<Task<()>>,
@@ -166,6 +167,9 @@ impl ModelView {
             if let Some(wake) = this.model_wake.take() {
                 wake.close();
             }
+            if let Some(wake) = this.frame_rate_wake.take() {
+                wake.close();
+            }
             if let Some(mut underlay) = this.gpu_underlay.take() {
                 underlay.shutdown();
             }
@@ -198,7 +202,7 @@ impl ModelView {
                 ConfigEvent::ModelChanged(model_path) => {
                     this.load_model(model_path.clone(), cx);
                 }
-                ConfigEvent::FrameRateChanged => this.wake_model(),
+                ConfigEvent::FrameRateChanged => this.wake_frame_rate_scheduler(),
                 ConfigEvent::EyeTrackingChanged(enabled) => {
                     this.eye_tracking_enabled = *enabled;
                     if !*enabled {
@@ -276,6 +280,7 @@ impl ModelView {
             fps_task: None,
             model_commands: None,
             model_wake: None,
+            frame_rate_wake: None,
             model_cancellation: None,
             gpu_underlay,
             gpu_event_task: None,
@@ -372,6 +377,15 @@ impl ModelView {
             underlay.wake();
         }
         if let Some(wake) = &self.model_wake {
+            wake.wake();
+        }
+    }
+
+    fn wake_frame_rate_scheduler(&self) {
+        if let Some(underlay) = &self.gpu_underlay {
+            underlay.wake();
+        }
+        if let Some(wake) = &self.frame_rate_wake {
             wake.wake();
         }
     }
@@ -510,6 +524,9 @@ impl ModelView {
         if let Some(wake) = self.model_wake.take() {
             wake.close();
         }
+        if let Some(wake) = self.frame_rate_wake.take() {
+            wake.close();
+        }
         if self.gpu_shutdown_pending {
             return false;
         }
@@ -533,6 +550,9 @@ impl ModelView {
             cancellation.cancel();
         }
         if let Some(wake) = self.model_wake.take() {
+            wake.close();
+        }
+        if let Some(wake) = self.frame_rate_wake.take() {
             wake.close();
         }
         if let Some(mut underlay) = self.gpu_underlay.take() {

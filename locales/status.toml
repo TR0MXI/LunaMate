@@ -103,10 +103,10 @@ _version = 2
 "ja" = "フレームレートの保存は新しい選択に置き換えられました"
 
 [status.frame_rate_failed]
-"zh-CN" = "帧率已生效，配置保存失败：%{error}"
-"zh-TW" = "幀率已生效，設定儲存失敗：%{error}"
-"en" = "Frame rate applied, but could not be saved: %{error}"
-"ja" = "フレームレートは適用されましたが、保存できませんでした: %{error}"
+"zh-CN" = "无法保存并应用帧率：%{error}"
+"zh-TW" = "無法儲存並套用幀率：%{error}"
+"en" = "Could not save and apply the frame rate: %{error}"
+"ja" = "フレームレートを保存して適用できませんでした: %{error}"
 
 [status.window_size_set]
 "zh-CN" = "模型窗口尺寸已设为 %{size}"
