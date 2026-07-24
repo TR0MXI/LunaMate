@@ -5,6 +5,7 @@ use gpui::{
     StyleRefinement, StyledImage, Window, WindowControlArea, div, img, prelude::*, px, svg,
 };
 use gpui_component::StyledExt as _;
+use rust_i18n::t;
 
 use super::ModelView;
 use crate::theme::UiPalette;
@@ -19,7 +20,7 @@ impl Render for ModelView {
         if let Some(moved) = self.position_controller.apply_pending_reset(window, cx)
             && !moved
         {
-            log::debug!("当前窗口系统不允许应用主动移动桌宠窗口");
+            log::debug!("{}", t!("log.pet_move_unsupported"));
         }
         let palette = UiPalette::from_app(cx);
         let control_background = palette.secondary;

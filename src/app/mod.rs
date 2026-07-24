@@ -196,7 +196,7 @@ pub(super) fn run() {
                 },
                 move |window, cx| {
                     if let Err(error) = configure_desktop_pet_window(window) {
-                        log::warn!("配置桌宠原生窗口失败：{error}");
+                        log::warn!("{}", t!("log.pet_window_config_failed", error = error));
                     }
                     let raster_dimensions = raster_dimensions_for_window(
                         window_width,
@@ -236,10 +236,13 @@ pub(super) fn run() {
                             }
                             let (chat_result, window_result) = persistence_task.await;
                             if let Err(error) = chat_result {
-                                log::error!("应用退出时保存聊天会话失败：{error}");
+                                log::error!("{}", t!("log.exit_chat_save_failed", error = error));
                             }
                             if let Err(error) = window_result {
-                                log::error!("应用退出时保存窗口位置失败：{error}");
+                                log::error!(
+                                    "{}",
+                                    t!("log.exit_position_save_failed", error = error)
+                                );
                             }
                         }
                     })
@@ -273,7 +276,7 @@ pub(super) fn run() {
                 },
             );
             if let Err(error) = result {
-                log::error!("无法创建 LunaMate 窗口：{error}");
+                log::error!("{}", t!("log.main_window_create_failed", error = error));
                 cx.quit();
             }
         });

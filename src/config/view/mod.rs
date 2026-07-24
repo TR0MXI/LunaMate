@@ -571,7 +571,7 @@ impl ConfigView {
                 })
                 .await;
             if let Err(error) = &result {
-                log::error!("更新日志配置失败：{error}");
+                log::error!("{}", t!("log.logging_update_failed", error = error));
             }
             let _ = this.update(cx, |this, cx| {
                 if this.revision != revision {

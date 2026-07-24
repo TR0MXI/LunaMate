@@ -1,0 +1,145 @@
+_version = 2
+
+[log.apply_settings_failed]
+"zh-CN" = "应用日志配置失败，继续使用启动配置：%{error}"
+"zh-TW" = "套用日誌設定失敗，繼續使用啟動設定：%{error}"
+"en" = "Failed to apply logging settings; continuing with startup settings: %{error}"
+"ja" = "ログ設定の適用に失敗しました。起動時の設定を使用します: %{error}"
+
+[log.file_fallback]
+"zh-CN" = "无法写入日志文件，已降级为 stderr：%{reason}"
+"zh-TW" = "無法寫入日誌檔案，已改用 stderr：%{reason}"
+"en" = "Could not write to the log file; falling back to stderr: %{reason}"
+"ja" = "ログファイルに書き込めないため、stderr にフォールバックしました: %{reason}"
+
+[log.config_rebuilt]
+"zh-CN" = "配置文件 %{path} 已损坏，本次保存将重建有效 TOML：%{error}"
+"zh-TW" = "設定檔 %{path} 已損壞，本次儲存將重建有效的 TOML：%{error}"
+"en" = "Configuration file %{path} is corrupt; this save will rebuild valid TOML: %{error}"
+"ja" = "設定ファイル %{path} が破損しています。今回の保存で有効な TOML を再構築します: %{error}"
+
+[log.gpu_device_lost]
+"zh-CN" = "Live2D GPU device 已丢失：%{reason}：%{message}"
+"zh-TW" = "Live2D GPU device 已遺失：%{reason}：%{message}"
+"en" = "The Live2D GPU device was lost: %{reason}: %{message}"
+"ja" = "Live2D GPU device が失われました: %{reason}: %{message}"
+
+[log.gpu_worker_panicked]
+"zh-CN" = "Live2D GPU worker 在退出时发生 panic"
+"zh-TW" = "Live2D GPU worker 結束時發生 panic"
+"en" = "The Live2D GPU worker panicked while exiting"
+"ja" = "Live2D GPU worker の終了時に panic が発生しました"
+
+[log.model_capability_warning]
+"zh-CN" = "Live2D 模型能力警告：%{diagnostic}"
+"zh-TW" = "Live2D 模型能力警告：%{diagnostic}"
+"en" = "Live2D model capability warning: %{diagnostic}"
+"ja" = "Live2D モデル機能の警告: %{diagnostic}"
+
+[log.chat_close_save_failed]
+"zh-CN" = "聊天视图关闭时保存会话失败：%{error}"
+"zh-TW" = "聊天檢視關閉時儲存工作階段失敗：%{error}"
+"en" = "Failed to save the chat session while closing the chat view: %{error}"
+"ja" = "チャットビューの終了時にセッションを保存できませんでした: %{error}"
+
+[log.chat_save_failed]
+"zh-CN" = "保存聊天会话失败：%{error}"
+"zh-TW" = "儲存聊天工作階段失敗：%{error}"
+"en" = "Failed to save the chat session: %{error}"
+"ja" = "チャットセッションを保存できませんでした: %{error}"
+
+[log.frame_render_stopped]
+"zh-CN" = "Live2D 帧渲染已停止：%{error}"
+"zh-TW" = "Live2D 幀算繪已停止：%{error}"
+"en" = "Live2D frame rendering stopped: %{error}"
+"ja" = "Live2D フレームのレンダリングを停止しました: %{error}"
+
+[log.pet_move_unsupported]
+"zh-CN" = "当前窗口系统不允许应用主动移动桌宠窗口"
+"zh-TW" = "目前的視窗系統不允許應用程式主動移動桌寵視窗"
+"en" = "The current window system does not allow the application to move the desktop pet window"
+"ja" = "現在のウィンドウシステムでは、アプリケーションからデスクトップペットウィンドウを移動できません"
+
+[log.startup_config_warning]
+"zh-CN" = "启动配置警告：%{warning}"
+"zh-TW" = "啟動設定警告：%{warning}"
+"en" = "Startup configuration warning: %{warning}"
+"ja" = "起動設定の警告: %{warning}"
+
+[log.pet_window_config_failed]
+"zh-CN" = "配置桌宠原生窗口失败：%{error}"
+"zh-TW" = "設定桌寵原生視窗失敗：%{error}"
+"en" = "Failed to configure the native desktop pet window: %{error}"
+"ja" = "デスクトップペットのネイティブウィンドウ設定に失敗しました: %{error}"
+
+[log.exit_chat_save_failed]
+"zh-CN" = "应用退出时保存聊天会话失败：%{error}"
+"zh-TW" = "應用程式結束時儲存聊天工作階段失敗：%{error}"
+"en" = "Failed to save the chat session while exiting the application: %{error}"
+"ja" = "アプリケーション終了時にチャットセッションを保存できませんでした: %{error}"
+
+[log.exit_position_save_failed]
+"zh-CN" = "应用退出时保存窗口位置失败：%{error}"
+"zh-TW" = "應用程式結束時儲存視窗位置失敗：%{error}"
+"en" = "Failed to save window positions while exiting the application: %{error}"
+"ja" = "アプリケーション終了時にウィンドウ位置を保存できませんでした: %{error}"
+
+[log.main_window_create_failed]
+"zh-CN" = "无法创建 LunaMate 窗口：%{error}"
+"zh-TW" = "無法建立 LunaMate 視窗：%{error}"
+"en" = "Could not create the LunaMate window: %{error}"
+"ja" = "LunaMate ウィンドウを作成できませんでした: %{error}"
+
+[log.gpu_underlay_init_failed]
+"zh-CN" = "Live2D GPU underlay 初始化失败，已回退 CPU：%{error}"
+"zh-TW" = "Live2D GPU underlay 初始化失敗，已改用 CPU：%{error}"
+"en" = "Failed to initialize the Live2D GPU underlay; falling back to the CPU renderer: %{error}"
+"ja" = "Live2D GPU underlay の初期化に失敗したため、CPU レンダラーにフォールバックします: %{error}"
+
+[log.gpu_worker_exited]
+"zh-CN" = "Live2D GPU worker 意外退出，切换到 CPU renderer"
+"zh-TW" = "Live2D GPU worker 意外結束，切換至 CPU renderer"
+"en" = "The Live2D GPU worker exited unexpectedly; switching to the CPU renderer"
+"ja" = "Live2D GPU worker が予期せず終了したため、CPU レンダラーに切り替えます"
+
+[log.gpu_model_cpu_fallback]
+"zh-CN" = "%{message}；切换到 CPU renderer"
+"zh-TW" = "%{message}；切換至 CPU renderer"
+"en" = "%{message}; switching to the CPU renderer"
+"ja" = "%{message}。CPU レンダラーに切り替えます"
+
+[log.gpu_underlay_cpu_fallback]
+"zh-CN" = "Live2D GPU underlay 已失效，切换到 CPU renderer：%{error}"
+"zh-TW" = "Live2D GPU underlay 已失效，切換至 CPU renderer：%{error}"
+"en" = "The Live2D GPU underlay is no longer available; switching to the CPU renderer: %{error}"
+"ja" = "Live2D GPU underlay が無効になったため、CPU レンダラーに切り替えます: %{error}"
+
+[log.settings_window_config_failed]
+"zh-CN" = "配置设置原生窗口失败：%{error}"
+"zh-TW" = "設定原生設定視窗失敗：%{error}"
+"en" = "Failed to configure the native settings window: %{error}"
+"ja" = "設定用ネイティブウィンドウの構成に失敗しました: %{error}"
+
+[log.settings_window_create_failed]
+"zh-CN" = "无法创建 LunaMate 设置窗口：%{error}"
+"zh-TW" = "無法建立 LunaMate 設定視窗：%{error}"
+"en" = "Could not create the LunaMate settings window: %{error}"
+"ja" = "LunaMate 設定ウィンドウを作成できませんでした: %{error}"
+
+[log.image_release_failed]
+"zh-CN" = "回收旧 Live2D 图像失败：%{error}"
+"zh-TW" = "回收舊 Live2D 圖像失敗：%{error}"
+"en" = "Failed to release the previous Live2D image: %{error}"
+"ja" = "以前の Live2D 画像を解放できませんでした: %{error}"
+
+[log.logging_update_failed]
+"zh-CN" = "更新日志配置失败：%{error}"
+"zh-TW" = "更新日誌設定失敗：%{error}"
+"en" = "Failed to update logging settings: %{error}"
+"ja" = "ログ設定を更新できませんでした: %{error}"
+
+[log.settings_move_unsupported]
+"zh-CN" = "当前窗口系统不允许应用主动移动设置窗口"
+"zh-TW" = "目前的視窗系統不允許應用程式主動移動設定視窗"
+"en" = "The current window system does not allow the application to move the settings window"
+"ja" = "現在のウィンドウシステムでは、アプリケーションから設定ウィンドウを移動できません"

@@ -24,6 +24,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
+use rust_i18n::t;
 use toml_edit::{DocumentMut, Value};
 
 use document::{
@@ -145,7 +146,7 @@ impl LunaConfig {
     fn load_from(path: PathBuf) -> Self {
         let (loaded, startup_warning) = read_config_file(&path);
         if let Some(warning) = &startup_warning {
-            log::warn!("{warning}");
+            log::warn!("{}", t!("log.startup_config_warning", warning = warning));
         }
 
         Self {

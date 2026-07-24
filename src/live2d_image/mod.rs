@@ -12,6 +12,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use gpui::RenderImage;
 use mocari::assets::{AssetLoadError, RuntimeModel, load_model_runtime};
+use rust_i18n::t;
 
 use crate::{
     animation::{self, AnimationController, MotionPlayResult},
@@ -225,7 +226,10 @@ impl AnimatedModel {
         diagnostics.extend(animation_diagnostics);
         diagnostics.extend(expression_diagnostics);
         for diagnostic in diagnostics.entries() {
-            log::warn!("Live2D 模型能力警告：{diagnostic}");
+            log::warn!(
+                "{}",
+                t!("log.model_capability_warning", diagnostic = diagnostic)
+            );
         }
 
         Ok(Self {

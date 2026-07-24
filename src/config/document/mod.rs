@@ -7,6 +7,7 @@ use std::{
 };
 
 use gpui_component::ThemeMode;
+use rust_i18n::t;
 use toml_edit::{DocumentMut, Item, Table, Value};
 
 use crate::persistence::{AtomicReplaceOperation, atomic_replace};
@@ -76,9 +77,12 @@ pub(super) fn document_for_update(path: &Path) -> Result<DocumentMut, ConfigWrit
             Ok(document) => Ok(document),
             Err(error) => {
                 log::warn!(
-                    "配置文件 {} 已损坏，本次保存将重建有效 TOML：{}",
-                    path.display(),
-                    error.message()
+                    "{}",
+                    t!(
+                        "log.config_rebuilt",
+                        path = path.display(),
+                        error = error.message()
+                    )
                 );
                 Ok(DocumentMut::new())
             }

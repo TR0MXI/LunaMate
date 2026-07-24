@@ -287,7 +287,7 @@ impl ModelView {
                             }
                             Err(error) if error.is_cancelled() => false,
                             Err(error) => {
-                                log::error!("Live2D 帧渲染已停止：{error}");
+                                log::error!("{}", t!("log.frame_render_stopped", error = error));
                                 this.frame = None;
                                 this.config.update(cx, |config, cx| {
                                     config.set_preview_capabilities(

@@ -12,6 +12,7 @@ use async_channel::{Sender as AsyncSender, TrySendError};
 use futures::executor::block_on;
 use gpui_wgpu::wgpu;
 use parking_lot::Mutex;
+use rust_i18n::t;
 
 use crate::{
     config::CONFIG,
@@ -118,7 +119,14 @@ impl GpuSurface {
         device.set_device_lost_callback(move |reason, message| {
             lost_flag.store(true, Ordering::Release);
             lost_wake.wake();
-            log::error!("Live2D GPU device 已丢失：{reason:?}：{message}");
+            log::error!(
+                "{}",
+                t!(
+                    "log.gpu_device_lost",
+                    reason = format!("{reason:?}"),
+                    message = message
+                )
+            );
         });
         let device_error = Arc::new(Mutex::new(None));
         let uncaptured_error = device_error.clone();

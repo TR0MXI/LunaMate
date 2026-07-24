@@ -19,9 +19,10 @@ mod platform_window;
 mod theme;
 mod window;
 
-rust_i18n::i18n!("locales", fallback = "en");
+rust_i18n::i18n!("locales", fallback = "en", minify_key = true);
 
 use mimalloc::MiMalloc;
+use rust_i18n::t;
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: MiMalloc = MiMalloc;
@@ -29,7 +30,7 @@ static GLOBAL_ALLOCATOR: MiMalloc = MiMalloc;
 fn main() {
     logging::init();
     if let Err(error) = logging::apply_current_settings() {
-        log::error!("应用日志配置失败，继续使用启动配置：{error}");
+        log::error!("{}", t!("log.apply_settings_failed", error = error));
     }
     app::run();
     logging::shutdown();

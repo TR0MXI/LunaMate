@@ -86,7 +86,7 @@ impl ChatView {
             cx.background_executor()
                 .spawn(async move {
                     if let Err(error) = store.save(snapshot) {
-                        log::error!("聊天视图关闭时保存会话失败：{error}");
+                        log::error!("{}", t!("log.chat_close_save_failed", error = error));
                     }
                 })
                 .detach();
@@ -317,7 +317,7 @@ impl ChatView {
         cx.background_executor()
             .spawn(async move {
                 if let Err(error) = store.save(snapshot) {
-                    log::error!("保存聊天会话失败：{error}");
+                    log::error!("{}", t!("log.chat_save_failed", error = error));
                 }
             })
             .detach();

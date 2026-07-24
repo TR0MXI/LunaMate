@@ -11,6 +11,7 @@ use std::{
 use async_channel::Receiver as AsyncReceiver;
 use gpui_wgpu::wgpu;
 use parking_lot::{Condvar, Mutex};
+use rust_i18n::t;
 
 use crate::{
     capabilities::ModelLoadDiagnostics,
@@ -220,7 +221,7 @@ impl GpuUnderlay {
         if let Some(worker) = self.request_shutdown()
             && worker.join().is_err()
         {
-            log::error!("Live2D GPU worker 在退出时发生 panic");
+            log::error!("{}", t!("log.gpu_worker_panicked"));
         }
         self.attachment.take();
     }

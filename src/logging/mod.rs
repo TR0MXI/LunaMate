@@ -11,6 +11,7 @@ use flexi_logger::{
     LoggerHandle, Naming, WriteMode,
 };
 use parking_lot::Mutex;
+use rust_i18n::t;
 
 use crate::config::{CONFIG, LogLevel, LoggingSettings};
 
@@ -54,7 +55,7 @@ pub(crate) fn init() {
         return;
     }
     if let Some(reason) = fallback_reason {
-        log::error!("无法写入日志文件，已降级为 stderr：{reason}");
+        log::error!("{}", t!("log.file_fallback", reason = reason));
     }
 }
 
@@ -181,6 +182,7 @@ mod tests {
     use std::{env, fs, process};
 
     use flexi_logger::LogSpecification;
+    use rust_i18n::t;
 
     use super::*;
 
@@ -195,6 +197,49 @@ mod tests {
         ] {
             assert!(LogSpecification::parse(application_log_spec(level)).is_ok());
         }
+    }
+
+    #[test]
+    fn log_messages_exist_in_every_supported_language() {
+        let keys = [
+            "log.apply_settings_failed",
+            "log.file_fallback",
+            "log.config_rebuilt",
+            "log.gpu_device_lost",
+            "log.gpu_worker_panicked",
+            "log.model_capability_warning",
+            "log.chat_close_save_failed",
+            "log.chat_save_failed",
+            "log.frame_render_stopped",
+            "log.pet_move_unsupported",
+            "log.startup_config_warning",
+            "log.pet_window_config_failed",
+            "log.exit_chat_save_failed",
+            "log.exit_position_save_failed",
+            "log.main_window_create_failed",
+            "log.gpu_underlay_init_failed",
+            "log.gpu_worker_exited",
+            "log.gpu_model_cpu_fallback",
+            "log.gpu_underlay_cpu_fallback",
+            "log.settings_window_config_failed",
+            "log.settings_window_create_failed",
+            "log.image_release_failed",
+            "log.logging_update_failed",
+            "log.settings_move_unsupported",
+        ];
+
+        for locale in ["zh-CN", "zh-TW", "en", "ja"] {
+            for key in keys {
+                assert!(
+                    crate::_rust_i18n_try_translate(locale, key).is_some(),
+                    "{locale} 缺少日志翻译：{key}"
+                );
+            }
+        }
+        assert_eq!(
+            t!("log.chat_save_failed", locale = "en", error = "disk full"),
+            "Failed to save the chat session: disk full"
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ use gpui::{
     Window, WindowControlArea, div, prelude::*, px, svg,
 };
 use gpui_component::StyledExt;
+use rust_i18n::t;
 
 use crate::{
     platform_window::{WindowMover, WindowPositionController},
@@ -66,7 +67,7 @@ impl Render for ConfigWindowView {
         if let Some(moved) = self.position_controller.apply_pending_reset(window, cx)
             && !moved
         {
-            log::debug!("当前窗口系统不允许应用主动移动设置窗口");
+            log::debug!("{}", t!("log.settings_move_unsupported"));
         }
         let config = self.config.clone();
         div().size_full().bg(gpui::transparent_black()).child(
