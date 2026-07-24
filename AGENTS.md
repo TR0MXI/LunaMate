@@ -14,6 +14,16 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 
 - UI/窗口、Live2D 运行时与渲染、互动状态、LLM、配置和持久化保持职责边界。Provider
   细节不得进入 UI，Live2D 层不得发起网络请求。
+- 通用 GPUI 视图、主题和窗口布局通过 `src/ui` façade 暴露，Agent 对话与 Provider
+  设置视图通过 `src/agent` façade 暴露；原生窗口适配、underlay surface attachment
+  与对应 `unsafe` 收口在 `src/platform`。可持久化外观类型属于配置域，不得依赖 UI。
+- Live2D 运行时、模型目录、能力、交互命令、帧调度与 CPU/GPU 渲染统一通过
+  `src/model` façade 暴露；外部模块不得依赖其动画、表情、资源解析、worker 或 renderer
+  子模块。
+- 对话能力和 Provider 设置编辑器收口在 `src/agent`；应用与其他 UI 模块只通过
+  `Agent`、`AgentView`、`AgentShutdown`、`AgentSettingsView`、`AgentSettingsDraft`
+  和 `AgentSettingsEvent` 交互，不得构造或依赖内部会话、存储、快照或 Provider 配置类型。
+- 配置和 Agent 的原子文件替换统一通过 `src/database`，调用方负责转换各自的领域错误。
 - 模块按稳定职责拆分，跨模块使用明确的状态、事件或接口；避免循环依赖、隐藏全局状态
   和双向调用。公共接口默认最小可见性，不为规划中的能力预建抽象。
 
@@ -47,9 +57,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 
 ## Live2D 与平台渲染
 
-- 平台窗口与输入适配集中隔离。Windows、macOS 和原生 Wayland 使用独立 WGPU underlay；
-  X11、不支持的平台，以及 attach、adapter、透明 Alpha、surface 或 device 失败时永久
-  回退 CPU renderer。
+- 平台窗口、输入适配与 underlay surface attachment 集中隔离。Windows、macOS 和原生
+  Wayland 使用独立 WGPU underlay；X11、不支持的平台，以及 attach、adapter、透明
+  Alpha、surface 或 device 失败时永久回退 CPU renderer。
 - Wayland underlay 复用 GPUI 的 `wl_display` guest connection 创建 child surface，
   不得销毁或主动 commit parent；缺少协议或 fractional scale 支持时回退 CPU，也不得
   假定客户端可以指定顶层窗口坐标。
@@ -86,6 +96,10 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
   标签可保留原文，生成文件与第三方代码除外。
 - 模块使用 `//!` 说明职责，跨模块稳定接口和复杂契约使用 `///`。状态转换、取消与过期
   处理、同步、资源生命周期、坐标变换和渲染不变量应说明原因，不复述代码。
+- 仅含单个源文件的模块使用同级 `name.rs`；只有模块需要拆分子模块时才使用
+  `name/mod.rs` 目录结构，集中测试目录除外。
+- 单元测试集中在所属顶级模块的 `tests/mod.rs`，并通过 `tests/xxx.rs` 对应被测子模块；
+  生产文件不保留内联 `mod tests`，也不为测试把内部实现扩大到顶级 façade 之外。
 - `unsafe` 仅用于必要的平台或 GPU 互操作，范围保持最小；每个块紧邻 `// SAFETY:`，用
   中文说明可验证的安全前置条件。清理失效注释、注释掉的代码和无跟踪项的模糊 `TODO`。
 - 遵守 `clippy::unwrap_used = "deny"`。使用 `?` 或显式分支处理失败；`expect()` 仅用于

@@ -2,22 +2,14 @@
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod animation;
+mod agent;
 mod app;
-mod capabilities;
-mod chat;
 mod config;
-mod expression;
-mod frame_scheduler;
-mod gpu_underlay;
-mod interaction;
-mod live2d_image;
+mod database;
 mod logging;
-mod model_view;
-mod persistence;
-mod platform_window;
-mod theme;
-mod window;
+mod model;
+mod platform;
+mod ui;
 
 rust_i18n::i18n!("locales", fallback = "en", minify_key = true);
 

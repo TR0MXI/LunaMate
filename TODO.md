@@ -42,7 +42,14 @@ GPUI 点击
 - [x] 建立交互命令模块，隔离 GPUI、Live2D runtime 和动作控制器。
 - [x] 建立 HitArea 帧快照模块，保存与当前图像一致的命中区域。
 - [x] 建立动作反应解析模块，集中处理 `Tap@Body` 等命名约定。
-- [x] 保持动画、表情、聊天、设置和平台窗口之间的现有职责边界。
+- [x] 将 crate 根收敛为 `agent`、`app`、`config`、`database`、`logging`、`model`、
+  `platform` 和 `ui`，由各顶级模块提供稳定 façade。
+- [x] Agent 对外隐藏 session、store、Provider adapter 和配置草稿，只暴露对话、设置视图
+  与关闭接口。
+- [x] 将模型运行时、资源、交互、帧调度和 CPU/GPU 渲染收口到 `model`，原生窗口与
+  underlay attachment 收口到 `platform`。
+- [x] 将配置领域与 GPUI 设置视图分离，并把可持久化外观类型保留在配置域。
+- [x] 将各顶级模块自身及子模块测试集中到对应 `tests/mod.rs` 与 `tests/xxx.rs`。
 
 ### HitArea
 

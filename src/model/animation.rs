@@ -1,0 +1,345 @@
+//! 管理 Live2D 动作资源、默认动作选择与逐帧播放状态。
+//!
+//! 上层只通过本模块暴露的控制器驱动动作，不直接依赖 Mocari 的播放器细节。
+
+use std::collections::BTreeMap;
+
+use mocari::{
+    ModelRuntime,
+    assets::RuntimeModel,
+    json::{Model3, Motion3},
+    motion::MotionPlayer,
+};
+
+use super::{
+    capabilities::{
+        AuxiliaryResourceBudget, MAX_AUXILIARY_RESOURCE_BYTES, ModelDiagnosticCategory,
+        ModelLoadDiagnostic, ModelLoadDiagnostics, ModelResourceResolver,
+    },
+    live2d::RenderCancellation,
+};
+
+const DEFAULT_MOTION_GROUP: &str = "Idle";
+pub(in crate::model) const MAX_MOTION_COUNT: usize = 256;
+
+/// 通过已完成主体预检的解析器加载动作，并保留全部逐项诊断。
+pub(crate) fn load(
+    model: &RuntimeModel,
+    resolver: &ModelResourceResolver,
+    budget: &mut AuxiliaryResourceBudget,
+    cancellation: &RenderCancellation,
+) -> (AnimationController, ModelLoadDiagnostics) {
+    AnimationController::load_with_resources(model, resolver, budget, cancellation)
+}
+
+/// 描述一次动作播放请求的处理结果。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MotionPlayResult {
+    /// 已启动目标动作。
+    Started,
+    /// 模型没有声明目标动作组或动作组为空。
+    MissingGroup,
+    /// 动作组存在，但没有持续时间有效的动作。
+    InvalidMotion,
+}
+
+struct ActiveMotion {
+    group_index: usize,
+    index: usize,
+}
+
+struct MotionGroup {
+    declared_count: usize,
+    motions: Vec<MotionPlayer>,
+    next_index: usize,
+}
+
+/// 保存模型声明的动作，并负责当前动作的播放与应用。
+pub(crate) struct AnimationController {
+    group_indices: BTreeMap<String, usize>,
+    groups: Vec<MotionGroup>,
+    active: Option<ActiveMotion>,
+    settling: bool,
+}
+
+impl AnimationController {
+    /// 从已加载模型逐项解析动作；坏项只生成诊断，存在 `Idle` 组时自动循环首个成功项。
+    #[cfg(test)]
+    pub(in crate::model) fn load(
+        model: &RuntimeModel,
+        resolver: &ModelResourceResolver,
+    ) -> (AnimationController, ModelLoadDiagnostics) {
+        let mut budget = AuxiliaryResourceBudget::default();
+        Self::load_manifest_with_resources(
+            model.runtime().model(),
+            resolver,
+            &mut budget,
+            &RenderCancellation::default(),
+        )
+    }
+
+    /// 使用 generation 共享预算和取消令牌加载全部动作。
+    pub(crate) fn load_with_resources(
+        model: &RuntimeModel,
+        resolver: &ModelResourceResolver,
+        budget: &mut AuxiliaryResourceBudget,
+        cancellation: &RenderCancellation,
+    ) -> (AnimationController, ModelLoadDiagnostics) {
+        Self::load_manifest_with_resources(model.runtime().model(), resolver, budget, cancellation)
+    }
+
+    #[cfg(test)]
+    pub(in crate::model) fn load_manifest(
+        model: &Model3,
+        resolver: &ModelResourceResolver,
+    ) -> (AnimationController, ModelLoadDiagnostics) {
+        let mut budget = AuxiliaryResourceBudget::default();
+        Self::load_manifest_with_resources(
+            model,
+            resolver,
+            &mut budget,
+            &RenderCancellation::default(),
+        )
+    }
+
+    pub(in crate::model) fn load_manifest_with_resources(
+        model: &Model3,
+        resolver: &ModelResourceResolver,
+        budget: &mut AuxiliaryResourceBudget,
+        cancellation: &RenderCancellation,
+    ) -> (AnimationController, ModelLoadDiagnostics) {
+        let references = model.motions();
+        let group_indices = references
+            .iter()
+            .enumerate()
+            .map(|(index, (group, _))| (group.clone(), index))
+            .collect();
+        let mut groups = references
+            .values()
+            .map(|references| MotionGroup {
+                declared_count: references.len(),
+                motions: Vec::new(),
+                next_index: 0,
+            })
+            .collect::<Vec<_>>();
+        let total_count = references
+            .values()
+            .fold(0_usize, |count, group| count.saturating_add(group.len()));
+        let omitted_count = total_count.saturating_sub(MAX_MOTION_COUNT);
+        let mut diagnostics = ModelLoadDiagnostics::default();
+        let mut processed_count = 0_usize;
+        let mut reported_limit = false;
+
+        'groups: for (group_index, (group, group_references)) in references.iter().enumerate() {
+            if cancellation.is_cancelled() {
+                break;
+            }
+            let remaining_capacity = MAX_MOTION_COUNT.saturating_sub(processed_count);
+            let clips = &mut groups[group_index].motions;
+            clips.reserve(group_references.len().min(remaining_capacity));
+            let mut budget_exhausted = false;
+            for (index, reference) in group_references.iter().enumerate() {
+                if cancellation.is_cancelled() {
+                    break 'groups;
+                }
+                if processed_count >= MAX_MOTION_COUNT {
+                    if !reported_limit {
+                        diagnostics.push(
+                            ModelLoadDiagnostic::motion(
+                                group,
+                                index,
+                                reference.file(),
+                                ModelDiagnosticCategory::LimitExceeded,
+                                format!(
+                                    "动作声明总数为 {total_count}，仅处理前 {MAX_MOTION_COUNT} 项"
+                                ),
+                            )
+                            .with_affected_count(omitted_count),
+                        );
+                        reported_limit = true;
+                    }
+                    continue;
+                }
+                processed_count += 1;
+
+                let source = match resolver.read_text_with_budget_and_checkpoint(
+                    reference.file(),
+                    MAX_AUXILIARY_RESOURCE_BYTES,
+                    budget,
+                    || cancellation.is_cancelled(),
+                ) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        if cancellation.is_cancelled() {
+                            break 'groups;
+                        }
+                        budget_exhausted =
+                            error.category() == ModelDiagnosticCategory::LimitExceeded;
+                        diagnostics.push(ModelLoadDiagnostic::motion(
+                            group,
+                            index,
+                            reference.file(),
+                            error.category(),
+                            error.message(),
+                        ));
+                        if budget_exhausted {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                if cancellation.is_cancelled() {
+                    break 'groups;
+                }
+                let motion = match Motion3::from_json_str(&source) {
+                    Ok(motion) => motion,
+                    Err(error) => {
+                        diagnostics.push(ModelLoadDiagnostic::motion(
+                            group,
+                            index,
+                            reference.file(),
+                            ModelDiagnosticCategory::Parse,
+                            format!("动作 JSON 内容无效或版本不受支持：{error}"),
+                        ));
+                        continue;
+                    }
+                };
+                if cancellation.is_cancelled() {
+                    break 'groups;
+                }
+                let duration = motion.meta().duration();
+                if !duration.is_finite() || duration <= 0.0 {
+                    diagnostics.push(ModelLoadDiagnostic::motion(
+                        group,
+                        index,
+                        reference.file(),
+                        ModelDiagnosticCategory::InvalidDuration,
+                        format!("动作时长必须是有限正数，当前值为 {duration}"),
+                    ));
+                    continue;
+                }
+                clips.push(MotionPlayer::with_looping(
+                    motion,
+                    group == DEFAULT_MOTION_GROUP,
+                ));
+            }
+            if budget_exhausted {
+                break;
+            }
+        }
+
+        let mut controller = Self {
+            group_indices,
+            groups,
+            active: None,
+            settling: false,
+        };
+        controller.start_idle();
+        (controller, diagnostics)
+    }
+
+    /// 以一次性动作播放指定交互组，并在组内轮换可用动作。
+    pub(crate) fn play_interaction(&mut self, group: &str) -> MotionPlayResult {
+        self.start_next(group)
+    }
+
+    /// 返回至少包含一个成功加载动作的动作组名称。
+    pub(crate) fn available_groups(&self) -> Vec<String> {
+        self.group_indices
+            .iter()
+            .filter(|(_, index)| !self.groups[**index].motions.is_empty())
+            .map(|(group, _)| group.clone())
+            .collect()
+    }
+
+    /// 推进当前动作并把采样结果应用到模型参数。
+    pub(crate) fn update(&mut self, runtime: &mut ModelRuntime, delta_seconds: f32) {
+        let Some(active) = &self.active else {
+            self.settling = false;
+            return;
+        };
+        let player = self
+            .groups
+            .get_mut(active.group_index)
+            .and_then(|group| group.motions.get_mut(active.index))
+            .expect("活动动作必须引用控制器持有的播放器");
+        player.tick(delta_seconds);
+        player.apply(runtime);
+        if player.is_finished() {
+            self.active = None;
+            self.start_idle();
+            self.settling = self.active.is_none();
+        }
+    }
+
+    /// 返回动作是否仍会随时间变化，或是否还需要一帧恢复模型默认参数。
+    pub(crate) fn needs_continuous_frames(&self) -> bool {
+        self.active.is_some() || self.settling
+    }
+
+    fn start_idle(&mut self) {
+        let _ = self.start_next(DEFAULT_MOTION_GROUP);
+    }
+
+    fn start_next(&mut self, group: &str) -> MotionPlayResult {
+        let Some(group_index) = self.group_indices.get(group).copied() else {
+            return MotionPlayResult::MissingGroup;
+        };
+        let group = &mut self.groups[group_index];
+        if group.declared_count == 0 {
+            return MotionPlayResult::MissingGroup;
+        }
+        if group.motions.is_empty() {
+            return MotionPlayResult::InvalidMotion;
+        }
+
+        let start_index = group.next_index % group.motions.len();
+        let index = start_index;
+
+        group.motions[index].restart();
+        self.settling = false;
+        group.next_index = (index + 1) % group.motions.len();
+        self.active = Some(ActiveMotion { group_index, index });
+        MotionPlayResult::Started
+    }
+
+    #[cfg(test)]
+    pub(in crate::model) fn active_is_looping(&self) -> Option<bool> {
+        self.active
+            .as_ref()
+            .and_then(|active| {
+                self.groups
+                    .get(active.group_index)?
+                    .motions
+                    .get(active.index)
+            })
+            .map(MotionPlayer::is_looping)
+    }
+
+    #[cfg(test)]
+    fn active_duration(&self) -> Option<f32> {
+        self.active
+            .as_ref()
+            .and_then(|active| {
+                self.groups
+                    .get(active.group_index)?
+                    .motions
+                    .get(active.index)
+            })
+            .map(|player| player.motion().meta().duration())
+    }
+
+    #[cfg(test)]
+    pub(in crate::model) fn finish_active_for_test(&mut self, runtime: &mut ModelRuntime) {
+        if let Some(duration) = self.active_duration() {
+            self.update(runtime, duration + 0.001);
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::model) fn loaded_motion_count(&self, group: &str) -> Option<usize> {
+        self.group_indices
+            .get(group)
+            .map(|index| self.groups[*index].motions.len())
+    }
+}

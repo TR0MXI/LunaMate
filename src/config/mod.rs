@@ -1,14 +1,12 @@
-//! 统一管理应用配置、模型目录和独立设置界面。
+//! 统一管理应用配置领域、持久化快照与 revision 提交。
 //!
 //! 高频标量通过原子变量读取，模型选择通过 [`ArcSwap`] 发布不可变快照，窗口位置使用短临界区缓存。
 //! 配置文件只在启动和显式保存时访问；渲染路径不读取磁盘。
 
+mod appearance;
 mod document;
 mod llm;
-mod llm_view;
-mod model_catalog;
 mod types;
-mod view;
 
 #[cfg(test)]
 mod tests;
@@ -27,6 +25,7 @@ use parking_lot::Mutex;
 use rust_i18n::t;
 use toml_edit::{DocumentMut, Value};
 
+pub(crate) use appearance::{AppLanguage, AppearanceSettings, CustomThemeSettings, ThemePreset};
 use document::{
     default_config_path, document_for_update, ensure_table_like, read_config_file, remove_key,
     set_item_value, validate_relative_path, write_appearance, write_config_file,
@@ -34,7 +33,6 @@ use document::{
 };
 pub(crate) use llm::{LLM_PROVIDERS, LlmModelConfig, LlmProvider, LlmSettings, SharedLlmSettings};
 use llm::{parse_llm_settings, write_llm_settings};
-pub(crate) use model_catalog::ModelCatalog;
 use types::{
     CUSTOM_FRAME_RATE_KEY, CUSTOM_FRAME_RATE_NAME, FOLLOW_DISPLAY_FRAME_RATE_NAME,
     UNLIMITED_FRAME_RATE_NAME,
@@ -44,10 +42,6 @@ pub(crate) use types::{
     LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES, LOGGING_MIN_FILE_SIZE_MB,
     LOGGING_MIN_KEEP_FILES, LogLevel, LoggingSettings, ModelWindowSize, WindowPosition,
 };
-pub(crate) use view::{ConfigEvent, ConfigView, ConfigWindowView};
-
-pub(crate) use crate::theme::{AppLanguage, AppearanceSettings, CustomThemeSettings, ThemePreset};
-
 /// 全局应用配置；首次访问时从用户配置目录加载，并兼容已有工作目录配置。
 pub(crate) static CONFIG: LazyLock<LunaConfig> = LazyLock::new(LunaConfig::load);
 
@@ -528,7 +522,7 @@ impl LunaConfig {
         Ok(applied.then_some(()))
     }
 
-    /// 为一份由 UI 提交的 LLM 草稿分配单调 revision。
+    /// 为一份由 Agent 设置编辑器提交的草稿分配单调 revision。
     pub(crate) fn reserve_llm_settings_revision(&self) -> u64 {
         self.reserve_request_revision(&self.llm_request_revision)
     }
