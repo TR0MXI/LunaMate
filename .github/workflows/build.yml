@@ -18,8 +18,8 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
-  build:
-    name: 构建 ${{ matrix.name }}
+  verify:
+    name: 检查 ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     env:
@@ -35,21 +35,18 @@ jobs:
             rust_targets: x86_64-unknown-linux-gnu
             artifact: lunamate-linux-x86_64
             archive: dist/lunamate-linux-x86_64.tar.gz
-            run_quality: true
           - name: Windows x86_64
             os: windows-2022
             target: x86_64-pc-windows-msvc
             rust_targets: x86_64-pc-windows-msvc
             artifact: lunamate-windows-x86_64
             archive: dist/lunamate-windows-x86_64.zip
-            run_quality: false
-          - name: macOS Universal
+          - name: macOS Apple Silicon
             os: macos-14
-            target: universal-apple-darwin
-            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-            artifact: lunamate-macos-universal
-            archive: dist/lunamate-macos-universal.zip
-            run_quality: false
+            target: aarch64-apple-darwin
+            rust_targets: aarch64-apple-darwin
+            artifact: lunamate-macos-aarch64
+            archive: dist/lunamate-macos-aarch64.zip
 
     steps:
       - name: 检出源码
@@ -94,7 +91,7 @@ jobs:
         with:
           version: v0.16.0
 
-      - name: 恢复 Cargo 缓存
+      - name: 启用 Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ matrix.target }}
@@ -103,33 +100,23 @@ jobs:
           cache-targets: false
 
       - name: Cargo check
-        if: matrix.run_quality
         run: cargo check --locked
 
       - name: Clippy
-        if: matrix.run_quality
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: 检查格式
-        if: matrix.run_quality
         run: cargo fmt --all -- --check
 
       - name: 运行测试
-        if: matrix.run_quality
         run: cargo test --locked
 
       - name: 构建 Release 二进制
-        if: runner.os != 'macOS'
+        if: startsWith(github.ref, 'refs/tags/v')
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: 构建 macOS Universal 二进制
-        if: runner.os == 'macOS'
-        run: |
-          cargo build --release --locked --target aarch64-apple-darwin
-          cargo build --release --locked --target x86_64-apple-darwin
-
       - name: 打包 Linux 产物
-        if: runner.os == 'Linux'
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Linux'
         run: |
           package="dist/lunamate-linux-x86_64"
           mkdir -p "$package"
@@ -138,7 +125,7 @@ jobs:
           tar -C dist -czf "${{ matrix.archive }}" lunamate-linux-x86_64
 
       - name: 打包 Windows 产物
-        if: runner.os == 'Windows'
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
         shell: pwsh
         run: |
           $package = "dist/lunamate-windows-x86_64"
@@ -148,7 +135,7 @@ jobs:
           Compress-Archive -Path $package -DestinationPath "${{ matrix.archive }}" -CompressionLevel Optimal
 
       - name: 读取应用版本
-        if: runner.os == 'macOS'
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
         id: package_metadata
         run: |
           version="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "lunamate") | .version')"
@@ -156,15 +143,11 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: 打包 macOS 应用
-        if: runner.os == 'macOS'
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'macOS'
         run: |
           app="dist/LunaMate.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-          lipo -create \
-            target/aarch64-apple-darwin/release/lunamate \
-            target/x86_64-apple-darwin/release/lunamate \
-            -output "$app/Contents/MacOS/LunaMate"
-          chmod 755 "$app/Contents/MacOS/LunaMate"
+          install -m 755 "target/${{ matrix.target }}/release/lunamate" "$app/Contents/MacOS/LunaMate"
           cp README.md LICENSE "$app/Contents/Resources/"
           plutil -create xml1 "$app/Contents/Info.plist"
           plutil -insert CFBundleDisplayName -string LunaMate "$app/Contents/Info.plist"
@@ -179,6 +162,7 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent "$app" "${{ matrix.archive }}"
 
       - name: 上传构建产物
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -190,7 +174,7 @@ jobs:
   release:
     name: 发布 GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: verify
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     permissions:
