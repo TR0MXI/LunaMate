@@ -1,4 +1,4 @@
-//! 根据配置帧率计算降载档位，并为静止模型提供可合并的异步唤醒。
+//! 根据配置帧率维护绝对帧时刻与降载档位，并为静止模型提供可合并的异步唤醒。
 
 use std::{
     collections::VecDeque,
@@ -130,7 +130,7 @@ impl FrameTier {
     }
 }
 
-/// 跟踪当前帧率档位，并通过滞回避免超预算边界附近频繁切换。
+/// 跟踪绝对帧时刻与当前帧率档位，并通过滞回避免超预算边界附近频繁切换。
 pub(crate) struct FramePacer {
     target_fps: Option<u16>,
     tiers: [FrameTier; MAX_FRAME_TIERS],
@@ -138,6 +138,7 @@ pub(crate) struct FramePacer {
     current_tier: usize,
     consecutive_overruns: u8,
     consecutive_recovery_frames: u8,
+    next_frame_at: Option<Instant>,
 }
 
 impl FramePacer {
@@ -153,6 +154,7 @@ impl FramePacer {
                 current_tier: 0,
                 consecutive_overruns: 0,
                 consecutive_recovery_frames: 0,
+                next_frame_at: None,
             };
         };
         let middle_floor = MIDDLE_TIER_FLOOR_FPS.min(target_fps);
@@ -179,12 +181,20 @@ impl FramePacer {
             current_tier: 0,
             consecutive_overruns: 0,
             consecutive_recovery_frames: 0,
+            next_frame_at: None,
         }
     }
 
-    /// 返回首次连续渲染前应等待的目标帧间隔。
-    pub(crate) fn initial_delay(&self) -> Duration {
-        self.current().map_or(Duration::ZERO, |tier| tier.interval)
+    /// 返回距离下一绝对帧时刻的剩余时间；首次调用从当前时刻建立节拍。
+    pub(crate) fn delay_until_next_frame(&mut self, now: Instant) -> Duration {
+        if let Some(next_frame_at) = self.next_frame_at {
+            return next_frame_at.saturating_duration_since(now);
+        }
+        let Some(current) = self.current() else {
+            return Duration::ZERO;
+        };
+        self.next_frame_at = Some(now + current.interval);
+        current.interval
     }
 
     /// 在 UI 热更新帧率后重建调度档位；目标未变化时保留当前滞回状态。
@@ -194,10 +204,39 @@ impl FramePacer {
         }
     }
 
-    /// 记录一帧的完整耗时，并返回开始下一帧前应等待的时间。
-    pub(crate) fn delay_after_frame(&mut self, elapsed: Duration) -> Duration {
+    /// 记录一帧的完整耗时，并沿既有绝对节拍推进下一帧时刻。
+    ///
+    /// 定时器超时和帧尾处理开销不会被重复加到每个帧间隔中；错过当前节拍时
+    /// 最多立即补一帧，真实渲染超预算时仍保留最小休息以避免忙循环。
+    pub(crate) fn complete_frame(&mut self, frame_started: Instant, completed_at: Instant) {
+        let elapsed = completed_at.saturating_duration_since(frame_started);
+        self.record_frame_duration(elapsed);
         let Some(current) = self.current() else {
-            return Duration::ZERO;
+            self.next_frame_at = None;
+            return;
+        };
+        let cadence_anchor = self.next_frame_at.take().unwrap_or(frame_started);
+        let cadence_deadline = cadence_anchor + current.interval;
+        let earliest_deadline = if elapsed >= current.interval {
+            completed_at + MIN_OVER_BUDGET_REST
+        } else {
+            completed_at
+        };
+        self.next_frame_at = Some(cadence_deadline.max(earliest_deadline));
+    }
+
+    /// 将下一帧至少推迟指定时长，用于 surface 暂时不可用等独立于帧率的退避。
+    pub(crate) fn postpone_next_frame(&mut self, now: Instant, minimum_delay: Duration) {
+        let not_before = now + minimum_delay;
+        self.next_frame_at = Some(
+            self.next_frame_at
+                .map_or(not_before, |deadline| deadline.max(not_before)),
+        );
+    }
+
+    fn record_frame_duration(&mut self, elapsed: Duration) {
+        let Some(current) = self.current() else {
+            return;
         };
         if elapsed >= current.interval {
             self.consecutive_overruns = self.consecutive_overruns.saturating_add(1);
@@ -221,12 +260,6 @@ impl FramePacer {
                 self.consecutive_recovery_frames = 0;
             }
         }
-
-        self.current()
-            .map(|tier| tier.interval)
-            .unwrap_or(Duration::ZERO)
-            .checked_sub(elapsed)
-            .unwrap_or(MIN_OVER_BUDGET_REST)
     }
 
     /// 静止期间没有持续负载，唤醒后从用户配置的最高档重新评估。
@@ -234,6 +267,7 @@ impl FramePacer {
         self.current_tier = 0;
         self.consecutive_overruns = 0;
         self.consecutive_recovery_frames = 0;
+        self.next_frame_at = None;
     }
 
     fn current(&self) -> Option<FrameTier> {
@@ -319,6 +353,21 @@ pub(crate) fn frame_wake_channel() -> (FrameWake, FrameWakeReceiver) {
 mod tests {
     use super::*;
 
+    fn run_frame(
+        pacer: &mut FramePacer,
+        now: &mut Instant,
+        elapsed: Duration,
+        wake_overshoot: Duration,
+        tail_work: Duration,
+    ) -> Instant {
+        let delay = pacer.delay_until_next_frame(*now);
+        let frame_started = *now + delay + wake_overshoot;
+        let completed_at = frame_started + elapsed;
+        pacer.complete_frame(frame_started, completed_at);
+        *now = completed_at + tail_work;
+        frame_started
+    }
+
     #[test]
     fn frame_rate_meter_reports_measured_rate_and_decays_after_idle() {
         let started = Instant::now();
@@ -399,13 +448,18 @@ mod tests {
     #[test]
     fn unlimited_rate_skips_budget_delays_and_degradation() {
         let mut pacer = FramePacer::new(None);
+        let mut now = Instant::now();
 
-        assert_eq!(pacer.initial_delay(), Duration::ZERO);
+        assert_eq!(pacer.delay_until_next_frame(now), Duration::ZERO);
         for _ in 0..OVERRUNS_BEFORE_DOWNSHIFT * 2 {
-            assert_eq!(
-                pacer.delay_after_frame(Duration::from_secs(1)),
-                Duration::ZERO
+            run_frame(
+                &mut pacer,
+                &mut now,
+                Duration::from_secs(1),
+                Duration::ZERO,
+                Duration::ZERO,
             );
+            assert_eq!(pacer.delay_until_next_frame(now), Duration::ZERO);
         }
         assert!(pacer.tier_fps().is_empty());
     }
@@ -413,17 +467,38 @@ mod tests {
     #[test]
     fn repeated_overruns_downshift_one_tier_at_a_time() {
         let mut pacer = FramePacer::new(Some(60));
+        let mut now = Instant::now();
         let over_budget = Duration::from_millis(20);
 
         for _ in 0..OVERRUNS_BEFORE_DOWNSHIFT - 1 {
-            assert_eq!(pacer.delay_after_frame(over_budget), MIN_OVER_BUDGET_REST);
+            run_frame(
+                &mut pacer,
+                &mut now,
+                over_budget,
+                Duration::ZERO,
+                Duration::ZERO,
+            );
+            assert_eq!(pacer.delay_until_next_frame(now), MIN_OVER_BUDGET_REST);
             assert_eq!(pacer.current_fps(), 60);
         }
-        assert!(pacer.delay_after_frame(over_budget) > Duration::ZERO);
+        run_frame(
+            &mut pacer,
+            &mut now,
+            over_budget,
+            Duration::ZERO,
+            Duration::ZERO,
+        );
+        assert!(pacer.delay_until_next_frame(now) > Duration::ZERO);
         assert_eq!(pacer.current_fps(), 30);
 
         for _ in 0..OVERRUNS_BEFORE_DOWNSHIFT {
-            pacer.delay_after_frame(Duration::from_millis(40));
+            run_frame(
+                &mut pacer,
+                &mut now,
+                Duration::from_millis(40),
+                Duration::ZERO,
+                Duration::ZERO,
+            );
         }
         assert_eq!(pacer.current_fps(), 15);
     }
@@ -431,29 +506,59 @@ mod tests {
     #[test]
     fn sustained_headroom_recovers_without_oscillating() {
         let mut pacer = FramePacer::new(Some(60));
+        let mut now = Instant::now();
         for _ in 0..OVERRUNS_BEFORE_DOWNSHIFT {
-            pacer.delay_after_frame(Duration::from_millis(20));
+            run_frame(
+                &mut pacer,
+                &mut now,
+                Duration::from_millis(20),
+                Duration::ZERO,
+                Duration::ZERO,
+            );
         }
         assert_eq!(pacer.current_fps(), 30);
 
         for _ in 0..RECOVERY_FRAMES_BEFORE_UPSHIFT - 1 {
-            pacer.delay_after_frame(Duration::from_millis(10));
+            run_frame(
+                &mut pacer,
+                &mut now,
+                Duration::from_millis(10),
+                Duration::ZERO,
+                Duration::ZERO,
+            );
             assert_eq!(pacer.current_fps(), 30);
         }
-        pacer.delay_after_frame(Duration::from_millis(10));
+        run_frame(
+            &mut pacer,
+            &mut now,
+            Duration::from_millis(10),
+            Duration::ZERO,
+            Duration::ZERO,
+        );
         assert_eq!(pacer.current_fps(), 60);
     }
 
     #[test]
     fn idle_reset_restores_configured_tier() {
         let mut pacer = FramePacer::new(Some(120));
+        let mut now = Instant::now();
         for _ in 0..OVERRUNS_BEFORE_DOWNSHIFT {
-            pacer.delay_after_frame(Duration::from_millis(10));
+            run_frame(
+                &mut pacer,
+                &mut now,
+                Duration::from_millis(10),
+                Duration::ZERO,
+                Duration::ZERO,
+            );
         }
         assert_eq!(pacer.current_fps(), 60);
 
         pacer.reset_after_idle();
         assert_eq!(pacer.current_fps(), 120);
+        assert_eq!(
+            pacer.delay_until_next_frame(now),
+            Duration::from_secs_f64(1.0 / 120.0)
+        );
     }
 
     #[test]
@@ -468,13 +573,44 @@ mod tests {
     #[test]
     fn changing_to_and_from_unlimited_rebuilds_scheduler() {
         let mut pacer = FramePacer::new(Some(60));
+        let now = Instant::now();
         pacer.set_target_fps(None);
-        assert_eq!(pacer.initial_delay(), Duration::ZERO);
+        assert_eq!(pacer.delay_until_next_frame(now), Duration::ZERO);
         assert!(pacer.tier_fps().is_empty());
 
         pacer.set_target_fps(Some(30));
         assert_eq!(pacer.tier_fps(), vec![30, 15, 10]);
         assert_eq!(pacer.current_fps(), 30);
+    }
+
+    #[test]
+    fn absolute_deadlines_prevent_timer_overshoot_from_accumulating() {
+        let mut pacer = FramePacer::new(Some(120));
+        let mut now = Instant::now();
+        let render_time = Duration::from_millis(2);
+        let wake_overshoot = Duration::from_millis(1);
+        let tail_work = Duration::from_micros(500);
+        let first_frame = run_frame(&mut pacer, &mut now, render_time, wake_overshoot, tail_work);
+        let mut last_frame = first_frame;
+        for _ in 0..120 {
+            last_frame = run_frame(&mut pacer, &mut now, render_time, wake_overshoot, tail_work);
+        }
+
+        let measured = 120.0 / last_frame.duration_since(first_frame).as_secs_f64();
+        assert!(
+            (measured - 120.0).abs() < 0.01,
+            "绝对节拍下的实际测量值为 {measured}"
+        );
+    }
+
+    #[test]
+    fn postponed_frame_is_honored_even_without_a_rate_limit() {
+        let mut pacer = FramePacer::new(None);
+        let now = Instant::now();
+        let retry_delay = Duration::from_millis(16);
+        pacer.postpone_next_frame(now, retry_delay);
+
+        assert_eq!(pacer.delay_until_next_frame(now), retry_delay);
     }
 
     #[test]

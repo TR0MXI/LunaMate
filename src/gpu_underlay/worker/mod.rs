@@ -510,7 +510,6 @@ pub(super) fn run(
 
         let mut previous_frame = Instant::now();
         let mut pacer = FramePacer::new(CONFIG.frame_rate().limit());
-        let mut next_deadline = Instant::now() + pacer.initial_delay();
         let mut needs_next_frame = model.needs_continuous_frames();
         let mut render_requested = false;
         loop {
@@ -521,8 +520,7 @@ pub(super) fn run(
                 break 'worker;
             }
             let should_render = needs_next_frame || render_requested;
-            let timeout =
-                should_render.then(|| next_deadline.saturating_duration_since(Instant::now()));
+            let timeout = should_render.then(|| pacer.delay_until_next_frame(Instant::now()));
             let update = mailbox.wait(timeout);
             if update.shutdown {
                 break 'worker;
@@ -535,7 +533,7 @@ pub(super) fn run(
             if !needs_next_frame && !render_requested {
                 continue;
             }
-            if Instant::now() < next_deadline {
+            if pacer.delay_until_next_frame(Instant::now()) > Duration::ZERO {
                 continue;
             }
             if !needs_next_frame {
@@ -616,13 +614,12 @@ pub(super) fn run(
                     break 'worker;
                 }
             }
-            let elapsed = frame_started.elapsed();
+            let frame_completed = Instant::now();
             needs_next_frame = model.needs_continuous_frames() || command_batch_full;
-            let mut next_delay = pacer.delay_after_frame(elapsed);
+            pacer.complete_frame(frame_started, frame_completed);
             if render_requested {
-                next_delay = next_delay.max(SURFACE_RETRY_DELAY);
+                pacer.postpone_next_frame(Instant::now(), SURFACE_RETRY_DELAY);
             }
-            next_deadline = Instant::now() + next_delay;
         }
     }
 }

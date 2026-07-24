@@ -231,10 +231,11 @@ impl ModelView {
 
             let mut previous_frame = Instant::now();
             let mut pacer = FramePacer::new(CONFIG.frame_rate().limit());
-            let mut next_delay = pacer.initial_delay();
             let mut reset_delta = false;
             loop {
+                pacer.set_target_fps(CONFIG.frame_rate().limit());
                 if needs_next_frame {
+                    let next_delay = pacer.delay_until_next_frame(Instant::now());
                     background.timer(next_delay).await;
                 } else {
                     if !wake_receiver.wait().await {
@@ -244,7 +245,6 @@ impl ModelView {
                     reset_delta = true;
                 }
                 wake_receiver.drain();
-                pacer.set_target_fps(CONFIG.frame_rate().limit());
                 let frame_started = Instant::now();
                 let delta = if reset_delta {
                     Duration::ZERO
@@ -320,12 +320,12 @@ impl ModelView {
                     break;
                 }
 
-                let elapsed = frame_started.elapsed();
+                let frame_completed = Instant::now();
                 let input_pending = wake_receiver.drain();
                 needs_next_frame =
                     model_needs_continuous_frames || command_batch_full || input_pending;
                 if needs_next_frame {
-                    next_delay = pacer.delay_after_frame(elapsed);
+                    pacer.complete_frame(frame_started, frame_completed);
                 }
             }
         }));
