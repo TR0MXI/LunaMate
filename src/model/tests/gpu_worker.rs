@@ -1,10 +1,15 @@
+use std::time::Duration;
+
 use gpui_wgpu::wgpu;
 
 use crate::{
     config::FrameRate,
     model::gpu_underlay::{
         GpuUnderlayEvent,
-        worker::{ModelFailureStage, model_failure_event, present_mode_for_frame_rate},
+        worker::{
+            ModelFailureStage, SurfaceRetryBackoff, model_failure_event,
+            present_mode_for_frame_rate,
+        },
     },
 };
 
@@ -103,4 +108,18 @@ fn unlimited_presentation_uses_mailbox_before_fifo_fallback() {
         present_mode_for_frame_rate(FrameRate::Unlimited, &[wgpu::PresentMode::Fifo]),
         wgpu::PresentMode::Fifo
     );
+}
+
+#[test]
+fn surface_retry_backoff_is_bounded_and_resettable() {
+    let mut retry = SurfaceRetryBackoff::new(Duration::from_millis(16));
+    assert_eq!(retry.next_delay(), Duration::from_millis(16));
+    assert_eq!(retry.next_delay(), Duration::from_millis(32));
+    for _ in 0..16 {
+        let _ = retry.next_delay();
+    }
+    assert_eq!(retry.next_delay(), Duration::from_secs(1));
+
+    retry.reset();
+    assert_eq!(retry.next_delay(), Duration::from_millis(16));
 }

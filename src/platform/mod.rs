@@ -7,7 +7,7 @@ mod window;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use tray::{SystemTray, SystemTrayAction};
+pub(crate) use tray::{SystemTray, SystemTrayAction, TrayIconStyle};
 pub(crate) use underlay::{
     InitializationCancellation, NativeAttachment, SurfaceFactory, SurfaceOwner, SurfaceSeed,
     UnderlaySize, attach as attach_underlay,

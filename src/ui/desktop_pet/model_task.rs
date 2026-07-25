@@ -164,6 +164,7 @@ impl DesktopPetView {
         let model_name = model_display_name(&model_path);
         let [width, height] = self.raster_dimensions;
         let task_look_target = self.look_target.clone();
+        let mut observed_visibility_revision = self.visibility_revision;
         let background = cx.background_executor().clone();
         let (model_commands, command_receiver) = command_channel();
         let cancellation = RenderCancellation::default();
@@ -258,7 +259,9 @@ impl DesktopPetView {
                     if this.model_generation != generation {
                         return false;
                     }
-                    this.frame = Some(Arc::new(frame));
+                    if this.desktop_pet_visible {
+                        this.frame = Some(Arc::new(frame));
+                    }
                     this.model_state = ModelLoadState::ready(diagnostics);
                     this.config.update(cx, |config, cx| {
                         config.set_preview_capabilities(capabilities.clone(), cx);
@@ -275,6 +278,32 @@ impl DesktopPetView {
             let mut pacer = frame_pacer(CONFIG.frame_rate());
             let mut reset_delta = false;
             loop {
+                let activity = this
+                    .update(cx, |this, _| {
+                        (this.model_generation == generation && this.gpu_underlay.is_none())
+                            .then_some((this.desktop_pet_visible, this.visibility_revision))
+                    })
+                    .ok()
+                    .flatten();
+                let Some((visible, visibility_revision)) = activity else {
+                    break;
+                };
+                if observed_visibility_revision != visibility_revision {
+                    observed_visibility_revision = visibility_revision;
+                    pacer.reset_after_idle();
+                    reset_delta = true;
+                    needs_next_frame = true;
+                }
+                if !visible {
+                    pacer.reset_after_idle();
+                    reset_delta = true;
+                    needs_next_frame = true;
+                    if !frame_rate_receiver.wait().await {
+                        break;
+                    }
+                    continue;
+                }
+
                 let mut frame_rate = CONFIG.frame_rate();
                 pacer.set_target_fps(
                     frame_rate.limit(),
@@ -384,8 +413,10 @@ impl DesktopPetView {
                         }
                         match frame {
                             Ok(frame) => {
-                                this.frame = Some(Arc::new(frame));
-                                cx.notify();
+                                if this.desktop_pet_visible {
+                                    this.frame = Some(Arc::new(frame));
+                                    cx.notify();
+                                }
                                 true
                             }
                             Err(error) if error.is_cancelled() => false,

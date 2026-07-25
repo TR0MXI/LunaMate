@@ -3,10 +3,12 @@
 use std::{
     borrow::Cow,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
     time::Duration,
 };
 
+use async_channel::Receiver;
 use gpui::{
     App, AppContext, AssetSource, Entity, QuitMode, Result as GpuiResult, SharedString, Styled,
     WindowBackgroundAppearance, WindowDecorations, WindowKind, WindowOptions, px, size,
@@ -141,18 +143,24 @@ fn spawn_final_agent_save(
     *final_save.lock() = Some(task);
 }
 
-fn install_system_tray(
-    model_view: &Entity<DesktopPetView>,
+fn create_system_tray(
     runtime: &tokio::runtime::Handle,
-    cx: &mut App,
-) {
-    let (tray, actions) = match SystemTray::install(runtime) {
-        Ok(tray) => tray,
+) -> Option<(Rc<SystemTray>, Receiver<SystemTrayAction>)> {
+    match SystemTray::install(runtime) {
+        Ok((tray, actions)) => Some((Rc::new(tray), actions)),
         Err(error) => {
             log::warn!("{}", t!("log.tray_init_failed", error = error));
-            return;
+            None
         }
-    };
+    }
+}
+
+fn listen_for_system_tray_actions(
+    model_view: &Entity<DesktopPetView>,
+    tray: Rc<SystemTray>,
+    actions: Receiver<SystemTrayAction>,
+    cx: &mut App,
+) {
     let model_for_tray = model_view.downgrade();
 
     cx.spawn(async move |cx| {
@@ -161,8 +169,10 @@ fn install_system_tray(
             match action {
                 SystemTrayAction::ToggleDesktopPet => {
                     let next_hidden = !desktop_pet_hidden;
-                    match model_for_tray.update_in(cx, |_, window, _| {
-                        set_desktop_pet_window_visible(window, !next_hidden)
+                    match model_for_tray.update_in(cx, |model, window, cx| {
+                        set_desktop_pet_window_visible(window, !next_hidden)?;
+                        model.set_desktop_pet_visible(!next_hidden, window, cx);
+                        Ok::<(), String>(())
                     }) {
                         Ok(Ok(())) => {
                             desktop_pet_hidden = next_hidden;
@@ -277,6 +287,7 @@ pub(super) fn run() {
                         window.scale_factor(),
                     );
                     let config = cx.new(|cx| SettingsView::new(model_catalog, config_status, cx));
+                    let system_tray = create_system_tray(&async_handle);
                     let config_for_quit = config.downgrade();
                     let agent_view = agent.mount(window, cx);
                     let agent_for_quit = agent_view.downgrade();
@@ -327,6 +338,7 @@ pub(super) fn run() {
                             agent_view,
                             None,
                             raster_dimensions,
+                            system_tray.as_ref().map(|(tray, _)| Rc::clone(tray)),
                             window,
                             cx,
                         )
@@ -359,7 +371,9 @@ pub(super) fn run() {
                         async {}
                     })
                     .detach();
-                    install_system_tray(&model_view, &async_handle, cx);
+                    if let Some((tray, actions)) = system_tray {
+                        listen_for_system_tray_actions(&model_view, tray, actions, cx);
+                    }
                     // Root 默认铺满主题背景，需覆盖为透明色才能保留交换链的 Alpha。
                     cx.new(|cx| {
                         Root::new(model_view, window, cx)

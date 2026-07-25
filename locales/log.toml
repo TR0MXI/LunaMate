@@ -179,3 +179,15 @@ _version = 2
 "zh-TW" = "系統匣動作佇列已滿，已忽略本次操作"
 "en" = "The system tray action queue is full; this action was ignored"
 "ja" = "システムトレイの操作キューが満杯のため、この操作を無視しました"
+
+[log.tray_appearance_failed]
+"zh-CN" = "同步系统托盘外观失败：%{error}"
+"zh-TW" = "同步系統匣外觀失敗：%{error}"
+"en" = "Failed to synchronize the system tray appearance: %{error}"
+"ja" = "システムトレイの外観を同期できませんでした: %{error}"
+
+[log.tray_update_stopped]
+"zh-CN" = "系统托盘服务已停止，后续状态更新将不再生效"
+"zh-TW" = "系統匣服務已停止，後續狀態更新將不再生效"
+"en" = "The system tray service stopped; subsequent state updates will not take effect"
+"ja" = "システムトレイサービスが停止したため、以降の状態更新は反映されません"

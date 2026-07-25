@@ -189,6 +189,11 @@ impl GpuUnderlay {
         self.mailbox.wake();
     }
 
+    /// 暂停或恢复 surface 获取与模型帧推进；模型和 GPU 资源继续驻留。
+    pub(crate) fn set_paused(&self, paused: bool) {
+        self.mailbox.set_paused(paused);
+    }
+
     /// 请求 worker 停止并转移线程句柄；调用方必须等待句柄后再释放 attachment。
     pub(crate) fn request_shutdown(&mut self) -> Option<JoinHandle<()>> {
         if let Some(cancellation) = self.active_cancellation.take() {
@@ -235,12 +240,16 @@ pub(in crate::model) struct WorkerMailbox {
 struct MailboxState {
     replacement: Option<LoadRequest>,
     wake_pending: bool,
+    paused: bool,
+    pause_changed: bool,
     shutdown: bool,
 }
 
 pub(in crate::model) struct MailboxUpdate {
     pub(in crate::model) replacement: Option<LoadRequest>,
     pub(in crate::model) woken: bool,
+    pub(in crate::model) paused: bool,
+    pub(in crate::model) pause_changed: bool,
     pub(in crate::model) shutdown: bool,
 }
 
@@ -263,6 +272,25 @@ impl WorkerMailbox {
         self.changed.notify_one();
     }
 
+    pub(in crate::model) fn set_paused(&self, paused: bool) {
+        let mut state = self.state.lock();
+        if state.shutdown || state.paused == paused {
+            return;
+        }
+        state.paused = paused;
+        state.pause_changed = true;
+        self.changed.notify_one();
+    }
+
+    pub(in crate::model) fn is_paused(&self) -> bool {
+        self.state.lock().paused
+    }
+
+    #[cfg(test)]
+    pub(in crate::model) fn has_pending_wake(&self) -> bool {
+        self.state.lock().wake_pending
+    }
+
     pub(in crate::model) fn shutdown(&self) {
         let mut state = self.state.lock();
         state.shutdown = true;
@@ -273,7 +301,11 @@ impl WorkerMailbox {
 
     pub(in crate::model) fn wait(&self, timeout: Option<Duration>) -> MailboxUpdate {
         let mut state = self.state.lock();
-        if !state.shutdown && state.replacement.is_none() && !state.wake_pending {
+        if !state.shutdown
+            && state.replacement.is_none()
+            && !state.wake_pending
+            && !state.pause_changed
+        {
             match timeout {
                 Some(timeout) => {
                     self.changed.wait_for(&mut state, timeout);
@@ -284,6 +316,8 @@ impl WorkerMailbox {
         MailboxUpdate {
             replacement: state.replacement.take(),
             woken: std::mem::take(&mut state.wake_pending),
+            paused: state.paused,
+            pause_changed: std::mem::take(&mut state.pause_changed),
             shutdown: state.shutdown,
         }
     }

@@ -4,16 +4,18 @@ pub(in crate::ui) mod model_task;
 mod render;
 
 use std::{
+    cell::RefCell,
     ffi::OsStr,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::{Arc, mpsc::TrySendError},
     time::{Duration, Instant},
 };
 
 use gpui::{
-    AnyWindowHandle, AppContext, Context, Entity, RenderImage, SharedString, Styled, Subscription,
-    Task, Window, WindowBackgroundAppearance, WindowDecorations, WindowKind, WindowOptions, px,
-    size, transparent_black,
+    AnyWindowHandle, App, AppContext, Context, Entity, Hsla, RenderImage, SharedString, Styled,
+    Subscription, Task, Window, WindowBackgroundAppearance, WindowDecorations, WindowKind,
+    WindowOptions, px, size, transparent_black,
 };
 use gpui_component::Root;
 use parking_lot::{Condvar, Mutex};
@@ -21,19 +23,22 @@ use rust_i18n::t;
 
 use crate::{
     agent::AgentView,
-    config::{CONFIG, ConfigWindow, ModelWindowSize, ThemePreset},
+    config::{AppearanceSettings, CONFIG, ConfigWindow, ModelWindowSize, ThemePreset},
     model::{
         FrameRateMeter, FrameWake, GpuUnderlay, GpuUnderlayEvent, GpuUnderlaySize, ModelCommand,
         ModelCommandSender, ModelLoadDiagnostics, ModelPreviewCapabilities, RenderCancellation,
         RenderedModelFrame,
     },
-    platform::{WindowMover, WindowPositionController, configure_settings_window},
+    platform::{
+        SystemTray, TrayIconStyle, WindowMover, WindowPositionController, configure_settings_window,
+    },
 };
 
 use super::{
-    SettingsEvent, SettingsView, SettingsWindowView, apply, apply_language, cache_window_position,
-    desktop_pet_window_size, gpu_underlay_size, gpu_underlay_size_for_window,
-    raster_dimensions_for_window, restored_window_bounds, settings_window_sizes,
+    SettingsEvent, SettingsView, SettingsWindowView, UiPalette, apply, apply_language,
+    cache_window_position, desktop_pet_window_size, gpu_underlay_size,
+    gpu_underlay_size_for_window, raster_dimensions_for_window, restored_window_bounds,
+    settings_window_sizes,
 };
 
 const FPS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
@@ -118,6 +123,8 @@ pub(crate) struct DesktopPetView {
     look_target: Arc<Mutex<[f32; 2]>>,
     eye_tracking_enabled: bool,
     show_fps: bool,
+    desktop_pet_visible: bool,
+    visibility_revision: u64,
     actual_fps: f32,
     frame_rate_meter: FrameRateMeter,
     fps_task: Option<Task<()>>,
@@ -132,6 +139,8 @@ pub(crate) struct DesktopPetView {
     close_after_gpu_shutdown: bool,
     gpu_shutdown_completion: Option<Arc<GpuShutdownCompletion>>,
     window_mover: WindowMover,
+    system_tray: Option<Rc<SystemTray>>,
+    appearance: Rc<RefCell<AppearanceSettings>>,
     config: Entity<SettingsView>,
     chat: Entity<AgentView>,
     chat_open: bool,
@@ -157,6 +166,7 @@ impl DesktopPetView {
         chat: Entity<AgentView>,
         initial_model: Option<PathBuf>,
         raster_dimensions: [u32; 2],
+        system_tray: Option<Rc<SystemTray>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -198,6 +208,7 @@ impl DesktopPetView {
             }
         };
         let gpu_events = gpu_underlay.as_ref().map(GpuUnderlay::events);
+        let appearance = Rc::new(RefCell::new(CONFIG.appearance().as_ref().clone()));
         let config_subscription =
             cx.subscribe(&config, |this, _, event: &SettingsEvent, cx| match event {
                 SettingsEvent::ModelChanged(model_path) => {
@@ -251,9 +262,11 @@ impl DesktopPetView {
                     cx.notify();
                 }
                 SettingsEvent::AppearanceChanged(settings) => {
+                    *this.appearance.borrow_mut() = settings.clone();
                     apply_language(settings.language);
                     this.model_state.refresh_localized_warning();
                     apply(settings, None, cx);
+                    this.sync_system_tray_appearance(cx);
                 }
             });
         cache_window_position(window, ConfigWindow::DesktopPet);
@@ -263,10 +276,13 @@ impl DesktopPetView {
             }
             cache_window_position(window, ConfigWindow::DesktopPet);
         });
-        let appearance_subscription = window.observe_window_appearance(|window, cx| {
-            let appearance = CONFIG.appearance();
+        let tray_for_appearance = system_tray.clone();
+        let appearance_for_observer = appearance.clone();
+        let appearance_subscription = window.observe_window_appearance(move |window, cx| {
+            let appearance = appearance_for_observer.borrow().clone();
             if appearance.theme == ThemePreset::System {
                 apply(&appearance, Some(window), cx);
+                sync_system_tray_appearance(tray_for_appearance.as_deref(), cx);
             }
         });
         let mut view = Self {
@@ -276,6 +292,8 @@ impl DesktopPetView {
             look_target,
             eye_tracking_enabled: CONFIG.eye_tracking(),
             show_fps: CONFIG.show_fps(),
+            desktop_pet_visible: true,
+            visibility_revision: 0,
             actual_fps: 0.0,
             frame_rate_meter: FrameRateMeter::new(),
             fps_task: None,
@@ -290,6 +308,8 @@ impl DesktopPetView {
             close_after_gpu_shutdown: false,
             gpu_shutdown_completion: None,
             window_mover: WindowMover::new(),
+            system_tray,
+            appearance,
             config,
             chat,
             chat_open: false,
@@ -311,6 +331,7 @@ impl DesktopPetView {
             _bounds_subscription: bounds_subscription,
             _appearance_subscription: appearance_subscription,
         };
+        view.sync_system_tray_appearance(cx);
         if view.show_fps {
             view.start_fps_task(cx);
         }
@@ -431,7 +452,9 @@ impl DesktopPetView {
                 } else {
                     frame
                 };
-                self.frame = Some(Arc::new(frame));
+                if self.desktop_pet_visible {
+                    self.frame = Some(Arc::new(frame));
+                }
                 self.model_state = ModelLoadState::ready(diagnostics);
                 self.config.update(cx, |config, cx| {
                     config.set_preview_capabilities(capabilities, cx);
@@ -448,9 +471,14 @@ impl DesktopPetView {
                     .and_then(GpuUnderlay::take_presented_frame);
                 if let Some((generation, frame, presented_at, presented_frames)) = presented
                     && self.model_generation == generation
+                    && self.desktop_pet_visible
                 {
+                    let needs_notify = self.frame.is_none();
                     self.frame = Some(Arc::new(frame));
                     self.record_gpu_presented_frames(presented_at, presented_frames);
+                    if needs_notify {
+                        cx.notify();
+                    }
                 }
             }
             GpuUnderlayEvent::ModelLoadFailed { generation, error } => {
@@ -608,7 +636,7 @@ impl DesktopPetView {
     }
 
     fn record_presented_frame(&mut self) {
-        if !self.show_fps {
+        if !self.show_fps || !self.desktop_pet_visible {
             return;
         }
         let now = Instant::now();
@@ -616,7 +644,7 @@ impl DesktopPetView {
     }
 
     fn record_gpu_presented_frames(&mut self, presented_at: Instant, presented_frames: u64) {
-        if !self.show_fps {
+        if !self.show_fps || !self.desktop_pet_visible {
             return;
         }
         self.frame_rate_meter
@@ -631,20 +659,23 @@ impl DesktopPetView {
         self.frame_rate_meter.reset();
         self.actual_fps = 0.0;
         self.fps_task = None;
-        if show {
+        if show && self.desktop_pet_visible {
             self.start_fps_task(cx);
         }
         cx.notify();
     }
 
     fn start_fps_task(&mut self, cx: &mut Context<Self>) {
+        if self.fps_task.is_some() || !self.desktop_pet_visible {
+            return;
+        }
         let background = cx.background_executor().clone();
         self.fps_task = Some(cx.spawn(async move |this, cx| {
             loop {
                 background.timer(FPS_REFRESH_INTERVAL).await;
                 let keep_running = this
                     .update(cx, |this, cx| {
-                        if !this.show_fps {
+                        if !this.show_fps || !this.desktop_pet_visible {
                             return false;
                         }
                         this.actual_fps = this.frame_rate_meter.sample(Instant::now());
@@ -657,6 +688,62 @@ impl DesktopPetView {
                 }
             }
         }));
+    }
+
+    /// 在原生窗口显隐成功后同步模型调度状态；隐藏不会卸载模型主体。
+    pub(crate) fn set_desktop_pet_visible(
+        &mut self,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.desktop_pet_visible == visible {
+            return;
+        }
+
+        self.desktop_pet_visible = visible;
+        self.visibility_revision = self.visibility_revision.wrapping_add(1);
+        self.frame_rate_meter.reset();
+        self.actual_fps = 0.0;
+        if let Some(underlay) = &self.gpu_underlay {
+            underlay.set_paused(!visible);
+        }
+        if let Some(wake) = &self.frame_rate_wake {
+            wake.wake();
+        }
+
+        if visible {
+            self.wake_model();
+            if self.show_fps {
+                self.start_fps_task(cx);
+            }
+        } else {
+            self.fps_task = None;
+            self.release_rendered_images(window);
+        }
+        cx.notify();
+    }
+
+    fn release_rendered_images(&mut self, window: &mut Window) {
+        self.frame = None;
+        let current = self.current_rendered_image.take();
+        if let Some(previous) = self.previous_rendered_image.take()
+            && current
+                .as_ref()
+                .is_none_or(|current| previous.id != current.id)
+            && let Err(error) = window.drop_image(previous)
+        {
+            log::warn!("{}", t!("log.image_release_failed", error = error));
+        }
+        if let Some(current) = current
+            && let Err(error) = window.drop_image(current)
+        {
+            log::warn!("{}", t!("log.image_release_failed", error = error));
+        }
+    }
+
+    fn sync_system_tray_appearance(&self, cx: &App) {
+        sync_system_tray_appearance(self.system_tray.as_deref(), cx);
     }
 
     fn apply_pending_model_window_size(
@@ -847,6 +934,25 @@ impl DesktopPetView {
             }
         }
     }
+}
+
+fn sync_system_tray_appearance(tray: Option<&SystemTray>, cx: &App) {
+    let Some(tray) = tray else {
+        return;
+    };
+    let palette = UiPalette::from_app(cx);
+    let style = TrayIconStyle::new(
+        rgb8_over(palette.primary, palette.background),
+        rgb8_over(palette.warning, palette.background),
+    );
+    if let Err(error) = tray.sync_appearance(style) {
+        log::warn!("{}", t!("log.tray_appearance_failed", error = error));
+    }
+}
+
+fn rgb8_over(color: Hsla, background: Hsla) -> [u8; 3] {
+    let color = background.to_rgb().blend(color.to_rgb());
+    [color.r, color.g, color.b].map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
 fn model_display_name(path: &Path) -> String {
