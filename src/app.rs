@@ -8,7 +8,7 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext, AssetSource, QuitMode, Result as GpuiResult, SharedString, Styled,
+    App, AppContext, AssetSource, Entity, QuitMode, Result as GpuiResult, SharedString, Styled,
     WindowBackgroundAppearance, WindowDecorations, WindowKind, WindowOptions, px, size,
     transparent_black,
 };
@@ -23,7 +23,9 @@ use crate::{
     config::{CONFIG, ConfigWindow},
     database::Database,
     model::ModelCatalog,
-    platform::configure_desktop_pet_window,
+    platform::{
+        SystemTray, SystemTrayAction, configure_desktop_pet_window, set_desktop_pet_window_visible,
+    },
     ui::{
         DesktopPetView, SettingsView, apply, apply_language, desktop_pet_window_min_size,
         desktop_pet_window_size, raster_dimensions_for_window, restored_window_bounds,
@@ -137,6 +139,58 @@ fn spawn_final_agent_save(
 ) {
     let task = runtime.spawn(async move { shutdown.persist().await });
     *final_save.lock() = Some(task);
+}
+
+fn install_system_tray(
+    model_view: &Entity<DesktopPetView>,
+    runtime: &tokio::runtime::Handle,
+    cx: &mut App,
+) {
+    let (tray, actions) = match SystemTray::install(runtime) {
+        Ok(tray) => tray,
+        Err(error) => {
+            log::warn!("{}", t!("log.tray_init_failed", error = error));
+            return;
+        }
+    };
+    let model_for_tray = model_view.downgrade();
+
+    cx.spawn(async move |cx| {
+        let mut desktop_pet_hidden = false;
+        while let Ok(action) = actions.recv().await {
+            match action {
+                SystemTrayAction::ToggleDesktopPet => {
+                    let next_hidden = !desktop_pet_hidden;
+                    match model_for_tray.update_in(cx, |_, window, _| {
+                        set_desktop_pet_window_visible(window, !next_hidden)
+                    }) {
+                        Ok(Ok(())) => {
+                            desktop_pet_hidden = next_hidden;
+                            tray.set_desktop_pet_hidden(next_hidden);
+                        }
+                        Ok(Err(error)) => {
+                            tray.set_desktop_pet_hidden(desktop_pet_hidden);
+                            log::warn!("{}", t!("log.tray_visibility_failed", error = error));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                SystemTrayAction::OpenSettings => {
+                    if model_for_tray
+                        .update(cx, |model, cx| model.open_config_window(cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                SystemTrayAction::Quit => {
+                    cx.update(|cx| cx.quit());
+                    break;
+                }
+            }
+        }
+    })
+    .detach();
 }
 
 /// 启动 LunaMate 应用并运行 GPUI 事件循环。
@@ -305,6 +359,7 @@ pub(super) fn run() {
                         async {}
                     })
                     .detach();
+                    install_system_tray(&model_view, &async_handle, cx);
                     // Root 默认铺满主题背景，需覆盖为透明色才能保留交换链的 Alpha。
                     cx.new(|cx| {
                         Root::new(model_view, window, cx)

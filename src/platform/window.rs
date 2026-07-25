@@ -123,6 +123,122 @@ pub(crate) fn configure_settings_window(_window: &Window) -> Result<(), String> 
     Ok(())
 }
 
+/// 显示或隐藏桌宠原生窗口，同时保留 GPUI 实体与 Live2D 运行时。
+#[cfg(target_os = "windows")]
+pub(crate) fn set_desktop_pet_window_visible(window: &Window, visible: bool) -> Result<(), String> {
+    use std::ffi::c_void;
+
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow},
+    };
+
+    let handle = HasWindowHandle::window_handle(window)
+        .map_err(|error| format!("无法取得桌宠 Win32 窗口句柄：{error}"))?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return Err("桌宠窗口没有 Win32 原生句柄".to_owned());
+    };
+    let hwnd = HWND(handle.hwnd.get() as *mut c_void);
+
+    // SAFETY: `hwnd` 来自当前 UI 线程中仍存活的 GPUI 窗口；ShowWindow 不保存传入指针，
+    // 隐藏或无激活显示也不会改变窗口所有权和 underlay surface 生命周期。
+    unsafe {
+        let _ = ShowWindow(hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
+    }
+    Ok(())
+}
+
+/// 显示或隐藏桌宠原生窗口，同时保留 GPUI 实体与 Live2D 运行时。
+#[cfg(target_os = "macos")]
+pub(crate) fn set_desktop_pet_window_visible(window: &Window, visible: bool) -> Result<(), String> {
+    use cocoa::base::{id, nil};
+    use objc::{msg_send, runtime::Object, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window)
+        .map_err(|error| format!("无法取得桌宠 AppKit 窗口句柄：{error}"))?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return Err("桌宠窗口没有 AppKit 原生句柄".to_owned());
+    };
+    let native_view = handle.ns_view.as_ptr().cast::<Object>();
+
+    // SAFETY: `native_view` 来自当前主线程中仍存活的 GPUI NSView；其 window 在查询和
+    // 同步 order 调用期间保持有效，消息参数 `nil` 不转移任何对象所有权。
+    unsafe {
+        let native_window: id = msg_send![native_view, window];
+        if native_window.is_null() {
+            return Err("桌宠 NSView 尚未绑定 NSWindow".to_owned());
+        }
+        if visible {
+            let _: () = msg_send![native_window, orderFrontRegardless];
+        } else {
+            let _: () = msg_send![native_window, orderOut: nil];
+        }
+    }
+    Ok(())
+}
+
+/// 显示或隐藏桌宠原生窗口，同时保留 GPUI 实体与 Live2D 运行时。
+#[cfg(target_os = "linux")]
+pub(crate) fn set_desktop_pet_window_visible(window: &Window, visible: bool) -> Result<(), String> {
+    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window)
+        .map_err(|error| format!("无法取得桌宠 Linux 窗口句柄：{error}"))?;
+    match handle.as_raw() {
+        RawWindowHandle::Xcb(handle) => {
+            let display = HasDisplayHandle::display_handle(window)
+                .map_err(|error| format!("无法取得桌宠 XCB display：{error}"))?;
+            let RawDisplayHandle::Xcb(display) = display.as_raw() else {
+                return Err("桌宠窗口与 display 的 XCB 类型不一致".to_owned());
+            };
+            let Some(connection) = display.connection else {
+                return Err("桌宠 XCB display 没有可用连接".to_owned());
+            };
+
+            // SAFETY: 连接和窗口 ID 均来自仍存活的当前 GPUI X11 窗口；调用发生在 UI
+            // 线程，不会与 GPUI 对同一连接的事件处理跨线程并发，随后立即 flush 请求。
+            let flushed = unsafe {
+                if visible {
+                    let _ = xcb_map_window(connection.as_ptr(), handle.window.get());
+                } else {
+                    let _ = xcb_unmap_window(connection.as_ptr(), handle.window.get());
+                }
+                xcb_flush(connection.as_ptr())
+            };
+            if flushed <= 0 {
+                return Err("提交桌宠 X11 显隐请求失败".to_owned());
+            }
+            if visible {
+                window.activate_window();
+            }
+            Ok(())
+        }
+        RawWindowHandle::Wayland(_) => {
+            // xdg-shell 没有客户端主动取消最小化的请求；隐藏使用最小化，恢复交给合成器
+            // 处理 GPUI 的激活请求，避免绕过 GPUI 破坏 surface role。
+            if visible {
+                window.activate_window();
+            } else {
+                window.minimize_window();
+            }
+            Ok(())
+        }
+        _ => Err("当前 Linux 窗口后端不支持桌宠显隐".to_owned()),
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+pub(crate) fn set_desktop_pet_window_visible(window: &Window, visible: bool) -> Result<(), String> {
+    if visible {
+        window.activate_window();
+    } else {
+        window.minimize_window();
+    }
+    Ok(())
+}
+
 /// 将现有窗口移动到与首次启动一致的默认居中位置。
 ///
 /// X11 和 Windows 允许客户端更新顶层窗口坐标；Wayland 由合成器独占位置控制，
@@ -142,6 +258,8 @@ struct XcbVoidCookie {
 #[cfg(target_os = "linux")]
 #[link(name = "xcb")]
 unsafe extern "C" {
+    fn xcb_map_window(connection: *mut std::ffi::c_void, window: u32) -> XcbVoidCookie;
+    fn xcb_unmap_window(connection: *mut std::ffi::c_void, window: u32) -> XcbVoidCookie;
     fn xcb_configure_window(
         connection: *mut std::ffi::c_void,
         window: u32,

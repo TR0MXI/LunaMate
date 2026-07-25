@@ -1,0 +1,19 @@
+_version = 2
+
+[tray.hide_desktop_pet]
+"zh-CN" = "隐藏桌宠"
+"zh-TW" = "隱藏桌寵"
+"en" = "Hide Desktop Pet"
+"ja" = "デスクトップペットを隠す"
+
+[tray.settings]
+"zh-CN" = "设置"
+"zh-TW" = "設定"
+"en" = "Settings"
+"ja" = "設定"
+
+[tray.quit]
+"zh-CN" = "关闭"
+"zh-TW" = "關閉"
+"en" = "Quit"
+"ja" = "終了"

@@ -742,7 +742,7 @@ impl DesktopPetView {
         cx.notify();
     }
 
-    fn open_config_window(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn open_config_window(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.config_window
             && handle
                 .update(cx, |_, window, _| window.activate_window())

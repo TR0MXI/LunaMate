@@ -161,3 +161,21 @@ _version = 2
 "zh-TW" = "目前的視窗系統不允許應用程式主動移動設定視窗"
 "en" = "The current window system does not allow the application to move the settings window"
 "ja" = "現在のウィンドウシステムでは、アプリケーションから設定ウィンドウを移動できません"
+
+[log.tray_init_failed]
+"zh-CN" = "系统托盘初始化失败：%{error}"
+"zh-TW" = "系統匣初始化失敗：%{error}"
+"en" = "Failed to initialize the system tray: %{error}"
+"ja" = "システムトレイを初期化できませんでした: %{error}"
+
+[log.tray_visibility_failed]
+"zh-CN" = "切换桌宠窗口显隐失败：%{error}"
+"zh-TW" = "切換桌寵視窗顯示狀態失敗：%{error}"
+"en" = "Failed to change desktop pet window visibility: %{error}"
+"ja" = "デスクトップペットウィンドウの表示状態を変更できませんでした: %{error}"
+
+[log.tray_action_queue_full]
+"zh-CN" = "系统托盘动作队列已满，本次操作已忽略"
+"zh-TW" = "系統匣動作佇列已滿，已忽略本次操作"
+"en" = "The system tray action queue is full; this action was ignored"
+"ja" = "システムトレイの操作キューが満杯のため、この操作を無視しました"
