@@ -3,6 +3,10 @@ name = "lunamate"
 version = "0.1.0"
 edition = "2024"
 
+[lints.rust]
+# objc 0.2.7 的宏会在调用 crate 中检查这个旧版 Clippy feature。
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
 [lints.clippy]
 unwrap_used = "deny"
 
