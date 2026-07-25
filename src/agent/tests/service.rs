@@ -1,12 +1,16 @@
 use std::time::Duration;
 
 use futures::{StreamExt as _, channel::mpsc, stream};
-use genai::{chat::ChatStreamEvent as GenaiStreamEvent, resolver::AuthData};
+use genai::{
+    chat::{ChatStreamEvent as GenaiStreamEvent, MessageContent, StreamEnd, ToolCall},
+    resolver::AuthData,
+};
 use rust_i18n::t;
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::{
     agent::{
+        media::prepare_dynamic_image,
         service::*,
         session::{ChatContextMessage, ChatRole},
     },
@@ -28,12 +32,84 @@ fn request_keeps_system_prompt_separate_from_history() {
         messages: vec![ChatContextMessage {
             role: ChatRole::User,
             content: "hello".to_owned(),
+            image: None,
         }],
+        screenshot_permission_revision: None,
     };
-    let built = build_request(request.system_prompt, request.messages);
+    let built = build_request(
+        request.system_prompt,
+        request.messages,
+        request.screenshot_permission_revision.is_some(),
+    );
 
     assert_eq!(built.system.as_deref(), Some("persona"));
     assert_eq!(built.messages.len(), 1);
+    assert!(built.tools.is_none());
+}
+
+#[test]
+fn screenshot_tool_is_registered_only_when_permission_is_enabled() {
+    let disabled = build_request(String::new(), Vec::new(), false);
+    assert!(disabled.tools.is_none());
+
+    let enabled = build_request(String::new(), Vec::new(), true);
+    let tools = enabled.tools.expect("开启权限后应当注册截屏工具");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name.as_str(), SCREEN_CAPTURE_TOOL);
+}
+
+#[test]
+fn cohere_adapter_is_rejected_for_binary_and_tool_requests() {
+    assert!(!provider_supports_binary_and_tools(LlmProvider::Cohere));
+    assert!(provider_supports_binary_and_tools(LlmProvider::OpenAi));
+}
+
+#[test]
+fn user_image_is_encoded_as_multipart_content() {
+    let image = prepare_dynamic_image(image::DynamicImage::new_rgb8(10, 6), "input.jpg".to_owned())
+        .expect("测试图片应当可以规范化");
+    let request = build_request(
+        String::new(),
+        vec![ChatContextMessage {
+            role: ChatRole::User,
+            content: "inspect".to_owned(),
+            image: Some(image),
+        }],
+        false,
+    );
+
+    assert_eq!(request.messages[0].content.first_text(), Some("inspect"));
+    assert_eq!(request.messages[0].content.binaries().len(), 1);
+}
+
+#[test]
+fn signed_tool_handoff_retries_from_original_user_message() {
+    let image = prepare_dynamic_image(
+        image::DynamicImage::new_rgb8(10, 6),
+        "screenshot.jpg".to_owned(),
+    )
+    .expect("测试截图应当可以规范化");
+    let mut request = build_request(
+        String::new(),
+        vec![ChatContextMessage {
+            role: ChatRole::User,
+            content: "inspect my screen".to_owned(),
+            image: None,
+        }],
+        true,
+    );
+
+    append_stateless_capture_result(&mut request, Some(&image));
+
+    assert_eq!(request.messages.len(), 1);
+    assert_eq!(request.messages[0].content.binaries().len(), 1);
+    assert!(
+        request.messages[0]
+            .content
+            .texts()
+            .iter()
+            .any(|text| text.contains("capture_screen"))
+    );
 }
 
 #[test]
@@ -130,6 +206,123 @@ async fn empty_terminal_event_is_not_recorded_as_complete_reply() {
     let failure = result.expect_err("空终止事件必须失败");
     assert!(!failure.retryable);
     assert_eq!(failure.message, t!("chat.error.empty_response").to_string());
+}
+
+#[tokio::test]
+async fn tool_only_terminal_event_returns_complete_tool_call() {
+    let call = ToolCall {
+        call_id: "call-1".to_owned(),
+        fn_name: SCREEN_CAPTURE_TOOL.to_owned(),
+        fn_arguments: serde_json::json!({}),
+        thought_signatures: None,
+    };
+    let stream = stream::iter(vec![Ok(GenaiStreamEvent::End(StreamEnd {
+        captured_content: Some(MessageContent::from_tool_calls(vec![call])),
+        captured_reasoning_content: Some("reasoning handoff".to_owned()),
+        ..StreamEnd::default()
+    }))]);
+    let (mut sender, _) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let outcome = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect("纯工具响应不应被视为空正文");
+
+    let StreamOutcome::ToolUse {
+        assistant_message,
+        calls,
+    } = outcome
+    else {
+        panic!("应当返回完整工具调用");
+    };
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].fn_name, SCREEN_CAPTURE_TOOL);
+    assert_eq!(
+        assistant_message.content.first_reasoning_content(),
+        Some("reasoning handoff")
+    );
+}
+
+#[tokio::test]
+async fn streamed_thought_signature_is_preserved_for_tool_handoff() {
+    let call = ToolCall {
+        call_id: "call-1".to_owned(),
+        fn_name: SCREEN_CAPTURE_TOOL.to_owned(),
+        fn_arguments: serde_json::json!({}),
+        thought_signatures: None,
+    };
+    let stream = stream::iter(vec![
+        Ok(GenaiStreamEvent::ThoughtSignatureChunk(
+            genai::chat::StreamChunk {
+                content: "signed-reasoning".to_owned(),
+            },
+        )),
+        Ok(GenaiStreamEvent::End(StreamEnd {
+            captured_content: Some(MessageContent::from_tool_calls(vec![call])),
+            ..StreamEnd::default()
+        })),
+    ]);
+    let (mut sender, _) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let outcome = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect("签名工具响应应当形成续轮消息");
+
+    let StreamOutcome::ToolUse {
+        assistant_message,
+        calls,
+    } = outcome
+    else {
+        panic!("应当返回完整工具调用");
+    };
+    assert_eq!(
+        assistant_message.content.thought_signatures(),
+        vec!["signed-reasoning"]
+    );
+    assert_eq!(
+        calls[0].thought_signatures.as_deref(),
+        Some(["signed-reasoning".to_owned()].as_slice())
+    );
+}
+
+#[tokio::test]
+async fn oversized_hidden_handoff_content_is_rejected() {
+    let stream = stream::iter(vec![Ok(GenaiStreamEvent::ReasoningChunk(
+        genai::chat::StreamChunk {
+            content: "x".repeat(MAX_HANDOFF_CONTENT_BYTES + 1),
+        },
+    ))]);
+    let (mut sender, _) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let failure = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect_err("隐藏续轮内容必须受字节上限约束");
+
+    assert_eq!(
+        failure.message,
+        t!("chat.error.invalid_response").to_string()
+    );
+    assert!(!failure.retryable);
 }
 
 #[tokio::test]

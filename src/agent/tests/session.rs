@@ -1,4 +1,4 @@
-use crate::agent::session::*;
+use crate::agent::{media::prepare_dynamic_image, session::*};
 
 #[test]
 fn context_excludes_streaming_placeholder() {
@@ -10,9 +10,42 @@ fn context_excludes_streaming_placeholder() {
         vec![ChatContextMessage {
             role: ChatRole::User,
             content: "hello".to_owned(),
+            image: None,
         }]
     );
     assert_eq!(session.messages().len(), 2);
+}
+
+#[test]
+fn image_content_stays_in_memory_but_not_in_snapshot() {
+    let image = prepare_dynamic_image(image::DynamicImage::new_rgb8(8, 6), "sample.jpg".to_owned())
+        .expect("测试图片应当可以规范化");
+    let mut session = ChatSession::default();
+    let started = session
+        .start_turn_with_image("", Some(image))
+        .expect("纯图片消息应当可以发送");
+
+    assert_eq!(
+        started.context[0].content,
+        rust_i18n::t!("chat.image_only_prompt")
+    );
+    assert!(
+        started.context[0]
+            .image
+            .as_ref()
+            .and_then(|image| image.bytes())
+            .is_some()
+    );
+    let encoded = serde_json::to_vec(&session.snapshot(1)).expect("会话快照应当可以序列化");
+    assert!(encoded.len() < 1_024, "图片字节不得进入会话快照");
+    let snapshot = serde_json::from_slice(&encoded).expect("会话快照应当可以反序列化");
+    let restored = ChatSession::from_snapshot(snapshot, ChatLimits::default())
+        .expect("不含图片像素的快照应当可以恢复");
+    let restored_image = restored.messages()[0]
+        .image()
+        .expect("图片安全元数据应当保留");
+    assert_eq!(restored_image.name(), "sample.jpg");
+    assert!(restored_image.bytes().is_none());
 }
 
 #[test]

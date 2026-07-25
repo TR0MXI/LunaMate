@@ -30,6 +30,12 @@ _version = 2
 "en" = "Configuration file %{path} is corrupt; this save will rebuild valid TOML: %{error}"
 "ja" = "設定ファイル %{path} が破損しています。今回の保存で有効な TOML を再構築します: %{error}"
 
+[log.config_parent_sync_failed]
+"zh-CN" = "配置文件已替换，但无法同步目录 %{path}；异常断电时可能丢失本次修改：%{error}"
+"zh-TW" = "設定檔已取代，但無法同步目錄 %{path}；異常斷電時可能遺失本次修改：%{error}"
+"en" = "The configuration file was replaced, but directory %{path} could not be synced; this update may be lost after an abrupt power failure: %{error}"
+"ja" = "設定ファイルは置き換えられましたが、ディレクトリ %{path} を同期できませんでした。突然の電源断では変更が失われる可能性があります: %{error}"
+
 [log.gpu_device_lost]
 "zh-CN" = "Live2D GPU device 已丢失：%{reason}：%{message}"
 "zh-TW" = "Live2D GPU device 已遺失：%{reason}：%{message}"

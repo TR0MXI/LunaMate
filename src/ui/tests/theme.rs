@@ -61,5 +61,13 @@ fn core_settings_text_exists_in_every_supported_language() {
             rust_i18n::t!("llm.add_model", locale = locale),
             "llm.add_model"
         );
+        assert_ne!(
+            rust_i18n::t!("settings.tool_title", locale = locale),
+            "settings.tool_title"
+        );
+        assert_ne!(
+            rust_i18n::t!("tools.allow_agent_screenshot", locale = locale),
+            "tools.allow_agent_screenshot"
+        );
     }
 }

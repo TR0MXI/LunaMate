@@ -136,23 +136,37 @@ pub(super) fn write_config_file(
     document: &DocumentMut,
     nonce: u64,
 ) -> Result<(), ConfigWriteError> {
-    atomic_replace(path, document.to_string().as_bytes(), nonce).map_err(|error| {
-        let (operation, path, source) = error.into_parts();
-        let operation = match operation {
-            AtomicReplaceOperation::CreateTemporary => "创建配置临时文件",
-            #[cfg(unix)]
-            AtomicReplaceOperation::SetPermissions => "设置配置临时文件权限",
-            AtomicReplaceOperation::WriteTemporary => "写入配置临时文件",
-            AtomicReplaceOperation::SyncTemporary => "同步配置临时文件",
-            AtomicReplaceOperation::Replace => "提交配置文件",
-            #[cfg(unix)]
-            AtomicReplaceOperation::SyncParent => "同步配置目录",
-        };
-        ConfigWriteError::Io {
-            operation,
-            path,
-            source,
-        }
+    let Err(error) = atomic_replace(path, document.to_string().as_bytes(), nonce) else {
+        return Ok(());
+    };
+    let (operation, error_path, source) = error.into_parts();
+    #[cfg(unix)]
+    if matches!(operation, AtomicReplaceOperation::SyncParent) {
+        // rename 已完成，不能把内存回滚到与磁盘不一致的旧值；这里只降低崩溃耐久性。
+        log::warn!(
+            "{}",
+            t!(
+                "log.config_parent_sync_failed",
+                path = error_path.display(),
+                error = source.to_string()
+            )
+        );
+        return Ok(());
+    }
+    let operation = match operation {
+        AtomicReplaceOperation::CreateTemporary => "创建配置临时文件",
+        #[cfg(unix)]
+        AtomicReplaceOperation::SetPermissions => "设置配置临时文件权限",
+        AtomicReplaceOperation::WriteTemporary => "写入配置临时文件",
+        AtomicReplaceOperation::SyncTemporary => "同步配置临时文件",
+        AtomicReplaceOperation::Replace => "提交配置文件",
+        #[cfg(unix)]
+        AtomicReplaceOperation::SyncParent => "同步配置目录",
+    };
+    Err(ConfigWriteError::Io {
+        operation,
+        path: error_path,
+        source,
     })
 }
 
@@ -177,6 +191,15 @@ fn parse_document(document: &DocumentMut) -> (LoadedConfig, Option<String>) {
         match item.as_bool() {
             Some(show) => loaded.show_fps = show,
             None => warnings.push("debug.show_fps 无效，已使用默认值".to_owned()),
+        }
+    }
+
+    if let Some(item) = nested_item(document, "tools", "allow_agent_screenshot") {
+        match item.as_bool() {
+            Some(allowed) => loaded.allow_agent_screenshot = allowed,
+            None => {
+                warnings.push("tools.allow_agent_screenshot 无效，已保持 Agent 截屏关闭".to_owned())
+            }
         }
     }
 

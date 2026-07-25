@@ -11,9 +11,11 @@ The project is under active development and currently includes:
 - Live2D rendering, motions, expressions, eye tracking, and HitArea click reactions.
 - Independent GPU underlays on Windows, macOS, and Wayland, with a CPU fallback on X11 or when
   GPU initialization is unavailable.
-- Streaming LLM chat with configurable providers, models, and endpoints, plus bounded session
-  persistence.
-- Settings for models, appearance, windows, languages, and LLM connections.
+- Streaming multimodal LLM chat with configurable providers, models, and endpoints, image input,
+  and bounded session persistence.
+- An Agent screenshot tool that is disabled by default and requires explicit permission in Tool
+  Settings.
+- Settings for models, appearance, windows, languages, LLM connections, and tools.
 
 ## Build
 
@@ -24,6 +26,9 @@ recommended; it installs both `rustc` and `cargo`.
 You also need the native toolchain for your platform: MSVC Build Tools and the Windows SDK on
 Windows, Xcode Command Line Tools on macOS, or a C/C++ toolchain, `pkg-config`, and the Wayland,
 X11, and Vulkan development libraries on Linux.
+
+On Linux, the screenshot tool also requires `xdg-desktop-portal` and a portal backend supplied by
+the desktop environment. The system may ask for screen access on first use.
 
 From the repository root, create a development build:
 

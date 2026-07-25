@@ -11,7 +11,7 @@ gpui = { git = "https://github.com/zed-industries/zed" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland", "x11"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", version = "0.5.2" }
 genai = "0.6.5"
-image = { version = "0.25.10", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 async-channel = "2.5.0"
 arc-swap = "1.9.2"
 toml_edit = "0.25.13"
@@ -29,8 +29,9 @@ mocari = { version = "0.4.0", path = "vendor/mocari", features = ["wgpu"] }
 gpui_wgpu = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
 log = "0.4.33"
 flexi_logger = { version = "0.31.9", features = ["async", "compress"] }
-# 生产构建仅包含本地 SurrealKV 和 Rustls，不引入远程协议、原生 TLS、脚本或 ML。
+# 生产构建仅包含本地 SurrealKV，不引入远程协议、原生 TLS、脚本或 ML。
 surrealdb = { version = "3.2.3", default-features = false, features = ["kv-surrealkv"] }
+base64 = "0.22.1"
 
 [patch.crates-io]
 # 上游 PR #14 修复了 2.0.1 中的 Rust future-incompatibility 警告。
@@ -44,8 +45,14 @@ cocoa = "0.26.0"
 objc = "0.2.7"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Linux 截屏交给桌面门户，避免静态截图无条件引入 PipeWire/GBM 开发依赖。
+ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screenshot"] }
 wayland-client = { version = "0.31.15", features = ["system"] }
 wayland-protocols = { version = "0.32.13", features = ["client"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+# 只启用静态截图 API；不启用全格式 image 或 Windows Graphics Capture feature。
+xcap = { version = "0.9.7", default-features = false }
 
 [profile.release]
 opt-level = 3

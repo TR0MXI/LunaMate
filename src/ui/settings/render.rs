@@ -14,6 +14,7 @@ impl SettingsView {
         let palette = UiPalette::from_app(cx);
         let model_active = self.section == ConfigSection::Model;
         let conversation_active = self.section == ConfigSection::Conversation;
+        let tool_active = self.section == ConfigSection::Tool;
         let system_active = self.section == ConfigSection::System;
         let debug_active = self.section == ConfigSection::Debug;
         div()
@@ -52,6 +53,21 @@ impl SettingsView {
                          _: &mut Window,
                          cx: &mut Context<SettingsView>| {
                             this.section = ConfigSection::Conversation;
+                            cx.notify();
+                        },
+                    ),
+                ),
+                sidebar_button(
+                    "section-tool",
+                    t!("settings.tool").to_string(),
+                    tool_active,
+                    palette,
+                    cx.listener(
+                        |this: &mut SettingsView,
+                         _: &gpui::ClickEvent,
+                         _: &mut Window,
+                         cx: &mut Context<SettingsView>| {
+                            this.section = ConfigSection::Tool;
                             cx.notify();
                         },
                     ),
@@ -130,6 +146,7 @@ impl Render for SettingsView {
                                     .child(t!("settings.not_initialized").to_string())
                                     .into_any_element()
                             }),
+                        ConfigSection::Tool => self.render_tool_page(cx),
                         ConfigSection::System => self.render_system_page(cx),
                         ConfigSection::Debug => self.render_debug_page(cx),
                     }),

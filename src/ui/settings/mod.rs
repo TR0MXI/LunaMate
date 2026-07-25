@@ -4,6 +4,7 @@ mod components;
 mod model_page;
 mod render;
 mod system_page;
+mod tool_page;
 mod window;
 
 use std::{
@@ -63,6 +64,7 @@ pub(crate) enum SettingsEvent {
 enum ConfigSection {
     Model,
     Conversation,
+    Tool,
     System,
     Debug,
 }
@@ -86,6 +88,8 @@ pub(crate) struct SettingsView {
     remember_window_positions: bool,
     eye_tracking: bool,
     show_fps: bool,
+    allow_agent_screenshot: bool,
+    screenshot_permission_retry_required: bool,
     logging: LoggingSettings,
     appearance: AppearanceSettings,
     is_refreshing: bool,
@@ -98,6 +102,7 @@ pub(crate) struct SettingsView {
     custom_frame_rate_input_revision: u64,
     custom_frame_rate_save_task: Option<Task<()>>,
     logging_input_subscriptions: Vec<Subscription>,
+    screenshot_permission_revision: u64,
     toast_revision: u64,
     toast_task: Option<Task<()>>,
 }
@@ -134,6 +139,9 @@ impl SettingsView {
             remember_window_positions: CONFIG.remember_window_positions(),
             eye_tracking: CONFIG.eye_tracking(),
             show_fps: CONFIG.show_fps(),
+            allow_agent_screenshot: CONFIG.allow_agent_screenshot(),
+            screenshot_permission_retry_required: CONFIG
+                .agent_screenshot_permission_retry_required(),
             logging: *CONFIG.logging_settings(),
             appearance: CONFIG.appearance().as_ref().clone(),
             is_refreshing: false,
@@ -146,6 +154,7 @@ impl SettingsView {
             custom_frame_rate_input_revision: 0,
             custom_frame_rate_save_task: None,
             logging_input_subscriptions: Vec::new(),
+            screenshot_permission_revision: 0,
             toast_revision: 0,
             toast_task: None,
         };
@@ -157,6 +166,9 @@ impl SettingsView {
 
     /// 设置窗口打开时创建输入组件，并把当前外观同步到全局主题。
     pub(crate) fn activate_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.allow_agent_screenshot = CONFIG.requested_allow_agent_screenshot();
+        self.screenshot_permission_retry_required =
+            CONFIG.agent_screenshot_permission_retry_required();
         apply_language(self.appearance.language);
         apply(&self.appearance, Some(window), cx);
         let draft = self
@@ -688,6 +700,45 @@ impl SettingsView {
             move || CONFIG.set_show_fps_at_revision(show, config_revision),
             cx,
         );
+    }
+
+    fn set_allow_agent_screenshot(&mut self, allowed: bool, cx: &mut Context<Self>) {
+        if self.allow_agent_screenshot == allowed && !self.screenshot_permission_retry_required {
+            return;
+        }
+        self.allow_agent_screenshot = allowed;
+        self.screenshot_permission_retry_required = false;
+        self.screenshot_permission_revision =
+            self.screenshot_permission_revision.wrapping_add(1).max(1);
+        let ui_revision = self.screenshot_permission_revision;
+        let config_revision = CONFIG.reserve_allow_agent_screenshot_revision(allowed);
+        let background = cx.background_executor().clone();
+        cx.notify();
+
+        let task = cx.spawn(async move |this, cx| {
+            let result = background
+                .spawn(async move {
+                    CONFIG.set_allow_agent_screenshot_at_revision(allowed, config_revision)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.screenshot_permission_revision != ui_revision {
+                    return;
+                }
+                this.allow_agent_screenshot = CONFIG.allow_agent_screenshot();
+                this.screenshot_permission_retry_required =
+                    CONFIG.agent_screenshot_permission_retry_required();
+                if let Err(error) = result {
+                    this.set_status(
+                        t!("status.setting_failed", error = error.to_string()).to_string(),
+                        cx,
+                    );
+                } else {
+                    cx.notify();
+                }
+            });
+        });
+        self.track_write_task(task);
     }
 
     fn set_logging_settings(&mut self, settings: LoggingSettings, cx: &mut Context<Self>) {

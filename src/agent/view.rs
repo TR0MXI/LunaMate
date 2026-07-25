@@ -11,12 +11,14 @@ use futures::{
     future::{AbortHandle, Abortable},
 };
 use gpui::{
-    AnyElement, AppContext, Context, Entity, IntoElement, MouseButton, Render, ScrollHandle,
-    Subscription, Task, Window, div, prelude::*, px, svg,
+    AnyElement, AppContext, Context, Entity, Image, ImageFormat, IntoElement, MouseButton,
+    ObjectFit, PathPromptOptions, Render, ScrollHandle, Subscription, Task, Window, div, img,
+    prelude::*, px, svg,
 };
 use gpui_component::{
     StyledExt as _,
     input::{Input, InputEvent, InputState},
+    tooltip::Tooltip,
 };
 use gpui_tokio::Tokio;
 use rust_i18n::t;
@@ -25,6 +27,7 @@ use crate::config::{CONFIG, SharedLlmSettings};
 
 use super::{
     AgentShutdown,
+    media::{ImageAttachment, load_image},
     palette::AgentPalette,
     service::{ChatBackend, ChatServiceRequest, ChatStreamEvent, GenaiChatBackend},
     session::{ChatMessage, ChatMessageState, ChatRole, ChatSession, ResponseId},
@@ -44,6 +47,9 @@ pub(crate) struct AgentView {
     settings: SharedLlmSettings,
     backend: Arc<dyn ChatBackend>,
     input: Entity<InputState>,
+    pending_image: Option<PendingImage>,
+    image_picker_revision: u64,
+    image_picker_task: Option<Task<()>>,
     messages_scroll: ScrollHandle,
     status: Option<String>,
     request_task: Option<Task<()>>,
@@ -54,6 +60,11 @@ pub(crate) struct AgentView {
 struct ActiveRequestAbort {
     response_id: ResponseId,
     handle: AbortHandle,
+}
+
+struct PendingImage {
+    attachment: ImageAttachment,
+    preview: Arc<Image>,
 }
 
 impl AgentView {
@@ -101,6 +112,9 @@ impl AgentView {
             settings,
             backend: Arc::new(GenaiChatBackend::new()),
             input,
+            pending_image: None,
+            image_picker_revision: 0,
+            image_picker_task: None,
             messages_scroll: ScrollHandle::new(),
             status: initial_status,
             request_task: None,
@@ -147,7 +161,14 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) {
         let text = input.read(cx).value().to_string();
-        if self.send_message(text, cx) {
+        let image = self
+            .pending_image
+            .as_ref()
+            .map(|pending| pending.attachment.clone());
+        if self.send_message_with_image(text, image, cx) {
+            self.image_picker_revision = self.image_picker_revision.wrapping_add(1).max(1);
+            self.image_picker_task = None;
+            self.pending_image = None;
             input.update(cx, |input, cx| input.set_value("", window, cx));
         }
     }
@@ -157,8 +178,77 @@ impl AgentView {
         self.submit_from_input(&input, window, cx);
     }
 
-    /// 通过 Agent façade 提交用户消息；调用方无需了解会话、存储或 Provider。
-    pub(crate) fn send_message(&mut self, text: String, cx: &mut Context<Self>) -> bool {
+    fn choose_image(&mut self, cx: &mut Context<Self>) {
+        if self.shutdown_revision.is_some() || self.is_streaming() {
+            return;
+        }
+        self.image_picker_revision = self.image_picker_revision.wrapping_add(1).max(1);
+        let revision = self.image_picker_revision;
+        self.image_picker_task = None;
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(t!("chat.select_image").to_string().into()),
+        });
+        let background = cx.background_executor().clone();
+        self.image_picker_task = Some(cx.spawn(async move |this, cx| {
+            let path = match paths.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => return,
+                Ok(Err(_)) | Err(_) => {
+                    let _ = this.update(cx, |this, cx| {
+                        if this.image_picker_revision == revision {
+                            this.status = Some(t!("chat.error.image_picker").to_string());
+                            cx.notify();
+                        }
+                    });
+                    return;
+                }
+            };
+            let Some(path) = path else {
+                return;
+            };
+            let loaded = background.spawn(async move { load_image(&path) }).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.image_picker_revision != revision {
+                    return;
+                }
+                match loaded {
+                    Ok(attachment) => {
+                        let Some(bytes) = attachment.bytes() else {
+                            this.status = Some(t!("chat.error.image_prepare").to_string());
+                            cx.notify();
+                            return;
+                        };
+                        let preview =
+                            Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes.to_vec()));
+                        this.pending_image = Some(PendingImage {
+                            attachment,
+                            preview,
+                        });
+                        this.status = None;
+                    }
+                    Err(error) => this.status = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    fn remove_pending_image(&mut self, cx: &mut Context<Self>) {
+        self.image_picker_revision = self.image_picker_revision.wrapping_add(1).max(1);
+        self.image_picker_task = None;
+        self.pending_image = None;
+        cx.notify();
+    }
+
+    fn send_message_with_image(
+        &mut self,
+        text: String,
+        image: Option<ImageAttachment>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.shutdown_revision.is_some() {
             return false;
         }
@@ -168,7 +258,7 @@ impl AgentView {
             cx.notify();
             return false;
         };
-        let started = match self.session.start_turn(text) {
+        let started = match self.session.start_turn_with_image(text, image) {
             Ok(started) => started,
             Err(error) => {
                 self.status = Some(error.to_string());
@@ -182,6 +272,7 @@ impl AgentView {
             model,
             system_prompt: self.settings.system_prompt.clone(),
             messages: started.context,
+            screenshot_permission_revision: CONFIG.agent_screenshot_permission_revision(),
         };
         self.cancel_network_request();
         let (sender, mut receiver) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
@@ -295,6 +386,9 @@ impl AgentView {
             return;
         }
         self.cancel_network_request();
+        self.image_picker_revision = self.image_picker_revision.wrapping_add(1).max(1);
+        self.image_picker_task = None;
+        self.pending_image = None;
         self.session.clear();
         self.status = None;
         self.persist(true, cx);
@@ -336,6 +430,14 @@ impl AgentView {
 
     fn render_message(message: &ChatMessage, palette: AgentPalette) -> AnyElement {
         let user = message.role() == ChatRole::User;
+        let image = message.image().map(|image| {
+            (
+                image.name().to_owned(),
+                image.width(),
+                image.height(),
+                image.bytes().is_some(),
+            )
+        });
         let content = if message.content().is_empty() {
             match message.state() {
                 ChatMessageState::Streaming => t!("chat.thinking").to_string(),
@@ -381,9 +483,43 @@ impl AgentView {
                     })
                     .px_3()
                     .py_2()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
                     .text_sm()
                     .whitespace_normal()
                     .text_color(palette.foreground)
+                    .when_some(image, |this, (name, width, height, available)| {
+                        this.child(
+                            div()
+                                .min_w_0()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .rounded_sm()
+                                .bg(palette.muted)
+                                .px_2()
+                                .py_1()
+                                .text_xs()
+                                .text_color(palette.muted_foreground)
+                                .child(svg().path("icons/image-plus.svg").size_3().flex_shrink_0())
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(format!("{name} ({width}x{height})")),
+                                )
+                                .when(!available, |this| {
+                                    this.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .text_color(palette.danger)
+                                            .child(t!("chat.image_unavailable").to_string()),
+                                    )
+                                }),
+                        )
+                    })
                     .child(content)
                     .when_some(state_message, |this, state| {
                         this.child(
@@ -410,6 +546,16 @@ impl Render for AgentView {
             .map(|model| model.label.clone())
             .unwrap_or_else(|| t!("chat.unconfigured").to_string());
         let status = self.status.clone();
+        let pending_image = self.pending_image.as_ref().map(|pending| {
+            (
+                pending.preview.clone(),
+                pending.attachment.name().to_owned(),
+                pending.attachment.width(),
+                pending.attachment.height(),
+            )
+        });
+        let attach_tooltip = t!("chat.attach_image").to_string();
+        let remove_tooltip = t!("chat.remove_image").to_string();
 
         div()
             .size_full()
@@ -496,57 +642,163 @@ impl Render for AgentView {
                 div()
                     .flex_shrink_0()
                     .flex()
-                    .items_end()
-                    .gap_2()
+                    .flex_col()
                     .border_t_1()
                     .border_color(palette.border)
-                    .p_2()
+                    .when_some(pending_image, |this, (preview, name, width, height)| {
+                        let remove_tooltip = remove_tooltip.clone();
+                        this.child(
+                            div()
+                                .h(px(64.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .border_b_1()
+                                .border_color(palette.border)
+                                .px_2()
+                                .child(
+                                    div()
+                                        .size(px(48.0))
+                                        .flex_shrink_0()
+                                        .overflow_hidden()
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(palette.border)
+                                        .child(
+                                            img(preview).size_full().object_fit(ObjectFit::Contain),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .flex_1()
+                                        .flex()
+                                        .flex_col()
+                                        .text_xs()
+                                        .child(
+                                            div()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .text_color(palette.foreground)
+                                                .child(name),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_color(palette.muted_foreground)
+                                                .child(format!("{width}x{height}")),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .id("remove-chat-image")
+                                        .size_7()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .hover(move |style| style.bg(palette.accent))
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.remove_pending_image(cx);
+                                        }))
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(remove_tooltip.clone()).build(window, cx)
+                                        })
+                                        .child(
+                                            svg()
+                                                .path("icons/x.svg")
+                                                .size_4()
+                                                .text_color(palette.muted_foreground),
+                                        ),
+                                ),
+                        )
+                    })
                     .child(
                         div()
-                            .min_w_0()
-                            .flex_1()
-                            .child(Input::new(&self.input).disabled(streaming)),
-                    )
-                    .child(
-                        div()
-                            .id(if streaming { "stop-chat" } else { "send-chat" })
-                            .size_9()
-                            .flex_shrink_0()
                             .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_md()
-                            .bg(if streaming {
-                                palette.danger
-                            } else {
-                                palette.primary
-                            })
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(palette.accent))
-                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                            })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if streaming {
-                                    this.stop(cx);
-                                } else {
-                                    this.submit_current_input(window, cx);
-                                }
-                            }))
+                            .items_end()
+                            .gap_2()
+                            .p_2()
                             .child(
-                                svg()
-                                    .path(if streaming {
-                                        "icons/square.svg"
-                                    } else {
-                                        "icons/send.svg"
-                                    })
-                                    .size_4()
+                                div()
+                                    .id("attach-chat-image")
+                                    .size_9()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .bg(palette.secondary)
                                     .text_color(if streaming {
-                                        palette.danger_foreground
+                                        palette.muted_foreground
                                     } else {
-                                        palette.primary_foreground
-                                    }),
+                                        palette.foreground
+                                    })
+                                    .when(!streaming, |this| {
+                                        this.cursor_pointer()
+                                            .hover(move |style| style.bg(palette.accent))
+                                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                                window.prevent_default();
+                                                cx.stop_propagation();
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.choose_image(cx);
+                                            }))
+                                    })
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(attach_tooltip.clone()).build(window, cx)
+                                    })
+                                    .child(svg().path("icons/image-plus.svg").size_4()),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .child(Input::new(&self.input).disabled(streaming)),
+                            )
+                            .child(
+                                div()
+                                    .id(if streaming { "stop-chat" } else { "send-chat" })
+                                    .size_9()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .bg(if streaming {
+                                        palette.danger
+                                    } else {
+                                        palette.primary
+                                    })
+                                    .cursor_pointer()
+                                    .hover(move |style| style.bg(palette.accent))
+                                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                    })
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if streaming {
+                                            this.stop(cx);
+                                        } else {
+                                            this.submit_current_input(window, cx);
+                                        }
+                                    }))
+                                    .child(
+                                        svg()
+                                            .path(if streaming {
+                                                "icons/square.svg"
+                                            } else {
+                                                "icons/send.svg"
+                                            })
+                                            .size_4()
+                                            .text_color(if streaming {
+                                                palette.danger_foreground
+                                            } else {
+                                                palette.primary_foreground
+                                            }),
+                                    ),
                             ),
                     ),
             )

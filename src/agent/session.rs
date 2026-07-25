@@ -5,7 +5,10 @@ use std::{collections::VecDeque, error::Error, fmt};
 use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
+use super::media::ImageAttachment;
+
 const SNAPSHOT_VERSION: u32 = 1;
+const MAX_SESSION_IMAGE_BYTES: usize = 16 * 1024 * 1024;
 
 /// 对话记录中一条消息的角色。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -31,6 +34,8 @@ pub(super) struct ChatMessage {
     turn_id: u64,
     role: ChatRole,
     content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image: Option<ImageAttachment>,
     state: ChatMessageState,
 }
 
@@ -50,17 +55,23 @@ impl ChatMessage {
         &self.content
     }
 
+    /// 返回用户消息附带的图片元数据与当前进程内可用内容。
+    pub(super) fn image(&self) -> Option<&ImageAttachment> {
+        self.image.as_ref()
+    }
+
     /// 返回消息终态或流式状态。
     pub(super) fn state(&self) -> &ChatMessageState {
         &self.state
     }
 }
 
-/// 发送给 Provider 的纯文本上下文消息。
+/// 发送给 Provider 的上下文消息；图片内容只在当前进程内保留。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ChatContextMessage {
     pub(super) role: ChatRole,
     pub(super) content: String,
+    pub(super) image: Option<ImageAttachment>,
 }
 
 /// 限制当前上下文的消息数量和 UTF-8 字节数。
@@ -109,6 +120,7 @@ pub(super) struct ChatSession {
     messages: VecDeque<ChatMessage>,
     limits: ChatLimits,
     total_bytes: usize,
+    total_image_bytes: usize,
     next_message_id: u64,
     next_turn_id: u64,
     next_response_id: u64,
@@ -129,6 +141,7 @@ impl ChatSession {
             messages: VecDeque::new(),
             limits,
             total_bytes: 0,
+            total_image_bytes: 0,
             next_message_id: 0,
             next_turn_id: 0,
             next_response_id: 0,
@@ -151,25 +164,45 @@ impl ChatSession {
     /// # Errors
     ///
     /// 当前已有请求、消息为空或单条消息超过字节限制时返回错误。
+    #[cfg(test)]
     pub(super) fn start_turn(
         &mut self,
         content: impl Into<String>,
+    ) -> Result<StartedTurn, ChatError> {
+        self.start_turn_with_image(content, None)
+    }
+
+    /// 创建可选附图的用户轮次；图片像素只驻留于有界内存，不进入数据库快照。
+    pub(super) fn start_turn_with_image(
+        &mut self,
+        content: impl Into<String>,
+        image: Option<ImageAttachment>,
     ) -> Result<StartedTurn, ChatError> {
         if self.active_response.is_some() {
             return Err(ChatError::Busy);
         }
         let content = content.into();
         let content = content.trim();
-        if content.is_empty() {
-            return Err(ChatError::EmptyMessage);
-        }
+        let content = if content.is_empty() {
+            if image.is_none() {
+                return Err(ChatError::EmptyMessage);
+            }
+            t!("chat.image_only_prompt").to_string()
+        } else {
+            content.to_owned()
+        };
         if content.len() >= self.limits.max_bytes {
             return Err(ChatError::MessageTooLarge);
         }
+        let image_bytes = image.as_ref().map_or(0, ImageAttachment::byte_len);
+        if image_bytes > MAX_SESSION_IMAGE_BYTES {
+            return Err(ChatError::MessageTooLarge);
+        }
 
-        self.trim_completed_turns_for(2, content.len());
+        self.trim_completed_turns_for(2, content.len(), image_bytes);
         if self.messages.len().saturating_add(2) > self.limits.max_messages
             || self.total_bytes.saturating_add(content.len()) > self.limits.max_bytes
+            || self.total_image_bytes.saturating_add(image_bytes) > MAX_SESSION_IMAGE_BYTES
         {
             return Err(ChatError::MessageTooLarge);
         }
@@ -178,13 +211,14 @@ impl ChatSession {
         let response_id = ResponseId(allocate(&mut self.next_response_id));
         let user_id = allocate(&mut self.next_message_id);
         let assistant_id = allocate(&mut self.next_message_id);
-        let content = content.to_owned();
         self.total_bytes += content.len();
+        self.total_image_bytes += image_bytes;
         self.messages.push_back(ChatMessage {
             id: user_id,
             turn_id,
             role: ChatRole::User,
             content,
+            image,
             state: ChatMessageState::Complete,
         });
         self.messages.push_back(ChatMessage {
@@ -192,6 +226,7 @@ impl ChatSession {
             turn_id,
             role: ChatRole::Assistant,
             content: String::new(),
+            image: None,
             state: ChatMessageState::Streaming,
         });
         self.active_response = Some(ActiveResponse {
@@ -246,7 +281,7 @@ impl ChatSession {
             return Err(ChatError::MessageTooLarge);
         }
 
-        self.trim_completed_turns_for(0, chunk.len());
+        self.trim_completed_turns_for(0, chunk.len(), 0);
         if self.total_bytes.saturating_add(chunk.len()) > self.limits.max_bytes {
             return Err(ChatError::MessageTooLarge);
         }
@@ -291,6 +326,7 @@ impl ChatSession {
     pub(super) fn clear(&mut self) {
         self.messages.clear();
         self.total_bytes = 0;
+        self.total_image_bytes = 0;
         self.active_response = None;
     }
 
@@ -326,6 +362,11 @@ impl ChatSession {
                 || assistant.role != ChatRole::Assistant
                 || user.turn_id != assistant.turn_id
                 || user.state != ChatMessageState::Complete
+                || assistant.image.is_some()
+                || user
+                    .image
+                    .as_ref()
+                    .is_some_and(|image| !image.has_safe_metadata())
             {
                 return Err(ChatError::InvalidSnapshot);
             }
@@ -352,11 +393,18 @@ impl ChatSession {
                 .total_bytes
                 .saturating_add(user.content.len())
                 .saturating_add(assistant.content.len());
+            session.total_image_bytes = session
+                .total_image_bytes
+                .saturating_add(user.image.as_ref().map_or(0, ImageAttachment::byte_len));
+            if session.total_image_bytes > MAX_SESSION_IMAGE_BYTES {
+                return Err(ChatError::MessageTooLarge);
+            }
             session.messages.push_back(ChatMessage {
                 id: user_id,
                 turn_id,
                 role: ChatRole::User,
                 content: user.content.clone(),
+                image: user.image.clone(),
                 state: ChatMessageState::Complete,
             });
             session.messages.push_back(ChatMessage {
@@ -364,9 +412,10 @@ impl ChatSession {
                 turn_id,
                 role: ChatRole::Assistant,
                 content: assistant.content.clone(),
+                image: None,
                 state: assistant_state,
             });
-            session.trim_completed_turns_for(0, 0);
+            session.trim_completed_turns_for(0, 0, 0);
         }
         Ok(session)
     }
@@ -391,6 +440,7 @@ impl ChatSession {
                 context.push(ChatContextMessage {
                     role: ChatRole::User,
                     content: user.content.clone(),
+                    image: user.image.clone(),
                 });
             } else if let Some(assistant) = assistant
                 && assistant.state == ChatMessageState::Complete
@@ -398,10 +448,12 @@ impl ChatSession {
                 context.push(ChatContextMessage {
                     role: ChatRole::User,
                     content: user.content.clone(),
+                    image: user.image.clone(),
                 });
                 context.push(ChatContextMessage {
                     role: ChatRole::Assistant,
                     content: assistant.content.clone(),
+                    image: None,
                 });
             }
             index += usize::from(assistant.is_some()) + 1;
@@ -432,9 +484,18 @@ impl ChatSession {
         true
     }
 
-    fn trim_completed_turns_for(&mut self, additional_messages: usize, additional_bytes: usize) {
+    fn trim_completed_turns_for(
+        &mut self,
+        additional_messages: usize,
+        additional_bytes: usize,
+        additional_image_bytes: usize,
+    ) {
         while self.messages.len().saturating_add(additional_messages) > self.limits.max_messages
             || self.total_bytes.saturating_add(additional_bytes) > self.limits.max_bytes
+            || self
+                .total_image_bytes
+                .saturating_add(additional_image_bytes)
+                > MAX_SESSION_IMAGE_BYTES
         {
             let Some(front) = self.messages.front() else {
                 break;
@@ -455,6 +516,9 @@ impl ChatSession {
                     break;
                 };
                 self.total_bytes = self.total_bytes.saturating_sub(removed.content.len());
+                self.total_image_bytes = self
+                    .total_image_bytes
+                    .saturating_sub(removed.image.as_ref().map_or(0, ImageAttachment::byte_len));
             }
         }
     }

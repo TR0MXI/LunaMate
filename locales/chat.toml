@@ -6,6 +6,36 @@ _version = 2
 "en" = "Type a message"
 "ja" = "メッセージを入力"
 
+[chat.image_only_prompt]
+"zh-CN" = "请查看这张图片。"
+"zh-TW" = "請查看這張圖片。"
+"en" = "Please inspect this image."
+"ja" = "この画像を確認してください。"
+
+[chat.select_image]
+"zh-CN" = "选择图片"
+"zh-TW" = "選擇圖片"
+"en" = "Select Image"
+"ja" = "画像を選択"
+
+[chat.attach_image]
+"zh-CN" = "添加图片"
+"zh-TW" = "新增圖片"
+"en" = "Attach image"
+"ja" = "画像を添付"
+
+[chat.remove_image]
+"zh-CN" = "移除图片"
+"zh-TW" = "移除圖片"
+"en" = "Remove image"
+"ja" = "画像を削除"
+
+[chat.image_unavailable]
+"zh-CN" = "内容未恢复"
+"zh-TW" = "內容未還原"
+"en" = "Not restored"
+"ja" = "未復元"
+
 [chat.configure_model]
 "zh-CN" = "请先在设置中添加并选择语言模型"
 "zh-TW" = "請先在設定中新增並選擇語言模型"
@@ -167,6 +197,72 @@ _version = 2
 "zh-TW" = "模型要求失敗"
 "en" = "Model request failed"
 "ja" = "モデルリクエストに失敗しました"
+
+[chat.error.image_picker]
+"zh-CN" = "无法打开图片选择器"
+"zh-TW" = "無法開啟圖片選擇器"
+"en" = "Could not open the image picker"
+"ja" = "画像選択画面を開けませんでした"
+
+[chat.error.image_unreadable]
+"zh-CN" = "无法读取所选图片"
+"zh-TW" = "無法讀取所選圖片"
+"en" = "The selected image could not be read"
+"ja" = "選択した画像を読み取れませんでした"
+
+[chat.error.image_file_too_large]
+"zh-CN" = "图片文件超过 20 MiB 上限"
+"zh-TW" = "圖片檔案超過 20 MiB 上限"
+"en" = "The image exceeds the 20 MiB file limit"
+"ja" = "画像が 20 MiB のファイル上限を超えています"
+
+[chat.error.image_format]
+"zh-CN" = "仅支持 JPEG、PNG 和 WebP 图片"
+"zh-TW" = "僅支援 JPEG、PNG 和 WebP 圖片"
+"en" = "Only JPEG, PNG, and WebP images are supported"
+"ja" = "JPEG、PNG、WebP 画像のみ対応しています"
+
+[chat.error.image_dimensions]
+"zh-CN" = "图片尺寸或像素数量超过上限"
+"zh-TW" = "圖片尺寸或像素數量超過上限"
+"en" = "The image dimensions or pixel count exceed the limit"
+"ja" = "画像サイズまたは画素数が上限を超えています"
+
+[chat.error.image_decode]
+"zh-CN" = "图片内容已损坏或无法解码"
+"zh-TW" = "圖片內容已損壞或無法解碼"
+"en" = "The image is damaged or could not be decoded"
+"ja" = "画像が破損しているか、デコードできません"
+
+[chat.error.image_prepare]
+"zh-CN" = "无法为模型准备该图片"
+"zh-TW" = "無法為模型準備該圖片"
+"en" = "The image could not be prepared for the model"
+"ja" = "モデル用に画像を準備できませんでした"
+
+[chat.error.screen_capture]
+"zh-CN" = "截屏失败或系统未授予屏幕权限"
+"zh-TW" = "截圖失敗或系統未授予螢幕權限"
+"en" = "Screen capture failed or system permission was denied"
+"ja" = "画面キャプチャに失敗したか、システム権限が拒否されました"
+
+[chat.error.screen_permission_revoked]
+"zh-CN" = "截屏权限已关闭，截图未发送"
+"zh-TW" = "截圖權限已關閉，截圖未傳送"
+"en" = "Screen capture permission was disabled, so the screenshot was not sent"
+"ja" = "画面キャプチャ権限が無効になったため、画像は送信されませんでした"
+
+[chat.error.provider_image_unsupported]
+"zh-CN" = "当前 Provider 适配器不支持图片输入"
+"zh-TW" = "目前 Provider 介面卡不支援圖片輸入"
+"en" = "The current provider adapter does not support image input"
+"ja" = "現在の Provider アダプターは画像入力に対応していません"
+
+[chat.error.tool_loop]
+"zh-CN" = "模型重复请求截屏，已终止本轮工具调用"
+"zh-TW" = "模型重複要求截圖，已終止本輪工具呼叫"
+"en" = "The model repeatedly requested a screenshot, so this tool turn was stopped"
+"ja" = "モデルが画面キャプチャを繰り返し要求したため、ツール処理を停止しました"
 
 [chat.error.invalid_limits]
 "zh-CN" = "聊天限制必须至少容纳一轮对话和一个字节"

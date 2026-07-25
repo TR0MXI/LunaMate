@@ -1,5 +1,6 @@
 //! 组合对话服务、Provider 设置、会话存储与桌宠视图，并向应用提供窄接口。
 
+mod media;
 mod palette;
 mod service;
 mod session;

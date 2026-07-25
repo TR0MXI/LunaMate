@@ -69,6 +69,10 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 - GPU worker 独占 surface、device、queue、Mocari GPU 资源和模型可变状态。UI 只发送有界
   语义命令和合并唤醒，不直接锁模型或等待光栅化；成功 present 后才能发布对应 HitArea。
 - 关闭窗口时先取消模型并停止 worker，再释放 surface 和原生 attachment。
+- Agent 截屏是默认关闭的隐私权限：Windows、macOS 使用 `xcap`，Linux 使用 XDG
+  Screenshot portal。只有已持久化且 revision 仍有效时才能注册和执行工具；捕获后、上传前
+  及重试前都要复核授权。截图和用户图片必须有文件、像素与编码上限，不得写入会话数据库、
+  配置或日志，portal 临时文件在读取后立即清理。
 - 纹理、索引和 UV 在 generation 加载时上传；每帧只更新动态顶点、透明度、颜色和绘制
   状态。GPU 常规路径不得整帧 readback、`RenderImage` 或 GPUI atlas 上传。
 - 正确处理 drawable 顺序、clipping mask、反向蒙版、blend mode、采样和预乘 Alpha；

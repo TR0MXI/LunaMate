@@ -23,6 +23,7 @@ use std::{
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 use rust_i18n::t;
+use tokio::sync::watch;
 use toml_edit::{DocumentMut, Value};
 
 pub(crate) use appearance::{AppLanguage, AppearanceSettings, CustomThemeSettings, ThemePreset};
@@ -80,6 +81,7 @@ struct LoadedConfig {
     remember_window_positions: bool,
     eye_tracking: bool,
     show_fps: bool,
+    allow_agent_screenshot: bool,
     logging: LoggingSettings,
     appearance: AppearanceSettings,
     snapshot: ConfigSnapshot,
@@ -95,6 +97,7 @@ impl Default for LoadedConfig {
             remember_window_positions: true,
             eye_tracking: true,
             show_fps: false,
+            allow_agent_screenshot: false,
             logging: LoggingSettings::default(),
             appearance: AppearanceSettings::default(),
             snapshot: ConfigSnapshot::default(),
@@ -112,6 +115,11 @@ pub(crate) struct LunaConfig {
     remember_window_positions: AtomicBool,
     eye_tracking: AtomicBool,
     show_fps: AtomicBool,
+    allow_agent_screenshot: AtomicBool,
+    requested_allow_agent_screenshot: AtomicBool,
+    agent_screenshot_permission_retry_required: AtomicBool,
+    applied_allow_agent_screenshot_revision: AtomicU64,
+    agent_screenshot_permission_revision_sender: watch::Sender<u64>,
     logging: ArcSwap<LoggingSettings>,
     appearance: ArcSwap<AppearanceSettings>,
     snapshot: ArcSwap<ConfigSnapshot>,
@@ -124,6 +132,7 @@ pub(crate) struct LunaConfig {
     remember_positions_request_revision: AtomicU64,
     eye_tracking_request_revision: AtomicU64,
     show_fps_request_revision: AtomicU64,
+    allow_agent_screenshot_request_revision: AtomicU64,
     logging_request_revision: AtomicU64,
     appearance_request_revision: AtomicU64,
     reset_positions_request_revision: AtomicU64,
@@ -142,6 +151,7 @@ impl LunaConfig {
 
     fn load_from(path: PathBuf) -> Self {
         let (loaded, startup_warning) = read_config_file(&path);
+        let (agent_screenshot_permission_revision_sender, _) = watch::channel(0);
         if let Some(warning) = &startup_warning {
             log::warn!("{}", t!("log.startup_config_warning", warning = warning));
         }
@@ -153,6 +163,11 @@ impl LunaConfig {
             remember_window_positions: AtomicBool::new(loaded.remember_window_positions),
             eye_tracking: AtomicBool::new(loaded.eye_tracking),
             show_fps: AtomicBool::new(loaded.show_fps),
+            allow_agent_screenshot: AtomicBool::new(loaded.allow_agent_screenshot),
+            requested_allow_agent_screenshot: AtomicBool::new(loaded.allow_agent_screenshot),
+            agent_screenshot_permission_retry_required: AtomicBool::new(false),
+            applied_allow_agent_screenshot_revision: AtomicU64::new(0),
+            agent_screenshot_permission_revision_sender,
             logging: ArcSwap::from_pointee(loaded.logging),
             appearance: ArcSwap::from_pointee(loaded.appearance),
             snapshot: ArcSwap::from_pointee(loaded.snapshot),
@@ -165,6 +180,7 @@ impl LunaConfig {
             remember_positions_request_revision: AtomicU64::new(0),
             eye_tracking_request_revision: AtomicU64::new(0),
             show_fps_request_revision: AtomicU64::new(0),
+            allow_agent_screenshot_request_revision: AtomicU64::new(0),
             logging_request_revision: AtomicU64::new(0),
             appearance_request_revision: AtomicU64::new(0),
             reset_positions_request_revision: AtomicU64::new(0),
@@ -204,6 +220,57 @@ impl LunaConfig {
     /// 返回是否在桌宠窗口显示运行时帧率。
     pub(crate) fn show_fps(&self) -> bool {
         self.show_fps.load(Ordering::Relaxed)
+    }
+
+    /// 返回当前是否存在已持久化且未被更新请求撤销的 Agent 截屏授权。
+    pub(crate) fn allow_agent_screenshot(&self) -> bool {
+        self.agent_screenshot_permission_revision().is_some()
+    }
+
+    /// 返回设置界面最近一次请求的截屏授权状态；该值不代表权限已经持久化生效。
+    pub(crate) fn requested_allow_agent_screenshot(&self) -> bool {
+        self.requested_allow_agent_screenshot
+            .load(Ordering::Acquire)
+    }
+
+    /// 返回是否仍需把 fail-closed 的关闭状态重试写入磁盘。
+    pub(crate) fn agent_screenshot_permission_retry_required(&self) -> bool {
+        self.agent_screenshot_permission_retry_required
+            .load(Ordering::Acquire)
+    }
+
+    /// 订阅截屏授权请求 revision；新订阅者会立即看到当前 revision。
+    pub(crate) fn subscribe_agent_screenshot_permission_revision(&self) -> watch::Receiver<u64> {
+        self.agent_screenshot_permission_revision_sender.subscribe()
+    }
+
+    /// 返回当前有效截屏授权的 revision，供异步工具执行后复核。
+    pub(crate) fn agent_screenshot_permission_revision(&self) -> Option<u64> {
+        loop {
+            let requested_revision = self
+                .allow_agent_screenshot_request_revision
+                .load(Ordering::Acquire);
+            let applied_revision = self
+                .applied_allow_agent_screenshot_revision
+                .load(Ordering::Acquire);
+            let allowed = self.allow_agent_screenshot.load(Ordering::Acquire);
+            let requested = self
+                .requested_allow_agent_screenshot
+                .load(Ordering::Acquire);
+            if requested_revision
+                == self
+                    .allow_agent_screenshot_request_revision
+                    .load(Ordering::Acquire)
+            {
+                return (allowed && requested && applied_revision == requested_revision)
+                    .then_some(requested_revision);
+            }
+        }
+    }
+
+    /// 检查一次已注册工具使用的授权是否仍未被用户撤销。
+    pub(crate) fn agent_screenshot_permission_is_current(&self, revision: u64) -> bool {
+        self.agent_screenshot_permission_revision() == Some(revision)
     }
 
     /// 返回当前日志过滤与轮转配置快照。
@@ -307,6 +374,95 @@ impl LunaConfig {
             },
         )?;
         Ok(applied.then_some(()))
+    }
+
+    /// 为 Agent 截屏授权写入分配单调 revision。
+    pub(crate) fn reserve_allow_agent_screenshot_revision(&self, allowed: bool) -> u64 {
+        let _guard = self.revision_lock.lock();
+        let revision = reserve_revision(&self.allow_agent_screenshot_request_revision);
+        self.agent_screenshot_permission_revision_sender
+            .send_replace(revision);
+        self.requested_allow_agent_screenshot
+            .store(allowed, Ordering::Release);
+        self.agent_screenshot_permission_retry_required
+            .store(false, Ordering::Release);
+        revision
+    }
+
+    /// 仅提交仍然最新的 Agent 截屏授权；磁盘成功前不会开放权限。
+    pub(crate) fn set_allow_agent_screenshot_at_revision(
+        &self,
+        allowed: bool,
+        revision: u64,
+    ) -> Result<Option<()>, ConfigWriteError> {
+        let _guard = self.write_lock.lock();
+        if !revision_is_current(&self.allow_agent_screenshot_request_revision, revision) {
+            return Ok(None);
+        }
+        if self
+            .applied_allow_agent_screenshot_revision
+            .load(Ordering::Acquire)
+            == revision
+            && self.allow_agent_screenshot.load(Ordering::Acquire) == allowed
+            && self
+                .requested_allow_agent_screenshot
+                .load(Ordering::Acquire)
+                == allowed
+            && !self
+                .agent_screenshot_permission_retry_required
+                .load(Ordering::Acquire)
+        {
+            return Ok(Some(()));
+        }
+
+        let mut candidate_revision = revision;
+        let mut candidate_allowed = allowed;
+        loop {
+            if let Err(error) = self.edit_document_locked(|document| {
+                ensure_table_like(&mut document["tools"]);
+                set_item_value(
+                    &mut document["tools"]["allow_agent_screenshot"],
+                    Value::from(candidate_allowed),
+                );
+            }) {
+                let _revision_guard = self.revision_lock.lock();
+                if revision_is_current(
+                    &self.allow_agent_screenshot_request_revision,
+                    candidate_revision,
+                ) && self
+                    .requested_allow_agent_screenshot
+                    .load(Ordering::Acquire)
+                    == candidate_allowed
+                {
+                    // 持久化结果不确定时不从旧磁盘值重新开放隐私权限。
+                    self.allow_agent_screenshot.store(false, Ordering::Release);
+                    self.requested_allow_agent_screenshot
+                        .store(false, Ordering::Release);
+                    self.agent_screenshot_permission_retry_required
+                        .store(!candidate_allowed, Ordering::Release);
+                }
+                return Err(error);
+            }
+
+            let _revision_guard = self.revision_lock.lock();
+            let current_revision = self
+                .allow_agent_screenshot_request_revision
+                .load(Ordering::Acquire);
+            let current_allowed = self
+                .requested_allow_agent_screenshot
+                .load(Ordering::Acquire);
+            if current_revision == candidate_revision && current_allowed == candidate_allowed {
+                self.allow_agent_screenshot
+                    .store(candidate_allowed, Ordering::Release);
+                self.applied_allow_agent_screenshot_revision
+                    .store(candidate_revision, Ordering::Release);
+                self.agent_screenshot_permission_retry_required
+                    .store(false, Ordering::Release);
+                return Ok((candidate_revision == revision).then_some(()));
+            }
+            candidate_revision = current_revision;
+            candidate_allowed = current_allowed;
+        }
     }
 
     /// 更新完整日志配置并持久化。

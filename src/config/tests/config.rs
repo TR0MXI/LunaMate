@@ -50,6 +50,7 @@ fn missing_config_uses_complete_defaults() {
     assert!(config.remember_window_positions());
     assert!(config.eye_tracking());
     assert!(!config.show_fps());
+    assert!(!config.allow_agent_screenshot());
     assert_eq!(
         config.logging_settings().as_ref(),
         &LoggingSettings::default()
@@ -84,6 +85,9 @@ selected = "luna/runtime/luna.model3.json"
 [debug]
 show_fps = true
 
+[tools]
+allow_agent_screenshot = true
+
 [interaction]
 eye_tracking = false
 
@@ -101,6 +105,7 @@ y = 48
     assert!(!config.remember_window_positions());
     assert!(!config.eye_tracking());
     assert!(config.show_fps());
+    assert!(config.allow_agent_screenshot());
     assert_eq!(
         config.selected_model(),
         Some(PathBuf::from("luna/runtime/luna.model3.json"))
@@ -133,6 +138,175 @@ fn interaction_and_debug_switches_round_trip() {
     let saved = fs::read_to_string(directory.config_path()).expect("调试配置应当可以读取");
     assert!(saved.contains("eye_tracking = false"));
     assert!(saved.contains("show_fps = true"));
+}
+
+#[test]
+fn agent_screenshot_permission_is_explicit_and_round_trips() {
+    let directory = TestDirectory::new();
+    let config = LunaConfig::load_from(directory.config_path());
+    assert!(!config.allow_agent_screenshot());
+
+    let enable_revision = config.reserve_allow_agent_screenshot_revision(true);
+    assert!(
+        !config.allow_agent_screenshot(),
+        "授权写入完成前不得开放工具"
+    );
+    assert_eq!(
+        config
+            .set_allow_agent_screenshot_at_revision(true, enable_revision)
+            .expect("Agent 截屏授权应当可以开启"),
+        Some(())
+    );
+    assert!(config.allow_agent_screenshot());
+    assert!(LunaConfig::load_from(directory.config_path()).allow_agent_screenshot());
+
+    let disable_revision = config.reserve_allow_agent_screenshot_revision(false);
+    assert!(
+        !config.allow_agent_screenshot(),
+        "关闭请求一经提交就必须立即撤销运行时授权"
+    );
+    assert_eq!(
+        config
+            .set_allow_agent_screenshot_at_revision(false, disable_revision)
+            .expect("Agent 截屏授权应当可以关闭"),
+        Some(())
+    );
+    assert!(!config.allow_agent_screenshot());
+    let saved = fs::read_to_string(directory.config_path()).expect("工具配置应当可以读取");
+    assert!(saved.contains("allow_agent_screenshot = false"));
+}
+
+#[test]
+fn agent_screenshot_permission_revision_notifies_subscribers() {
+    let directory = TestDirectory::new();
+    let config = LunaConfig::load_from(directory.config_path());
+    let mut revisions = config.subscribe_agent_screenshot_permission_revision();
+    assert_eq!(*revisions.borrow_and_update(), 0);
+
+    let revision = config.reserve_allow_agent_screenshot_revision(true);
+
+    assert!(
+        revisions
+            .has_changed()
+            .expect("本地授权 revision channel 应当保持开放")
+    );
+    assert_eq!(*revisions.borrow_and_update(), revision);
+}
+
+#[test]
+fn invalid_agent_screenshot_permission_stays_closed() {
+    let directory = TestDirectory::new();
+    directory.write(
+        r#"[tools]
+allow_agent_screenshot = "yes"
+
+[debug]
+show_fps = true
+"#,
+    );
+
+    let config = LunaConfig::load_from(directory.config_path());
+    assert!(!config.allow_agent_screenshot());
+    assert!(config.show_fps());
+    assert!(config.startup_warning().is_some());
+}
+
+#[test]
+fn stale_screenshot_enable_cannot_override_newer_disable() {
+    let directory = TestDirectory::new();
+    let config = LunaConfig::load_from(directory.config_path());
+    let stale_enable = config.reserve_allow_agent_screenshot_revision(true);
+    let current_disable = config.reserve_allow_agent_screenshot_revision(false);
+
+    assert_eq!(
+        config
+            .set_allow_agent_screenshot_at_revision(false, current_disable)
+            .expect("最新关闭请求应当可以保存"),
+        Some(())
+    );
+    assert_eq!(
+        config
+            .set_allow_agent_screenshot_at_revision(true, stale_enable)
+            .expect("迟到开启请求应当被无害丢弃"),
+        None
+    );
+    assert!(!config.allow_agent_screenshot());
+    assert!(!LunaConfig::load_from(directory.config_path()).allow_agent_screenshot());
+}
+
+#[test]
+fn failed_screenshot_disable_stays_closed_when_config_path_becomes_unreadable() {
+    let directory = TestDirectory::new();
+    directory.write("[tools]\nallow_agent_screenshot = true\n");
+    let config_path = directory.config_path();
+    let config = LunaConfig::load_from(config_path.clone());
+    assert!(config.allow_agent_screenshot());
+    fs::remove_file(&config_path).expect("测试配置文件应当可以移除");
+    fs::create_dir(&config_path).expect("冲突目标目录应当可以创建");
+
+    let revision = config.reserve_allow_agent_screenshot_revision(false);
+    assert!(!config.allow_agent_screenshot());
+    let result = config.set_allow_agent_screenshot_at_revision(false, revision);
+
+    assert!(matches!(result, Err(ConfigWriteError::Io { .. })));
+    assert!(
+        !config.allow_agent_screenshot(),
+        "配置路径已不可读时必须保持截屏权限关闭"
+    );
+    assert!(!config.requested_allow_agent_screenshot());
+    assert!(config.agent_screenshot_permission_retry_required());
+
+    fs::remove_dir(&config_path).expect("冲突目标目录应当可以移除");
+    let retry_revision = config.reserve_allow_agent_screenshot_revision(false);
+    assert_eq!(
+        config
+            .set_allow_agent_screenshot_at_revision(false, retry_revision)
+            .expect("关闭状态应当可以安全重试"),
+        Some(())
+    );
+    assert!(!config.agent_screenshot_permission_retry_required());
+    assert!(!LunaConfig::load_from(config_path).allow_agent_screenshot());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_screenshot_disable_does_not_reopen_permission_from_readable_old_file() {
+    use std::os::fd::AsRawFd as _;
+
+    let directory = TestDirectory::new();
+    directory.write("[tools]\nallow_agent_screenshot = true\n");
+    let readable_file = fs::File::open(directory.config_path()).expect("测试配置文件应当保持可读");
+    let read_only_path = PathBuf::from(format!("/proc/self/fd/{}", readable_file.as_raw_fd()));
+    let config = LunaConfig::load_from(read_only_path);
+    assert!(config.allow_agent_screenshot());
+
+    let revision = config.reserve_allow_agent_screenshot_revision(false);
+    let result = config.set_allow_agent_screenshot_at_revision(false, revision);
+
+    assert!(matches!(result, Err(ConfigWriteError::Io { .. })));
+    assert!(!config.allow_agent_screenshot());
+    assert!(!config.requested_allow_agent_screenshot());
+    assert!(config.agent_screenshot_permission_retry_required());
+    assert!(
+        LunaConfig::load_from(directory.config_path()).allow_agent_screenshot(),
+        "回归前置条件要求旧磁盘授权仍然可读"
+    );
+}
+
+#[test]
+fn failed_screenshot_enable_rolls_back_without_requesting_disable_retry() {
+    let directory = TestDirectory::new();
+    let config_path = directory.config_path();
+    let config = LunaConfig::load_from(config_path.clone());
+    fs::create_dir(&config_path).expect("冲突目标目录应当可以创建");
+
+    let revision = config.reserve_allow_agent_screenshot_revision(true);
+    let result = config.set_allow_agent_screenshot_at_revision(true, revision);
+
+    assert!(matches!(result, Err(ConfigWriteError::Io { .. })));
+    assert!(!config.allow_agent_screenshot());
+    assert!(!config.requested_allow_agent_screenshot());
+    assert!(!config.agent_screenshot_permission_retry_required());
 }
 
 #[test]

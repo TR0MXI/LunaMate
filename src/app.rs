@@ -43,6 +43,10 @@ const APP_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/check.svg"),
     ),
     (
+        "icons/image-plus.svg",
+        include_bytes!("../assets/icons/image-plus.svg"),
+    ),
+    (
         "icons/message-circle.svg",
         include_bytes!("../assets/icons/message-circle.svg"),
     ),

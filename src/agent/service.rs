@@ -1,21 +1,29 @@
 //! 将 Provider 无关的会话快照转换为 `genai` 流，并输出受限批次事件。
 
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{collections::HashSet, future::Future, pin::Pin, time::Duration};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
 use genai::{
     Client, ModelIden, WebConfig,
     adapter::AdapterKind,
-    chat::{ChatMessage as GenaiMessage, ChatRequest, ChatStreamEvent as GenaiStreamEvent},
+    chat::{
+        ChatMessage as GenaiMessage, ChatOptions, ChatRequest, ChatStreamEvent as GenaiStreamEvent,
+        ContentPart, MessageContent, Tool, ToolCall, ToolResponse,
+    },
     resolver::{AuthData, Endpoint},
 };
 use parking_lot::Mutex;
 use rust_i18n::t;
+use serde_json::json;
 use tokio::time::{Instant, sleep, timeout_at};
 
-use crate::config::{LlmModelConfig, LlmProvider};
+use crate::config::{CONFIG, LlmModelConfig, LlmProvider};
 
-use super::session::{ChatContextMessage, ChatRole};
+use super::{
+    media::{ImageAttachment, capture_primary_screen},
+    session::{ChatContextMessage, ChatRole},
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(45);
@@ -24,8 +32,13 @@ const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 const TOTAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const TERMINAL_EVENT_GRACE: Duration = Duration::from_millis(100);
 const FLUSH_INTERVAL: Duration = Duration::from_millis(40);
+const SCREEN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_STREAM_CONTENT_BYTES: usize = 64 * 1024;
+pub(super) const MAX_HANDOFF_CONTENT_BYTES: usize = 256 * 1024;
+const MAX_TOOL_CALLS: usize = 4;
 pub(super) const FLUSH_BYTES: usize = 512;
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(1_500)];
+pub(super) const SCREEN_CAPTURE_TOOL: &str = "capture_screen";
 
 /// 网络任务发送给聊天实体的有界事件。
 pub(super) enum ChatStreamEvent {
@@ -39,6 +52,7 @@ pub(super) struct ChatServiceRequest {
     pub(super) model: LlmModelConfig,
     pub(super) system_prompt: String,
     pub(super) messages: Vec<ChatContextMessage>,
+    pub(super) screenshot_permission_revision: Option<u64>,
 }
 
 /// 可由本地 fake 替换的流式请求边界。
@@ -99,10 +113,21 @@ impl ChatBackend for GenaiChatBackend {
     }
 }
 
+#[derive(Debug)]
 pub(super) struct AttemptFailure {
     pub(super) message: String,
     pub(super) retryable: bool,
     pub(super) response_started: bool,
+}
+
+/// 单次 Provider 流结束后的语义结果。
+#[derive(Debug)]
+pub(super) enum StreamOutcome {
+    Complete,
+    ToolUse {
+        assistant_message: GenaiMessage,
+        calls: Vec<ToolCall>,
+    },
 }
 
 /// 执行流式聊天，并且只在首段正文前进行有限退避重试。
@@ -115,44 +140,50 @@ async fn stream_chat(
         model,
         system_prompt,
         messages,
+        screenshot_permission_revision,
     } = request;
     let total_deadline = Instant::now() + TOTAL_RESPONSE_TIMEOUT;
+    if !provider_supports_binary_and_tools(model.provider)
+        && messages.iter().any(|message| {
+            message
+                .image
+                .as_ref()
+                .and_then(ImageAttachment::bytes)
+                .is_some()
+        })
+    {
+        let _ = send_terminal_event(
+            &mut events,
+            ChatStreamEvent::Failed(t!("chat.error.provider_image_unsupported").to_string()),
+            total_deadline,
+        )
+        .await;
+        return;
+    }
+    let screenshot_permission_revision = screenshot_permission_revision
+        .filter(|revision| CONFIG.agent_screenshot_permission_is_current(*revision));
+    let register_screenshot_tool = screenshot_permission_revision.is_some()
+        && provider_supports_binary_and_tools(model.provider);
     let model = ModelIden::new(adapter_kind(model.provider), model.model);
-    let chat_request = build_request(system_prompt, messages);
-    let mut retry_delays = RETRY_DELAYS.into_iter();
+    let mut chat_request = build_request(system_prompt, messages, register_screenshot_tool);
+    let mut used_screen_capture = false;
     loop {
-        match stream_once(
+        let required_permission = (register_screenshot_tool || used_screen_capture)
+            .then_some(screenshot_permission_revision)
+            .flatten();
+        let capture_tool_handoff = register_screenshot_tool || used_screen_capture;
+        let outcome = match stream_with_retry(
             &client,
             model.clone(),
             chat_request.clone(),
             total_deadline,
             &mut events,
+            required_permission,
+            capture_tool_handoff,
         )
         .await
         {
-            Ok(()) => return,
-            Err(failure) if failure.retryable && !failure.response_started => {
-                let Some(delay) = retry_delays.next() else {
-                    let _ = send_terminal_event(
-                        &mut events,
-                        ChatStreamEvent::Failed(failure.message),
-                        total_deadline,
-                    )
-                    .await;
-                    return;
-                };
-                let remaining = total_deadline.saturating_duration_since(Instant::now());
-                if delay >= remaining {
-                    let _ = send_terminal_event(
-                        &mut events,
-                        ChatStreamEvent::Failed(failure.message),
-                        total_deadline,
-                    )
-                    .await;
-                    return;
-                }
-                sleep(delay).await;
-            }
+            Ok(outcome) => outcome,
             Err(failure) => {
                 let _ = send_terminal_event(
                     &mut events,
@@ -162,6 +193,101 @@ async fn stream_chat(
                 .await;
                 return;
             }
+        };
+        match outcome {
+            StreamOutcome::Complete => {
+                let _ = send_terminal_event(&mut events, ChatStreamEvent::Finished, total_deadline)
+                    .await;
+                return;
+            }
+            StreamOutcome::ToolUse {
+                assistant_message,
+                calls,
+            } => {
+                if used_screen_capture {
+                    let _ = send_terminal_event(
+                        &mut events,
+                        ChatStreamEvent::Failed(t!("chat.error.tool_loop").to_string()),
+                        total_deadline,
+                    )
+                    .await;
+                    return;
+                }
+                let mut continuation =
+                    execute_tool_calls(&calls, total_deadline, screenshot_permission_revision)
+                        .await;
+                if !screenshot_permission_revision
+                    .is_some_and(|revision| CONFIG.agent_screenshot_permission_is_current(revision))
+                {
+                    continuation.revoke_image();
+                }
+                if assistant_message.content.thought_signatures().is_empty() {
+                    chat_request.messages.push(assistant_message);
+                    chat_request.messages.push(GenaiMessage::tool(
+                        MessageContent::from_tool_responses(continuation.responses),
+                    ));
+                    if let Some(image) = continuation.image
+                        && let Some(part) = image_content_part(&image)
+                    {
+                        chat_request.messages.push(GenaiMessage::user(
+                            MessageContent::from_parts(vec![
+                                ContentPart::from_text(
+                                    "The authorized capture_screen tool produced this screenshot. Inspect it before answering.",
+                                ),
+                                part,
+                            ]),
+                        ));
+                    }
+                } else {
+                    // genai 0.6.5 的部分适配器会接收签名流却无法在请求中回写；把截图并入原用户轮次可安全重试而不伪造 handoff。
+                    append_stateless_capture_result(&mut chat_request, continuation.image.as_ref());
+                }
+                chat_request.tools = None;
+                used_screen_capture = true;
+            }
+        }
+    }
+}
+
+async fn stream_with_retry(
+    client: &Client,
+    model: ModelIden,
+    request: ChatRequest,
+    total_deadline: Instant,
+    events: &mut mpsc::Sender<ChatStreamEvent>,
+    screenshot_permission_revision: Option<u64>,
+    capture_tool_handoff: bool,
+) -> Result<StreamOutcome, AttemptFailure> {
+    let mut retry_delays = RETRY_DELAYS.into_iter();
+    loop {
+        if screenshot_permission_revision
+            .is_some_and(|revision| !CONFIG.agent_screenshot_permission_is_current(revision))
+        {
+            return Err(screenshot_permission_revoked_failure());
+        }
+        match stream_once(
+            client,
+            model.clone(),
+            request.clone(),
+            total_deadline,
+            events,
+            screenshot_permission_revision,
+            capture_tool_handoff,
+        )
+        .await
+        {
+            Ok(outcome) => return Ok(outcome),
+            Err(failure) if failure.retryable && !failure.response_started => {
+                let Some(delay) = retry_delays.next() else {
+                    return Err(failure);
+                };
+                let remaining = total_deadline.saturating_duration_since(Instant::now());
+                if delay >= remaining {
+                    return Err(failure);
+                }
+                sleep(delay).await;
+            }
+            Err(failure) => return Err(failure),
         }
     }
 }
@@ -220,6 +346,11 @@ const fn adapter_kind(provider: LlmProvider) -> AdapterKind {
     }
 }
 
+pub(super) const fn provider_supports_binary_and_tools(provider: LlmProvider) -> bool {
+    // genai 0.6.5 的 Cohere adapter 会静默丢弃 Binary 和 tools，必须在本层拒绝降级。
+    !matches!(provider, LlmProvider::Cohere)
+}
+
 pub(super) fn auth_data(model: &LlmModelConfig) -> AuthData {
     model
         .api_key
@@ -231,19 +362,77 @@ pub(super) fn auth_data(model: &LlmModelConfig) -> AuthData {
 pub(super) fn build_request(
     system_prompt: String,
     messages: Vec<ChatContextMessage>,
+    allow_agent_screenshot: bool,
 ) -> ChatRequest {
     let messages = messages
         .into_iter()
         .map(|message| match message.role {
-            ChatRole::User => GenaiMessage::user(message.content),
+            ChatRole::User => match message.image.as_ref() {
+                Some(image) => match image_content_part(image) {
+                    Some(image) => GenaiMessage::user(MessageContent::from_parts(vec![
+                        ContentPart::from_text(message.content),
+                        image,
+                    ])),
+                    None => GenaiMessage::user(format!(
+                        "{}\n\n[The image from this historical message is no longer available.]",
+                        message.content
+                    )),
+                },
+                None => GenaiMessage::user(message.content),
+            },
             ChatRole::Assistant => GenaiMessage::assistant(message.content),
         })
         .collect::<Vec<_>>();
-    let chat_request = ChatRequest::from_messages(messages);
-    if system_prompt.trim().is_empty() {
-        chat_request
+    let mut chat_request = ChatRequest::from_messages(messages);
+    if !system_prompt.trim().is_empty() {
+        chat_request = chat_request.with_system(system_prompt);
+    }
+    if allow_agent_screenshot {
+        chat_request = chat_request.with_tools([screen_capture_tool()]);
+    }
+    chat_request
+}
+
+fn screen_capture_tool() -> Tool {
+    Tool::new(SCREEN_CAPTURE_TOOL)
+        .with_description(
+            "Capture the user's screen as a still image when current visual context is necessary to answer. Do not call it speculatively or more than once.",
+        )
+        .with_schema(json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+        }))
+}
+
+fn image_content_part(image: &ImageAttachment) -> Option<ContentPart> {
+    let bytes = image.bytes()?;
+    Some(ContentPart::from_binary_base64(
+        "image/jpeg",
+        STANDARD.encode(bytes),
+        Some(image.name().to_owned()),
+    ))
+}
+
+pub(super) fn append_stateless_capture_result(
+    request: &mut ChatRequest,
+    image: Option<&ImageAttachment>,
+) {
+    let mut parts = vec![ContentPart::from_text(if image.is_some() {
+        "\n\nThe authorized capture_screen tool produced this screenshot. Inspect it before answering."
     } else {
-        chat_request.with_system(system_prompt)
+        "\n\nThe requested capture_screen tool could not provide a screenshot. Continue without it."
+    })];
+    if let Some(part) = image.and_then(image_content_part) {
+        parts.push(part);
+    }
+    if let Some(message) = request.messages.last_mut() {
+        message.content.extend(parts);
+    } else {
+        request
+            .messages
+            .push(GenaiMessage::user(MessageContent::from_parts(parts)));
     }
 }
 
@@ -253,14 +442,40 @@ async fn stream_once(
     request: ChatRequest,
     total_deadline: Instant,
     events: &mut mpsc::Sender<ChatStreamEvent>,
-) -> Result<(), AttemptFailure> {
-    let first_content_deadline = (Instant::now() + FIRST_CONTENT_TIMEOUT).min(total_deadline);
-    let response = match timeout_at(
-        first_content_deadline,
-        client.exec_chat_stream(model, request, None),
-    )
-    .await
+    screenshot_permission_revision: Option<u64>,
+    capture_tool_handoff: bool,
+) -> Result<StreamOutcome, AttemptFailure> {
+    if screenshot_permission_revision
+        .is_some_and(|revision| !CONFIG.agent_screenshot_permission_is_current(revision))
     {
+        return Err(screenshot_permission_revoked_failure());
+    }
+    let options = capture_tool_handoff.then(|| {
+        ChatOptions::default()
+            .with_capture_content(true)
+            .with_capture_reasoning_content(true)
+            .with_capture_tool_calls(true)
+    });
+    let first_content_deadline = (Instant::now() + FIRST_CONTENT_TIMEOUT).min(total_deadline);
+    let response_result = if let Some(revision) = screenshot_permission_revision {
+        tokio::select! {
+            biased;
+            () = wait_for_screenshot_permission_revocation(revision) => {
+                return Err(screenshot_permission_revoked_failure());
+            }
+            result = timeout_at(
+                first_content_deadline,
+                client.exec_chat_stream(model, request, options.as_ref()),
+            ) => result,
+        }
+    } else {
+        timeout_at(
+            first_content_deadline,
+            client.exec_chat_stream(model, request, options.as_ref()),
+        )
+        .await
+    };
+    let response = match response_result {
         Ok(Ok(response)) => response,
         Ok(Err(error)) => return Err(attempt_failure(error)),
         Err(_) => {
@@ -271,14 +486,30 @@ async fn stream_once(
             });
         }
     };
-    consume_stream(
-        response.stream,
-        first_content_deadline,
-        STREAM_IDLE_TIMEOUT,
-        total_deadline,
-        events,
-    )
-    .await
+    if let Some(revision) = screenshot_permission_revision {
+        tokio::select! {
+            biased;
+            () = wait_for_screenshot_permission_revocation(revision) => {
+                Err(screenshot_permission_revoked_failure())
+            }
+            result = consume_stream(
+                response.stream,
+                first_content_deadline,
+                STREAM_IDLE_TIMEOUT,
+                total_deadline,
+                events,
+            ) => result,
+        }
+    } else {
+        consume_stream(
+            response.stream,
+            first_content_deadline,
+            STREAM_IDLE_TIMEOUT,
+            total_deadline,
+            events,
+        )
+        .await
+    }
 }
 
 pub(super) async fn consume_stream<S>(
@@ -287,7 +518,7 @@ pub(super) async fn consume_stream<S>(
     idle_timeout: Duration,
     total_deadline: Instant,
     events: &mut mpsc::Sender<ChatStreamEvent>,
-) -> Result<(), AttemptFailure>
+) -> Result<StreamOutcome, AttemptFailure>
 where
     S: futures::Stream<Item = Result<GenaiStreamEvent, genai::Error>> + Unpin,
 {
@@ -296,6 +527,11 @@ where
     let mut pending = String::new();
     let mut flush_deadline = None;
     let mut idle_deadline = None;
+    let mut visible_bytes = 0_usize;
+    let mut hidden_bytes = 0_usize;
+    let mut captured_reasoning = String::new();
+    let mut captured_thought_signature = String::new();
+    let mut observed_tool_calls = HashSet::new();
 
     loop {
         let now = Instant::now();
@@ -310,7 +546,7 @@ where
         }
         if !response_started && now >= first_content_deadline {
             if !flush(&mut pending, events, total_deadline).await {
-                return Ok(());
+                return Ok(StreamOutcome::Complete);
             }
             return Err(AttemptFailure {
                 message: t!("chat.error.first_content_timeout").to_string(),
@@ -320,7 +556,7 @@ where
         }
         if idle_deadline.is_some_and(|deadline| now >= deadline) {
             if !flush(&mut pending, events, total_deadline).await {
-                return Ok(());
+                return Ok(StreamOutcome::Complete);
             }
             return Err(AttemptFailure {
                 message: t!("chat.error.idle_timeout").to_string(),
@@ -352,6 +588,14 @@ where
                     response_started = true;
                     produced_content = true;
                     idle_deadline = Some(Instant::now() + idle_timeout);
+                    if !reserve_bounded_bytes(
+                        &mut visible_bytes,
+                        chunk.content.len(),
+                        MAX_STREAM_CONTENT_BYTES,
+                    ) {
+                        let _ = flush(&mut pending, events, total_deadline).await;
+                        return Err(invalid_captured_response_failure(response_started));
+                    }
                     if pending.is_empty() {
                         flush_deadline = Some(Instant::now() + FLUSH_INTERVAL);
                     }
@@ -359,17 +603,67 @@ where
                     if pending.len() >= FLUSH_BYTES
                         && !flush(&mut pending, events, total_deadline).await
                     {
-                        return Ok(());
+                        return Ok(StreamOutcome::Complete);
                     }
                     if pending.is_empty() {
                         flush_deadline = None;
                     }
                 }
             }
-            Ok(Some(Ok(GenaiStreamEvent::End(_)))) => {
+            Ok(Some(Ok(GenaiStreamEvent::End(end)))) => {
                 let delivery_deadline = terminal_delivery_deadline(total_deadline);
                 if !flush(&mut pending, events, delivery_deadline).await {
-                    return Ok(());
+                    return Ok(StreamOutcome::Complete);
+                }
+                if end
+                    .captured_reasoning_content
+                    .as_ref()
+                    .is_some_and(|reasoning| reasoning.len() > MAX_HANDOFF_CONTENT_BYTES)
+                    || end.captured_content.as_ref().is_some_and(|content| {
+                        !message_content_is_bounded(
+                            content,
+                            MAX_STREAM_CONTENT_BYTES + MAX_HANDOFF_CONTENT_BYTES,
+                        )
+                    })
+                {
+                    return Err(invalid_captured_response_failure(response_started));
+                }
+                let mut calls = Vec::new();
+                if let Some(content) = end.captured_content.as_ref() {
+                    for part in content.parts() {
+                        let Some(call) = part.as_tool_call() else {
+                            continue;
+                        };
+                        if calls.len() >= MAX_TOOL_CALLS || call.size() > MAX_HANDOFF_CONTENT_BYTES
+                        {
+                            return Err(invalid_captured_response_failure(response_started));
+                        }
+                        calls.push(call.clone());
+                    }
+                }
+                if !calls.is_empty() {
+                    let reasoning = end
+                        .captured_reasoning_content
+                        .filter(|reasoning| !reasoning.is_empty())
+                        .or_else(|| (!captured_reasoning.is_empty()).then_some(captured_reasoning));
+                    let mut content = end
+                        .captured_content
+                        .unwrap_or_else(|| MessageContent::from_tool_calls(calls.clone()));
+                    if content.thought_signatures().is_empty()
+                        && !captured_thought_signature.is_empty()
+                    {
+                        content.prepend(ContentPart::ThoughtSignature(
+                            captured_thought_signature.clone(),
+                        ));
+                        if let Some(first_call) = calls.first_mut() {
+                            first_call.thought_signatures = Some(vec![captured_thought_signature]);
+                        }
+                    }
+                    return Ok(StreamOutcome::ToolUse {
+                        assistant_message: GenaiMessage::assistant(content)
+                            .with_reasoning_content(reasoning),
+                        calls,
+                    });
                 }
                 if !produced_content {
                     return Err(AttemptFailure {
@@ -378,15 +672,45 @@ where
                         response_started,
                     });
                 }
-                let _ =
-                    send_terminal_event(events, ChatStreamEvent::Finished, total_deadline).await;
-                return Ok(());
+                return Ok(StreamOutcome::Complete);
             }
-            Ok(Some(Ok(GenaiStreamEvent::ReasoningChunk(_))))
-            | Ok(Some(Ok(GenaiStreamEvent::ThoughtSignatureChunk(_))))
-            | Ok(Some(Ok(GenaiStreamEvent::ToolCallChunk(_)))) => {
+            Ok(Some(Ok(GenaiStreamEvent::ReasoningChunk(chunk)))) => {
+                if !reserve_bounded_bytes(
+                    &mut hidden_bytes,
+                    chunk.content.len(),
+                    MAX_HANDOFF_CONTENT_BYTES,
+                ) {
+                    return Err(invalid_captured_response_failure(response_started));
+                }
+                captured_reasoning.push_str(&chunk.content);
                 if response_started {
                     idle_deadline = Some(Instant::now() + idle_timeout);
+                }
+            }
+            Ok(Some(Ok(GenaiStreamEvent::ThoughtSignatureChunk(chunk)))) => {
+                if !reserve_bounded_bytes(
+                    &mut hidden_bytes,
+                    chunk.content.len(),
+                    MAX_HANDOFF_CONTENT_BYTES,
+                ) {
+                    return Err(invalid_captured_response_failure(response_started));
+                }
+                captured_thought_signature.push_str(&chunk.content);
+                if response_started {
+                    idle_deadline = Some(Instant::now() + idle_timeout);
+                }
+            }
+            Ok(Some(Ok(GenaiStreamEvent::ToolCallChunk(chunk)))) => {
+                response_started = true;
+                idle_deadline = Some(Instant::now() + idle_timeout);
+                let call = chunk.tool_call;
+                if !reserve_bounded_bytes(&mut hidden_bytes, call.size(), MAX_HANDOFF_CONTENT_BYTES)
+                {
+                    return Err(invalid_captured_response_failure(response_started));
+                }
+                observed_tool_calls.insert((call.call_id, call.fn_name));
+                if observed_tool_calls.len() > MAX_TOOL_CALLS {
+                    return Err(invalid_captured_response_failure(response_started));
                 }
             }
             Ok(Some(Ok(GenaiStreamEvent::Start))) => {
@@ -396,7 +720,7 @@ where
             }
             Ok(Some(Err(error))) => {
                 if !flush(&mut pending, events, total_deadline).await {
-                    return Ok(());
+                    return Ok(StreamOutcome::Complete);
                 }
                 let mut failure = attempt_failure(error);
                 failure.response_started = response_started;
@@ -404,7 +728,7 @@ where
             }
             Ok(None) => {
                 if !flush(&mut pending, events, total_deadline).await {
-                    return Ok(());
+                    return Ok(StreamOutcome::Complete);
                 }
                 return Err(AttemptFailure {
                     message: t!("chat.error.stream_ended").to_string(),
@@ -414,11 +738,179 @@ where
             }
             Err(_) => {
                 if !pending.is_empty() && !flush(&mut pending, events, total_deadline).await {
-                    return Ok(());
+                    return Ok(StreamOutcome::Complete);
                 }
                 flush_deadline = None;
             }
         }
+    }
+}
+
+async fn wait_for_screenshot_permission_revocation(revision: u64) {
+    let mut revisions = CONFIG.subscribe_agent_screenshot_permission_revision();
+    loop {
+        if *revisions.borrow() != revision
+            || !CONFIG.agent_screenshot_permission_is_current(revision)
+        {
+            return;
+        }
+        if revisions.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+fn screenshot_permission_revoked_failure() -> AttemptFailure {
+    AttemptFailure {
+        message: t!("chat.error.screen_permission_revoked").to_string(),
+        retryable: false,
+        response_started: false,
+    }
+}
+
+fn invalid_captured_response_failure(response_started: bool) -> AttemptFailure {
+    AttemptFailure {
+        message: t!("chat.error.invalid_response").to_string(),
+        retryable: false,
+        response_started,
+    }
+}
+
+fn reserve_bounded_bytes(total: &mut usize, additional: usize, maximum: usize) -> bool {
+    let Some(next) = total.checked_add(additional) else {
+        return false;
+    };
+    if next > maximum {
+        return false;
+    }
+    *total = next;
+    true
+}
+
+fn message_content_is_bounded(content: &MessageContent, maximum: usize) -> bool {
+    let mut total = 0_usize;
+    content
+        .parts()
+        .iter()
+        .all(|part| reserve_bounded_bytes(&mut total, part.size(), maximum))
+}
+
+struct ToolContinuation {
+    responses: Vec<ToolResponse>,
+    image: Option<ImageAttachment>,
+}
+
+impl ToolContinuation {
+    fn revoke_image(&mut self) {
+        if self.image.take().is_none() {
+            return;
+        }
+        for response in &mut self.responses {
+            if response.fn_name.as_deref() == Some(SCREEN_CAPTURE_TOOL) {
+                response.content =
+                    json!({"status": "error", "code": "permission_revoked"}).to_string();
+            }
+        }
+    }
+}
+
+async fn execute_tool_calls(
+    calls: &[ToolCall],
+    total_deadline: Instant,
+    permission_revision: Option<u64>,
+) -> ToolContinuation {
+    let mut responses = Vec::with_capacity(calls.len());
+    let mut image = None;
+    for call in calls {
+        let content = if call.fn_name != SCREEN_CAPTURE_TOOL {
+            json!({"status": "error", "code": "unknown_tool"})
+        } else if !tool_arguments_are_empty(&call.fn_arguments) {
+            json!({"status": "error", "code": "invalid_arguments"})
+        } else if !permission_revision
+            .is_some_and(|revision| CONFIG.agent_screenshot_permission_is_current(revision))
+        {
+            json!({"status": "error", "code": "permission_disabled"})
+        } else if image.is_some() {
+            json!({"status": "error", "code": "screen_already_captured"})
+        } else {
+            match permission_revision
+                .filter(|revision| CONFIG.agent_screenshot_permission_is_current(*revision))
+            {
+                Some(revision) => match capture_screen(total_deadline, revision).await {
+                    Ok(captured) if CONFIG.agent_screenshot_permission_is_current(revision) => {
+                        let content = json!({
+                            "status": "ok",
+                            "image": "attached_in_next_user_message",
+                            "width": captured.width(),
+                            "height": captured.height()
+                        });
+                        image = Some(captured);
+                        content
+                    }
+                    Ok(_) => json!({"status": "error", "code": "permission_revoked"}),
+                    Err(code) => json!({"status": "error", "code": code}),
+                },
+                None => json!({"status": "error", "code": "permission_disabled"}),
+            }
+        };
+        responses.push(ToolResponse::from_tool_call(call, content.to_string()));
+    }
+    ToolContinuation { responses, image }
+}
+
+fn tool_arguments_are_empty(arguments: &serde_json::Value) -> bool {
+    arguments.is_null() || arguments.as_object().is_some_and(serde_json::Map::is_empty)
+}
+
+async fn capture_screen(
+    total_deadline: Instant,
+    permission_revision: u64,
+) -> Result<ImageAttachment, &'static str> {
+    let deadline = (Instant::now() + SCREEN_CAPTURE_TIMEOUT).min(total_deadline);
+    if deadline <= Instant::now() {
+        return Err("capture_timeout");
+    }
+    #[cfg(target_os = "linux")]
+    let capture = tokio::spawn(capture_primary_screen());
+    #[cfg(not(target_os = "linux"))]
+    let capture = capture_primary_screen();
+    tokio::pin!(capture);
+    tokio::select! {
+        biased;
+        () = wait_for_screenshot_permission_revocation(permission_revision) => {
+            Err("permission_revoked")
+        }
+        result = timeout_at(deadline, &mut capture) => capture_result(result),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn capture_result(
+    result: Result<
+        Result<Result<ImageAttachment, super::media::ImageInputError>, tokio::task::JoinError>,
+        tokio::time::error::Elapsed,
+    >,
+) -> Result<ImageAttachment, &'static str> {
+    // ashpd 0.13 在 portal 响应前不返回 Request；超时或撤权时让任务继续接收响应并删除临时文件。
+    match result {
+        Ok(Ok(Ok(image))) => Ok(image),
+        Ok(Ok(Err(_))) => Err("capture_failed_or_permission_denied"),
+        Ok(Err(_)) => Err("capture_worker_failed"),
+        Err(_) => Err("capture_timeout"),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn capture_result(
+    result: Result<
+        Result<ImageAttachment, super::media::ImageInputError>,
+        tokio::time::error::Elapsed,
+    >,
+) -> Result<ImageAttachment, &'static str> {
+    match result {
+        Ok(Ok(image)) => Ok(image),
+        Ok(Err(_)) => Err("capture_failed_or_permission_denied"),
+        Err(_) => Err("capture_timeout"),
     }
 }
 
