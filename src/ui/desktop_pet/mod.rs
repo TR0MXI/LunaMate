@@ -143,7 +143,8 @@ pub(crate) struct DesktopPetView {
     appearance: Rc<RefCell<AppearanceSettings>>,
     config: Entity<SettingsView>,
     chat: Entity<AgentView>,
-    chat_open: bool,
+    chat_input_open: bool,
+    chat_overlay_visible: bool,
     position_controller: WindowPositionController,
     pending_model_window_size: Option<ModelWindowSize>,
     config_window: Option<AnyWindowHandle>,
@@ -155,6 +156,7 @@ pub(crate) struct DesktopPetView {
     model_generation: u64,
     model_task: Option<Task<()>>,
     _config_subscription: Subscription,
+    _chat_subscription: Subscription,
     _bounds_subscription: Subscription,
     _appearance_subscription: Subscription,
 }
@@ -209,6 +211,14 @@ impl DesktopPetView {
         };
         let gpu_events = gpu_underlay.as_ref().map(GpuUnderlay::events);
         let appearance = Rc::new(RefCell::new(CONFIG.appearance().as_ref().clone()));
+        let chat_overlay_visible = chat.read(cx).reply_visible();
+        let chat_subscription = cx.observe(&chat, |this, chat, cx| {
+            let visible = chat.read(cx).reply_visible();
+            if this.chat_overlay_visible != visible {
+                this.chat_overlay_visible = visible;
+                cx.notify();
+            }
+        });
         let config_subscription =
             cx.subscribe(&config, |this, _, event: &SettingsEvent, cx| match event {
                 SettingsEvent::ModelChanged(model_path) => {
@@ -312,7 +322,8 @@ impl DesktopPetView {
             appearance,
             config,
             chat,
-            chat_open: false,
+            chat_input_open: false,
+            chat_overlay_visible,
             position_controller: WindowPositionController::default(),
             pending_model_window_size: None,
             config_window: None,
@@ -328,6 +339,7 @@ impl DesktopPetView {
             model_generation: 0,
             model_task: None,
             _config_subscription: config_subscription,
+            _chat_subscription: chat_subscription,
             _bounds_subscription: bounds_subscription,
             _appearance_subscription: appearance_subscription,
         };
@@ -365,7 +377,7 @@ impl DesktopPetView {
     }
 
     fn update_look_target(&self, position: gpui::Point<gpui::Pixels>, window: &Window) {
-        if !self.eye_tracking_enabled || self.frame.is_none() || self.chat_open {
+        if !self.eye_tracking_enabled || self.frame.is_none() || self.chat_input_open {
             return;
         }
         let viewport = window.viewport_size();
@@ -817,15 +829,14 @@ impl DesktopPetView {
         };
     }
 
-    fn toggle_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.chat_open = !self.chat_open;
-        if self.chat_open {
+    fn toggle_chat_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.chat_input_open = !self.chat_input_open;
+        if self.chat_input_open {
             self.reset_look_target();
-            self.chat.update(cx, |chat, cx| {
-                chat.refresh_settings(cx);
-                chat.focus_input(window, cx);
-            });
         }
+        self.chat.update(cx, |chat, cx| {
+            chat.set_input_visible(self.chat_input_open, window, cx);
+        });
         cx.notify();
     }
 
@@ -907,7 +918,7 @@ impl DesktopPetView {
         position: gpui::Point<gpui::Pixels>,
         window: &Window,
     ) -> bool {
-        if self.chat_open || self.model_generation != generation {
+        if self.chat_input_open || self.model_generation != generation {
             return false;
         }
 

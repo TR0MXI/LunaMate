@@ -75,7 +75,10 @@ impl Agent {
             store,
             initial_status,
         } = self;
-        cx.new(|cx| AgentView::new(settings, session, store, initial_status, window, cx))
+        let view =
+            cx.new(|cx| AgentView::new(settings, session, store, initial_status, window, cx));
+        view.update(cx, |view, cx| view.start_initial_reply_fade(cx));
+        view
     }
 }
 

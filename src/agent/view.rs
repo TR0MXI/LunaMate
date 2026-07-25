@@ -1,4 +1,4 @@
-//! 渲染桌宠窗口内的聊天记录和输入框，并拥有网络请求生命周期。
+//! 渲染桌宠窗口内的单行输入栏与回复浮层，并拥有网络请求生命周期。
 
 use std::{
     sync::Arc,
@@ -11,9 +11,9 @@ use futures::{
     future::{AbortHandle, Abortable},
 };
 use gpui::{
-    AnyElement, AppContext, Context, Entity, Image, ImageFormat, IntoElement, MouseButton,
-    ObjectFit, PathPromptOptions, Render, ScrollHandle, Subscription, Task, Window, div, img,
-    prelude::*, px, svg,
+    Animation, AnimationExt as _, AnyElement, AppContext, Context, Entity, Image, ImageFormat,
+    IntoElement, MouseButton, ObjectFit, PathPromptOptions, Render, ScrollHandle, Subscription,
+    Task, Window, div, img, prelude::*, px, svg,
 };
 use gpui_component::{
     StyledExt as _,
@@ -36,8 +36,16 @@ use super::{
 
 const STREAM_CHANNEL_CAPACITY: usize = 16;
 const PERSIST_INTERVAL: Duration = Duration::from_secs(3);
+const REPLY_LINGER_DURATION: Duration = Duration::from_secs(4);
+const REPLY_FADE_DURATION: Duration = Duration::from_millis(800);
+const REPLY_MAX_HEIGHT: f32 = 180.0;
+const REPLY_CONTENT_MIN_HEIGHT: f32 = 60.0;
+const REPLY_MIN_HEIGHT: f32 = 78.0;
+const REPLY_VERTICAL_INSET: f32 = 12.0;
+const OVERLAY_BOTTOM_RESERVED: f32 = 108.0;
+const NARROW_OVERLAY_BREAKPOINT: f32 = 180.0;
 
-/// 桌宠窗口中的单会话 Agent 视图。
+/// 桌宠窗口中的单会话 Agent 覆盖层。
 pub(crate) struct AgentView {
     session: ChatSession,
     store: Arc<ChatSessionStore>,
@@ -52,6 +60,10 @@ pub(crate) struct AgentView {
     image_picker_task: Option<Task<()>>,
     messages_scroll: ScrollHandle,
     status: Option<String>,
+    input_visible: bool,
+    reply_message_id: Option<u64>,
+    reply_lifecycle: ReplyLifecycle,
+    reply_fade_task: Option<Task<()>>,
     request_task: Option<Task<()>>,
     request_abort: Option<ActiveRequestAbort>,
     _input_subscription: Subscription,
@@ -67,8 +79,123 @@ struct PendingImage {
     preview: Arc<Image>,
 }
 
+struct ReplyDisplay {
+    text: String,
+    detail: Option<String>,
+    waiting: bool,
+    error: bool,
+}
+
+pub(super) struct AgentOverlayLayout {
+    pub(super) horizontal_inset: f32,
+    pub(super) control_size: f32,
+    pub(super) reply_max_height: f32,
+}
+
+impl AgentOverlayLayout {
+    pub(super) fn for_viewport(width: f32, height: f32) -> Self {
+        let narrow = width < NARROW_OVERLAY_BREAKPOINT;
+        Self {
+            horizontal_inset: if narrow { 4.0 } else { 12.0 },
+            control_size: if narrow { 28.0 } else { 32.0 },
+            reply_max_height: (height - OVERLAY_BOTTOM_RESERVED - REPLY_VERTICAL_INSET * 2.0)
+                .clamp(REPLY_MIN_HEIGHT, REPLY_MAX_HEIGHT),
+        }
+    }
+}
+
+pub(super) struct ReplyLifecycle {
+    visible: bool,
+    hovered: bool,
+    fading: bool,
+    revision: u64,
+    display_generation: u64,
+}
+
+impl ReplyLifecycle {
+    pub(super) fn new(visible: bool) -> Self {
+        Self {
+            visible,
+            hovered: false,
+            fading: false,
+            revision: 0,
+            display_generation: u64::from(visible),
+        }
+    }
+
+    pub(super) fn visible(&self) -> bool {
+        self.visible
+    }
+
+    pub(super) fn fading(&self) -> bool {
+        self.fading
+    }
+
+    pub(super) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(super) fn display_generation(&self) -> u64 {
+        self.display_generation
+    }
+
+    pub(super) fn reveal(&mut self) {
+        self.advance();
+        self.display_generation = self.display_generation.wrapping_add(1).max(1);
+        self.visible = true;
+        self.hovered = false;
+        self.fading = false;
+    }
+
+    fn hide(&mut self) {
+        self.advance();
+        self.visible = false;
+        self.hovered = false;
+        self.fading = false;
+    }
+
+    pub(super) fn plan_fade(&mut self, terminal: bool) -> Option<u64> {
+        self.advance();
+        self.fading = false;
+        (self.visible && !self.hovered && terminal).then_some(self.revision)
+    }
+
+    pub(super) fn begin_fade(&mut self, revision: u64, terminal: bool) -> bool {
+        if self.revision != revision || !self.visible || self.hovered || !terminal {
+            return false;
+        }
+        self.fading = true;
+        true
+    }
+
+    pub(super) fn finish_fade(&mut self, revision: u64, terminal: bool) -> bool {
+        if self.revision != revision || !self.visible || self.hovered || !terminal {
+            return false;
+        }
+        self.visible = false;
+        self.fading = false;
+        true
+    }
+
+    pub(super) fn set_hovered(&mut self, hovered: bool) -> bool {
+        if self.hovered == hovered {
+            return false;
+        }
+        self.hovered = hovered;
+        if hovered {
+            self.advance();
+            self.fading = false;
+        }
+        true
+    }
+
+    fn advance(&mut self) {
+        self.revision = self.revision.wrapping_add(1).max(1);
+    }
+}
+
 impl AgentView {
-    /// 使用当前 LLM 配置创建聊天视图和多行输入框。
+    /// 使用当前 LLM 配置创建回复浮层和单行输入框。
     pub(super) fn new(
         settings: SharedLlmSettings,
         session: ChatSession,
@@ -79,7 +206,6 @@ impl AgentView {
     ) -> Self {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
-                .auto_grow(1, 4)
                 .submit_on_enter(true)
                 .placeholder(t!("chat.input_placeholder").to_string())
         });
@@ -103,6 +229,7 @@ impl AgentView {
         })
         .detach();
 
+        let reply_visible = initial_status.is_some();
         Self {
             session,
             persist_revision: store.latest_revision(),
@@ -117,6 +244,10 @@ impl AgentView {
             image_picker_task: None,
             messages_scroll: ScrollHandle::new(),
             status: initial_status,
+            input_visible: false,
+            reply_message_id: None,
+            reply_lifecycle: ReplyLifecycle::new(reply_visible),
+            reply_fade_task: None,
             request_task: None,
             request_abort: None,
             _input_subscription: input_subscription,
@@ -129,9 +260,32 @@ impl AgentView {
         cx.notify();
     }
 
-    /// 面板打开后把键盘焦点交给输入框。
-    pub(crate) fn focus_input(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.input.update(cx, |input, cx| input.focus(window, cx));
+    /// 显示或隐藏底部输入栏；显示时把键盘焦点交给单行输入框。
+    pub(crate) fn set_input_visible(
+        &mut self,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.input_visible = visible;
+        if visible {
+            self.refresh_settings(cx);
+            self.input.update(cx, |input, cx| input.focus(window, cx));
+        } else {
+            cx.notify();
+        }
+    }
+
+    /// 返回回复层当前是否占用桌宠状态提示区域。
+    pub(crate) fn reply_visible(&self) -> bool {
+        self.reply_lifecycle.visible()
+    }
+
+    /// 挂载后为启动阶段的持久化告警安排一次可取消淡出。
+    pub(super) fn start_initial_reply_fade(&mut self, cx: &mut Context<Self>) {
+        if self.status.is_some() && self.reply_message_id.is_none() {
+            self.schedule_reply_fade(cx);
+        }
     }
 
     /// 返回当前是否仍有可接收流式增量的请求。
@@ -199,8 +353,7 @@ impl AgentView {
                 Ok(Err(_)) | Err(_) => {
                     let _ = this.update(cx, |this, cx| {
                         if this.image_picker_revision == revision {
-                            this.status = Some(t!("chat.error.image_picker").to_string());
-                            cx.notify();
+                            this.show_status(t!("chat.error.image_picker").to_string(), cx);
                         }
                     });
                     return;
@@ -217,8 +370,7 @@ impl AgentView {
                 match loaded {
                     Ok(attachment) => {
                         let Some(bytes) = attachment.bytes() else {
-                            this.status = Some(t!("chat.error.image_prepare").to_string());
-                            cx.notify();
+                            this.show_status(t!("chat.error.image_prepare").to_string(), cx);
                             return;
                         };
                         let preview =
@@ -227,9 +379,9 @@ impl AgentView {
                             attachment,
                             preview,
                         });
-                        this.status = None;
+                        this.clear_status_reply(cx);
                     }
-                    Err(error) => this.status = Some(error.to_string()),
+                    Err(error) => this.show_status(error.to_string(), cx),
                 }
                 cx.notify();
             });
@@ -254,15 +406,13 @@ impl AgentView {
         }
         self.settings = CONFIG.llm_settings();
         let Some(model) = self.settings.selected().cloned() else {
-            self.status = Some(t!("chat.configure_model").to_string());
-            cx.notify();
+            self.show_status(t!("chat.configure_model").to_string(), cx);
             return false;
         };
         let started = match self.session.start_turn_with_image(text, image) {
             Ok(started) => started,
             Err(error) => {
-                self.status = Some(error.to_string());
-                cx.notify();
+                self.show_status(error.to_string(), cx);
                 return false;
             }
         };
@@ -287,9 +437,9 @@ impl AgentView {
             handle: abort_handle,
         });
         self.status = None;
+        self.reply_message_id = self.session.messages().back().map(ChatMessage::id);
+        self.reveal_reply(cx);
         self.persist(true, cx);
-        self.messages_scroll.scroll_to_bottom();
-        cx.notify();
 
         self.request_task = Some(cx.spawn(async move |this, cx| {
             let network_task = network_task;
@@ -303,6 +453,9 @@ impl AgentView {
                         };
                         this.persist(terminal, cx);
                         this.messages_scroll.scroll_to_bottom();
+                        if terminal {
+                            this.schedule_reply_fade(cx);
+                        }
                         cx.notify();
                         keep_receiving
                     })
@@ -326,6 +479,8 @@ impl AgentView {
                 if this.session.fail_response(response_id, failure.clone()) {
                     this.status = Some(failure);
                     this.persist(true, cx);
+                    this.messages_scroll.scroll_to_bottom();
+                    this.schedule_reply_fade(cx);
                     cx.notify();
                 }
             });
@@ -378,21 +533,140 @@ impl AgentView {
         }
         self.status = Some(t!("chat.generation_stopped").to_string());
         self.persist(true, cx);
+        self.messages_scroll.scroll_to_bottom();
+        self.schedule_reply_fade(cx);
         cx.notify();
     }
 
-    fn clear(&mut self, cx: &mut Context<Self>) {
-        if self.shutdown_revision.is_some() {
+    fn reveal_reply(&mut self, cx: &mut Context<Self>) {
+        self.reply_fade_task = None;
+        self.reply_lifecycle.reveal();
+        self.messages_scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
+    fn show_status(&mut self, status: String, cx: &mut Context<Self>) {
+        self.status = Some(status);
+        self.reply_message_id = None;
+        self.reveal_reply(cx);
+        self.schedule_reply_fade(cx);
+    }
+
+    fn clear_status_reply(&mut self, cx: &mut Context<Self>) {
+        self.status = None;
+        if self.reply_message_id.is_none() {
+            self.reply_fade_task = None;
+            self.reply_lifecycle.hide();
+        }
+        cx.notify();
+    }
+
+    fn schedule_reply_fade(&mut self, cx: &mut Context<Self>) {
+        self.reply_fade_task = None;
+        let terminal = self.visible_reply_is_terminal();
+        let Some(revision) = self.reply_lifecycle.plan_fade(terminal) else {
+            return;
+        };
+
+        let background = cx.background_executor().clone();
+        self.reply_fade_task = Some(cx.spawn(async move |this, cx| {
+            background.timer(REPLY_LINGER_DURATION).await;
+            let should_fade = this
+                .update(cx, |this, cx| {
+                    let terminal = this.visible_reply_is_terminal();
+                    if !this.reply_lifecycle.begin_fade(revision, terminal) {
+                        return false;
+                    }
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !should_fade {
+                return;
+            }
+
+            background.timer(REPLY_FADE_DURATION).await;
+            let _ = this.update(cx, |this, cx| {
+                let terminal = this.visible_reply_is_terminal();
+                if this.reply_lifecycle.finish_fade(revision, terminal) {
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
+    fn set_reply_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if !self.reply_lifecycle.set_hovered(hovered) {
             return;
         }
-        self.cancel_network_request();
-        self.image_picker_revision = self.image_picker_revision.wrapping_add(1).max(1);
-        self.image_picker_task = None;
-        self.pending_image = None;
-        self.session.clear();
-        self.status = None;
-        self.persist(true, cx);
-        cx.notify();
+        if hovered {
+            self.reply_fade_task = None;
+            cx.notify();
+        } else {
+            self.schedule_reply_fade(cx);
+        }
+    }
+
+    fn visible_reply_is_terminal(&self) -> bool {
+        let Some(message_id) = self.reply_message_id else {
+            return self.status.is_some();
+        };
+        self.session
+            .messages()
+            .iter()
+            .find(|message| message.id() == message_id && message.role() == ChatRole::Assistant)
+            .is_some_and(|message| !matches!(message.state(), ChatMessageState::Streaming))
+    }
+
+    fn reply_display(&self) -> Option<ReplyDisplay> {
+        if !self.reply_lifecycle.visible() {
+            return None;
+        }
+        if let Some(message_id) = self.reply_message_id
+            && let Some(message) =
+                self.session.messages().iter().find(|message| {
+                    message.id() == message_id && message.role() == ChatRole::Assistant
+                })
+        {
+            let waiting = message.content().is_empty()
+                && matches!(message.state(), ChatMessageState::Streaming);
+            let text = if message.content().is_empty() {
+                match message.state() {
+                    ChatMessageState::Streaming => t!("chat.thinking").to_string(),
+                    ChatMessageState::Failed(error) => error.clone(),
+                    ChatMessageState::Cancelled => t!("chat.stopped").to_string(),
+                    ChatMessageState::Interrupted => t!("chat.interrupted").to_string(),
+                    ChatMessageState::Complete => String::new(),
+                }
+            } else {
+                message.content().to_owned()
+            };
+            let detail = match message.state() {
+                ChatMessageState::Failed(error) if !message.content().is_empty() => {
+                    Some(error.clone())
+                }
+                ChatMessageState::Cancelled if !message.content().is_empty() => {
+                    Some(t!("chat.stopped").to_string())
+                }
+                ChatMessageState::Interrupted if !message.content().is_empty() => {
+                    Some(t!("chat.interrupted").to_string())
+                }
+                _ => None,
+            };
+            return Some(ReplyDisplay {
+                text,
+                detail,
+                waiting,
+                error: matches!(message.state(), ChatMessageState::Failed(_)),
+            });
+        }
+
+        self.status.as_ref().map(|status| ReplyDisplay {
+            text: status.clone(),
+            detail: None,
+            waiting: false,
+            error: false,
+        })
     }
 
     fn cancel_network_request(&mut self) {
@@ -427,381 +701,260 @@ impl AgentView {
         })
         .detach();
     }
-
-    fn render_message(message: &ChatMessage, palette: AgentPalette) -> AnyElement {
-        let user = message.role() == ChatRole::User;
-        let image = message.image().map(|image| {
-            (
-                image.name().to_owned(),
-                image.width(),
-                image.height(),
-                image.bytes().is_some(),
-            )
-        });
-        let content = if message.content().is_empty() {
-            match message.state() {
-                ChatMessageState::Streaming => t!("chat.thinking").to_string(),
-                ChatMessageState::Failed(error) => error.clone(),
-                ChatMessageState::Cancelled => t!("chat.stopped").to_string(),
-                ChatMessageState::Interrupted => t!("chat.interrupted").to_string(),
-                ChatMessageState::Complete => String::new(),
-            }
-        } else {
-            message.content().to_owned()
-        };
-        let state_message = match message.state() {
-            ChatMessageState::Failed(error) if !message.content().is_empty() => Some(error.clone()),
-            ChatMessageState::Cancelled if !message.content().is_empty() => {
-                Some(t!("chat.stopped").to_string())
-            }
-            ChatMessageState::Interrupted if !message.content().is_empty() => {
-                Some(t!("chat.interrupted").to_string())
-            }
-            _ => None,
-        };
-
-        div()
-            .id(("chat-message", message.id()))
-            .w_full()
-            .flex()
-            .when(user, |this| this.justify_end())
-            .child(
-                div()
-                    .max_w(px(250.0))
-                    .min_w_0()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(if user {
-                        palette.primary
-                    } else {
-                        palette.border
-                    })
-                    .bg(if user {
-                        palette.accent
-                    } else {
-                        palette.secondary
-                    })
-                    .px_3()
-                    .py_2()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .text_sm()
-                    .whitespace_normal()
-                    .text_color(palette.foreground)
-                    .when_some(image, |this, (name, width, height, available)| {
-                        this.child(
-                            div()
-                                .min_w_0()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .rounded_sm()
-                                .bg(palette.muted)
-                                .px_2()
-                                .py_1()
-                                .text_xs()
-                                .text_color(palette.muted_foreground)
-                                .child(svg().path("icons/image-plus.svg").size_3().flex_shrink_0())
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(format!("{name} ({width}x{height})")),
-                                )
-                                .when(!available, |this| {
-                                    this.child(
-                                        div()
-                                            .flex_shrink_0()
-                                            .text_color(palette.danger)
-                                            .child(t!("chat.image_unavailable").to_string()),
-                                    )
-                                }),
-                        )
-                    })
-                    .child(content)
-                    .when_some(state_message, |this, state| {
-                        this.child(
-                            div()
-                                .mt_1()
-                                .text_xs()
-                                .text_color(palette.danger)
-                                .child(state),
-                        )
-                    }),
-            )
-            .into_any_element()
-    }
 }
 
 impl Render for AgentView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = AgentPalette::from_app(cx);
+        let viewport = window.viewport_size();
+        let layout =
+            AgentOverlayLayout::for_viewport(f32::from(viewport.width), f32::from(viewport.height));
         let streaming = self.is_streaming();
-        let messages = self.session.messages();
-        let selected_model = self
-            .settings
-            .selected()
-            .map(|model| model.label.clone())
-            .unwrap_or_else(|| t!("chat.unconfigured").to_string());
-        let status = self.status.clone();
-        let pending_image = self.pending_image.as_ref().map(|pending| {
-            (
-                pending.preview.clone(),
-                pending.attachment.name().to_owned(),
-                pending.attachment.width(),
-                pending.attachment.height(),
-            )
+        let input_visible = self.input_visible;
+        let reply_fading = self.reply_lifecycle.fading();
+        let reply_fade_revision = self.reply_lifecycle.revision();
+        let reply_element_id = self.reply_lifecycle.display_generation();
+        let reply = self.reply_display().map(|reply| {
+            let primary_error = reply.error && reply.detail.is_none();
+            let text = if reply.waiting {
+                format!("{}...", reply.text)
+            } else {
+                reply.text
+            };
+            let bubble = div()
+                .id(("agent-reply", reply_element_id))
+                .w_full()
+                .min_h(px(REPLY_MIN_HEIGHT))
+                .max_h(px(layout.reply_max_height))
+                .flex()
+                .overflow_hidden()
+                .rounded_lg()
+                .border_1()
+                .border_color(palette.primary.opacity(0.58))
+                .bg(palette.popover.opacity(0.82))
+                .shadow_md()
+                .occlude()
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    this.set_reply_hovered(*hovered, cx);
+                }))
+                .on_mouse_move(|_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                })
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .id("agent-reply-output")
+                        .w_full()
+                        .max_h(px(layout.reply_max_height))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.messages_scroll)
+                        .px_3()
+                        .py_2()
+                        .child(
+                            div()
+                                .min_h(px(REPLY_CONTENT_MIN_HEIGHT))
+                                .flex()
+                                .flex_col()
+                                .justify_center()
+                                .text_center()
+                                .text_sm()
+                                .line_height(px(20.0))
+                                .whitespace_normal()
+                                .text_color(if primary_error {
+                                    palette.danger
+                                } else if reply.waiting {
+                                    palette.muted_foreground
+                                } else {
+                                    palette.foreground
+                                })
+                                .when(reply.waiting, |this| this.font_medium())
+                                .child(text)
+                                .when_some(reply.detail, |this, detail| {
+                                    this.child(
+                                        div()
+                                            .mt_1()
+                                            .text_xs()
+                                            .line_height(px(16.0))
+                                            .text_color(if reply.error {
+                                                palette.danger
+                                            } else {
+                                                palette.muted_foreground
+                                            })
+                                            .child(detail),
+                                    )
+                                }),
+                        ),
+                );
+
+            let bubble = if reply_fading {
+                bubble
+                    .with_animation(
+                        ("agent-reply-fade", reply_fade_revision),
+                        Animation::new(REPLY_FADE_DURATION),
+                        |this, delta| this.opacity(1.0 - delta),
+                    )
+                    .into_any_element()
+            } else {
+                bubble.into_any_element()
+            };
+
+            div()
+                .absolute()
+                .top(px(REPLY_VERTICAL_INSET))
+                .right(px(layout.horizontal_inset))
+                .bottom(px(if input_visible {
+                    OVERLAY_BOTTOM_RESERVED
+                } else {
+                    REPLY_VERTICAL_INSET
+                }))
+                .left(px(layout.horizontal_inset))
+                .flex()
+                .items_center()
+                .child(bubble)
+                .into_any_element()
         });
+        let pending_image = self
+            .pending_image
+            .as_ref()
+            .map(|pending| pending.preview.clone());
         let attach_tooltip = t!("chat.attach_image").to_string();
         let remove_tooltip = t!("chat.remove_image").to_string();
+        let image_control: AnyElement = if let Some(preview) = pending_image {
+            div()
+                .id("remove-chat-image")
+                .size(px(layout.control_size))
+                .flex_shrink_0()
+                .overflow_hidden()
+                .rounded_md()
+                .border_1()
+                .border_color(palette.primary)
+                .when(!streaming, |this| {
+                    this.cursor_pointer()
+                        .hover(move |style| style.opacity(0.82))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.remove_pending_image(cx);
+                        }))
+                })
+                .tooltip(move |window, cx| Tooltip::new(remove_tooltip.clone()).build(window, cx))
+                .child(img(preview).size_full().object_fit(ObjectFit::Cover))
+                .into_any_element()
+        } else {
+            div()
+                .id("attach-chat-image")
+                .size(px(layout.control_size))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .border_1()
+                .border_color(if streaming {
+                    palette.border
+                } else {
+                    palette.primary.opacity(0.82)
+                })
+                .bg(palette.secondary.opacity(0.92))
+                .when(!streaming, |this| {
+                    this.cursor_pointer()
+                        .hover(move |style| style.bg(palette.accent).border_color(palette.primary))
+                        .on_click(cx.listener(|this, _, _, cx| this.choose_image(cx)))
+                })
+                .tooltip(move |window, cx| Tooltip::new(attach_tooltip.clone()).build(window, cx))
+                .child(
+                    svg()
+                        .path("icons/image-plus.svg")
+                        .size_4()
+                        .text_color(if streaming {
+                            palette.muted_foreground
+                        } else {
+                            palette.primary
+                        }),
+                )
+                .into_any_element()
+        };
 
         div()
+            .relative()
             .size_full()
-            .min_h_0()
-            .flex()
-            .flex_col()
             .text_color(palette.foreground)
-            .child(
-                div()
-                    .h(px(42.0))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(palette.border)
-                    .px_3()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_sm()
-                            .font_medium()
-                            .child(selected_model),
-                    )
-                    .child(
-                        div()
-                            .id("clear-chat")
-                            .rounded_md()
-                            .px_2()
-                            .py_1()
-                            .text_xs()
-                            .text_color(palette.muted_foreground)
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(palette.accent))
-                            .on_click(cx.listener(|this, _, _, cx| this.clear(cx)))
-                            .child(t!("common.clear").to_string()),
-                    ),
-            )
-            .child(
-                div()
-                    .id("chat-output")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.messages_scroll)
-                    .p_3()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .when(messages.is_empty(), |this| {
-                        this.child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_sm()
-                                .text_color(palette.muted_foreground)
-                                .child(t!("chat.start").to_string()),
-                        )
-                    })
-                    .children(
-                        messages
-                            .iter()
-                            .map(|message| Self::render_message(message, palette)),
-                    ),
-            )
-            .when_some(status, |this, status| {
+            .when_some(reply, |this, reply| this.child(reply))
+            .when(input_visible, |this| {
                 this.child(
                     div()
-                        .flex_shrink_0()
-                        .border_t_1()
-                        .border_color(palette.border)
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .text_color(palette.info)
-                        .child(status),
-                )
-            })
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_col()
-                    .border_t_1()
-                    .border_color(palette.border)
-                    .when_some(pending_image, |this, (preview, name, width, height)| {
-                        let remove_tooltip = remove_tooltip.clone();
-                        this.child(
+                        .id("chat-input-bar")
+                        .absolute()
+                        .right(px(layout.horizontal_inset))
+                        .bottom(px(56.0))
+                        .left(px(layout.horizontal_inset))
+                        .h(px(40.0))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .overflow_hidden()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(palette.primary.opacity(0.62))
+                        .bg(palette.popover.opacity(0.9))
+                        .p_1()
+                        .shadow_md()
+                        .occlude()
+                        .on_mouse_move(|_, _, cx| cx.stop_propagation())
+                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        })
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(image_control)
+                        .child(
+                            div().min_w_0().flex_1().child(
+                                Input::new(&self.input)
+                                    .appearance(false)
+                                    .focus_bordered(false)
+                                    .disabled(streaming),
+                            ),
+                        )
+                        .child(
                             div()
-                                .h(px(64.0))
+                                .id(if streaming { "stop-chat" } else { "send-chat" })
+                                .size(px(layout.control_size))
                                 .flex_shrink_0()
                                 .flex()
                                 .items_center()
-                                .gap_2()
-                                .border_b_1()
-                                .border_color(palette.border)
-                                .px_2()
-                                .child(
-                                    div()
-                                        .size(px(48.0))
-                                        .flex_shrink_0()
-                                        .overflow_hidden()
-                                        .rounded_md()
-                                        .border_1()
-                                        .border_color(palette.border)
-                                        .child(
-                                            img(preview).size_full().object_fit(ObjectFit::Contain),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .flex_1()
-                                        .flex()
-                                        .flex_col()
-                                        .text_xs()
-                                        .child(
-                                            div()
-                                                .overflow_hidden()
-                                                .text_ellipsis()
-                                                .text_color(palette.foreground)
-                                                .child(name),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_color(palette.muted_foreground)
-                                                .child(format!("{width}x{height}")),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .id("remove-chat-image")
-                                        .size_7()
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .rounded_md()
-                                        .cursor_pointer()
-                                        .hover(move |style| style.bg(palette.accent))
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.remove_pending_image(cx);
-                                        }))
-                                        .tooltip(move |window, cx| {
-                                            Tooltip::new(remove_tooltip.clone()).build(window, cx)
-                                        })
-                                        .child(
-                                            svg()
-                                                .path("icons/x.svg")
-                                                .size_4()
-                                                .text_color(palette.muted_foreground),
-                                        ),
-                                ),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .items_end()
-                            .gap_2()
-                            .p_2()
-                            .child(
-                                div()
-                                    .id("attach-chat-image")
-                                    .size_9()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_md()
-                                    .bg(palette.secondary)
-                                    .text_color(if streaming {
-                                        palette.muted_foreground
+                                .justify_center()
+                                .rounded_md()
+                                .bg(if streaming {
+                                    palette.danger
+                                } else {
+                                    palette.primary
+                                })
+                                .cursor_pointer()
+                                .hover(move |style| style.opacity(0.84))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if streaming {
+                                        this.stop(cx);
                                     } else {
-                                        palette.foreground
-                                    })
-                                    .when(!streaming, |this| {
-                                        this.cursor_pointer()
-                                            .hover(move |style| style.bg(palette.accent))
-                                            .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                                window.prevent_default();
-                                                cx.stop_propagation();
-                                            })
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.choose_image(cx);
-                                            }))
-                                    })
-                                    .tooltip(move |window, cx| {
-                                        Tooltip::new(attach_tooltip.clone()).build(window, cx)
-                                    })
-                                    .child(svg().path("icons/image-plus.svg").size_4()),
-                            )
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .child(Input::new(&self.input).disabled(streaming)),
-                            )
-                            .child(
-                                div()
-                                    .id(if streaming { "stop-chat" } else { "send-chat" })
-                                    .size_9()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_md()
-                                    .bg(if streaming {
-                                        palette.danger
-                                    } else {
-                                        palette.primary
-                                    })
-                                    .cursor_pointer()
-                                    .hover(move |style| style.bg(palette.accent))
-                                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                                        window.prevent_default();
-                                        cx.stop_propagation();
-                                    })
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if streaming {
-                                            this.stop(cx);
+                                        this.submit_current_input(window, cx);
+                                    }
+                                }))
+                                .child(
+                                    svg()
+                                        .path(if streaming {
+                                            "icons/square.svg"
                                         } else {
-                                            this.submit_current_input(window, cx);
-                                        }
-                                    }))
-                                    .child(
-                                        svg()
-                                            .path(if streaming {
-                                                "icons/square.svg"
-                                            } else {
-                                                "icons/send.svg"
-                                            })
-                                            .size_4()
-                                            .text_color(if streaming {
-                                                palette.danger_foreground
-                                            } else {
-                                                palette.primary_foreground
-                                            }),
-                                    ),
-                            ),
-                    ),
-            )
+                                            "icons/send.svg"
+                                        })
+                                        .size_4()
+                                        .text_color(if streaming {
+                                            palette.danger_foreground
+                                        } else {
+                                            palette.primary_foreground
+                                        }),
+                                ),
+                        ),
+                )
+            })
     }
 }
 

@@ -55,7 +55,8 @@ impl ChatMessage {
         &self.content
     }
 
-    /// 返回用户消息附带的图片元数据与当前进程内可用内容。
+    /// 返回测试需要核对的图片元数据与进程内内容。
+    #[cfg(test)]
     pub(super) fn image(&self) -> Option<&ImageAttachment> {
         self.image.as_ref()
     }
@@ -320,14 +321,6 @@ impl ChatSession {
         if let Some(active) = self.active_response {
             self.set_response_state(active.id, ChatMessageState::Interrupted);
         }
-    }
-
-    /// 清空当前单会话；调用方应先终止对应网络任务。
-    pub(super) fn clear(&mut self) {
-        self.messages.clear();
-        self.total_bytes = 0;
-        self.total_image_bytes = 0;
-        self.active_response = None;
     }
 
     /// 创建可由后台线程序列化的不可变快照。

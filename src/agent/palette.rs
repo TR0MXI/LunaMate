@@ -17,7 +17,6 @@ pub(super) struct AgentPalette {
     pub(super) popover: Hsla,
     pub(super) danger: Hsla,
     pub(super) danger_foreground: Hsla,
-    pub(super) info: Hsla,
 }
 
 impl AgentPalette {
@@ -36,7 +35,6 @@ impl AgentPalette {
             popover: theme.popover,
             danger: theme.danger,
             danger_foreground: theme.danger_foreground,
-            info: theme.info,
         }
     }
 }

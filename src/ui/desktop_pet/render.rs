@@ -10,8 +10,6 @@ use rust_i18n::t;
 use super::DesktopPetView;
 use crate::ui::UiPalette;
 
-const CHAT_PANEL_HEIGHT: f32 = 220.0;
-
 impl Render for DesktopPetView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.apply_pending_model_window_size(window, cx) {
@@ -30,8 +28,8 @@ impl Render for DesktopPetView {
         self.track_rendered_image(rendered_image.clone(), window);
         let model_message = self.model_state.message();
         let chat = self.chat.clone();
-        let chat_open = self.chat_open;
-        let model_diagnostics_message = (!chat_open)
+        let chat_input_open = self.chat_input_open;
+        let model_diagnostics_message = (!chat_input_open && !self.chat_overlay_visible)
             .then(|| self.model_state.diagnostics_message())
             .flatten();
         let model_generation = self.model_generation;
@@ -159,32 +157,17 @@ impl Render for DesktopPetView {
                         .child(message),
                 )
             })
-            .when(chat_open, |this| {
-                this.child(
-                    div()
-                        .id("chat-panel")
-                        .absolute()
-                        .h(px(CHAT_PANEL_HEIGHT))
-                        .right(px(12.0))
-                        .bottom(px(56.0))
-                        .left(px(12.0))
-                        .overflow_hidden()
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(palette.border)
-                        .bg(palette.popover)
-                        .shadow_lg()
-                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                        })
-                        .on_click(|_, _, cx| cx.stop_propagation())
-                        .child(
-                            gpui::AnyView::from(chat)
-                                .cached(StyleRefinement::default().size_full()),
-                        ),
-                )
-            })
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .bottom_0()
+                    .left_0()
+                    .child(
+                        gpui::AnyView::from(chat).cached(StyleRefinement::default().size_full()),
+                    ),
+            )
             .child(
                 div()
                     .id("close-window")
@@ -232,7 +215,7 @@ impl Render for DesktopPetView {
                     .items_center()
                     .justify_center()
                     .rounded_full()
-                    .bg(if chat_open {
+                    .bg(if chat_input_open {
                         palette.primary
                     } else {
                         control_background
@@ -247,16 +230,17 @@ impl Render for DesktopPetView {
                     })
                     .on_click(cx.listener(|this, _, window, cx| {
                         cx.stop_propagation();
-                        this.toggle_chat(window, cx);
+                        this.toggle_chat_input(window, cx);
                     }))
-                    .child(
-                        svg()
-                            .path("icons/message-circle.svg")
-                            .size_4()
-                            .text_color(palette.foreground),
-                    ),
+                    .child(svg().path("icons/message-circle.svg").size_4().text_color(
+                        if chat_input_open {
+                            palette.primary_foreground
+                        } else {
+                            palette.foreground
+                        },
+                    )),
             )
-            .when(!chat_open, |this| {
+            .when(!chat_input_open, |this| {
                 this.child(
                     div()
                         .id("toggle-settings")
