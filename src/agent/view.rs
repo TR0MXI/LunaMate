@@ -11,9 +11,9 @@ use futures::{
     future::{AbortHandle, Abortable},
 };
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, AppContext, Context, Entity, Image, ImageFormat,
-    IntoElement, MouseButton, ObjectFit, PathPromptOptions, Render, ScrollHandle, Subscription,
-    Task, Window, div, img, prelude::*, px, svg,
+    Animation, AnimationExt as _, AnyElement, AppContext, Context, Entity, EventEmitter, Image,
+    ImageFormat, IntoElement, MouseButton, ObjectFit, PathPromptOptions, Render, ScrollHandle,
+    Subscription, Task, Window, div, img, prelude::*, px, svg,
 };
 use gpui_component::{
     StyledExt as _,
@@ -28,7 +28,7 @@ use crate::config::{
 };
 
 use super::{
-    AgentMemoryAccess, AgentShutdown, chat_limits,
+    AgentMemoryAccess, AgentOutfitRequest, AgentShutdown, AgentViewEvent, chat_limits,
     media::{ImageAttachment, load_image},
     palette::AgentPalette,
     service::{ChatBackend, ChatServiceRequest, ChatStreamEvent, GenaiChatBackend},
@@ -71,6 +71,8 @@ pub(crate) struct AgentView {
     persona_swap_revision: u64,
     persona_swap_task: Option<Task<()>>,
     backend: Arc<dyn ChatBackend>,
+    available_outfits: Vec<String>,
+    outfit_revision: u64,
     input: Entity<InputState>,
     pending_image: Option<PendingImage>,
     image_picker_revision: u64,
@@ -273,6 +275,8 @@ impl AgentView {
             persona_swap_revision: 0,
             persona_swap_task: None,
             backend: Arc::new(GenaiChatBackend::new()),
+            available_outfits: Vec::new(),
+            outfit_revision: 0,
             input,
             pending_image: None,
             image_picker_revision: 0,
@@ -293,6 +297,17 @@ impl AgentView {
     #[cfg(test)]
     pub(super) fn set_backend_for_test(&mut self, backend: Arc<dyn ChatBackend>) {
         self.backend = backend;
+    }
+
+    /// 用当前已加载模型的服装名称替换 Agent 工具快照，并使迟到请求失效。
+    pub(crate) fn set_available_outfits(&mut self, outfits: Vec<String>) {
+        self.available_outfits = outfits;
+        self.outfit_revision = self.outfit_revision.wrapping_add(1).max(1);
+    }
+
+    /// 检查已投递到 GPUI 队列的换装请求是否仍属于当前服装清单和活动工具调用。
+    pub(crate) fn outfit_request_is_current(&self, request: &AgentOutfitRequest) -> bool {
+        request.revision() == self.outfit_revision && !request.is_cancelled()
     }
 
     /// 返回当前回复浮层实际展示的文本，供测试断言状态与会话内容一致。
@@ -641,6 +656,9 @@ impl AgentView {
             system_prompt: self.active_system_prompt(),
             messages: started.context,
             screenshot_permission_revision: CONFIG.agent_screenshot_permission_revision(),
+            allow_agent_outfit_change: CONFIG.allow_agent_outfit_change(),
+            outfits: self.available_outfits.clone(),
+            outfit_revision: self.outfit_revision,
             language,
         };
         self.cancel_network_request();
@@ -666,7 +684,7 @@ impl AgentView {
                 let keep_receiving = this
                     .update(cx, |this, cx| {
                         let Some((keep_receiving, terminal)) =
-                            this.apply_stream_event(response_id, event)
+                            this.apply_stream_event(response_id, event, cx)
                         else {
                             return false;
                         };
@@ -711,6 +729,7 @@ impl AgentView {
         &mut self,
         response_id: ResponseId,
         event: ChatStreamEvent,
+        cx: &mut Context<Self>,
     ) -> Option<(bool, bool)> {
         if self.session.active_response_id() != Some(response_id) {
             return None;
@@ -726,6 +745,14 @@ impl AgentView {
                 } else {
                     (true, false)
                 }
+            }
+            ChatStreamEvent::ChangeOutfit(request) => {
+                if self.outfit_request_is_current(&request) {
+                    cx.emit(AgentViewEvent::ChangeOutfit(request));
+                } else {
+                    request.complete(false);
+                }
+                (true, false)
             }
             ChatStreamEvent::Finished => {
                 if !self.session.finish_response(response_id) {
@@ -1185,6 +1212,8 @@ impl Render for AgentView {
             })
     }
 }
+
+impl EventEmitter<AgentViewEvent> for AgentView {}
 
 fn join_error_kind(error: &gpui_tokio::JoinError) -> String {
     if error.is_cancelled() {

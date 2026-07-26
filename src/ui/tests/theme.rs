@@ -223,5 +223,13 @@ fn core_settings_text_exists_in_every_supported_language() {
             rust_i18n::t!("tools.allow_agent_screenshot", locale = locale),
             "tools.allow_agent_screenshot"
         );
+        assert_ne!(
+            rust_i18n::t!("tools.allow_agent_outfit_change", locale = locale),
+            "tools.allow_agent_outfit_change"
+        );
+        assert_ne!(
+            rust_i18n::t!("tools.outfit_change_notice", locale = locale),
+            "tools.outfit_change_notice"
+        );
     }
 }

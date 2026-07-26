@@ -10,6 +10,7 @@ mod window;
 mod tests;
 
 pub(crate) use desktop_pet::DesktopPetView;
+pub(in crate::ui) use settings::AgentOutfitAction;
 pub(crate) use settings::{SettingsEvent, SettingsView, SettingsWindowView};
 pub(crate) use theme::{UiPalette, apply, apply_language};
 pub(in crate::ui) use tray_menu::{TrayMenuView, tray_menu_window_options};

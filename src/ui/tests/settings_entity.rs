@@ -14,7 +14,7 @@ use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
 use crate::{
     agent::AgentMemoryAccess,
     model::{ModelCatalog, ModelPreviewCapabilities},
-    ui::settings::SettingsView,
+    ui::settings::{AgentOutfitAction, SettingsView},
 };
 
 struct TestDirectory(PathBuf);
@@ -265,5 +265,24 @@ async fn a_scan_discovers_models_written_after_the_view_was_created(cx: &mut Tes
 
     wait_for(&view, cx, "扫描发现新模型", |view| {
         !view.is_refreshing_for_test() && view.catalog_counts_for_test() == (1, 2)
+    });
+
+    view.update(cx, |view, cx| {
+        view.set_agent_outfit_tool_enabled_for_test(true);
+        view.set_preview_capabilities(
+            ModelPreviewCapabilities::new_for_test(vec!["侦探".to_owned()], Vec::new(), Vec::new()),
+            cx,
+        );
+        let outfits = view.available_agent_outfits();
+        assert_eq!(outfits.len(), 2);
+        assert!(outfits.iter().any(|outfit| outfit == "侦探"));
+        assert_eq!(
+            view.resolve_agent_outfit("侦探"),
+            Some(AgentOutfitAction::PreviewExpression("侦探".to_owned()))
+        );
+
+        view.set_agent_outfit_tool_enabled_for_test(false);
+        assert!(view.available_agent_outfits().is_empty());
+        assert!(view.resolve_agent_outfit("侦探").is_none());
     });
 }

@@ -52,6 +52,7 @@ fn missing_config_uses_complete_defaults() {
     assert!(!config.show_fps());
     assert!(!config.use_native_tray_menu());
     assert!(!config.allow_agent_screenshot());
+    assert!(config.allow_agent_outfit_change());
     assert_eq!(
         config.logging_settings().as_ref(),
         &LoggingSettings::default()
@@ -89,6 +90,7 @@ use_native_tray_menu = true
 
 [tools]
 allow_agent_screenshot = true
+allow_agent_outfit_change = false
 
 [interaction]
 eye_tracking = false
@@ -109,6 +111,7 @@ y = 48
     assert!(config.show_fps());
     assert!(config.use_native_tray_menu());
     assert!(config.allow_agent_screenshot());
+    assert!(!config.allow_agent_outfit_change());
     assert_eq!(
         config.selected_model(),
         Some(PathBuf::from("luna/runtime/luna.model3.json"))
@@ -198,6 +201,25 @@ fn agent_screenshot_permission_is_explicit_and_round_trips() {
 }
 
 #[test]
+fn agent_outfit_tool_switch_defaults_to_enabled_and_round_trips() {
+    let directory = TestDirectory::new();
+    let config = LunaConfig::load_from(directory.config_path());
+    assert!(config.allow_agent_outfit_change());
+
+    let revision = config.reserve_allow_agent_outfit_change_revision();
+    assert_eq!(
+        config
+            .set_allow_agent_outfit_change_at_revision(false, revision)
+            .expect("Agent 换装工具应当可以关闭"),
+        Some(())
+    );
+    assert!(!config.allow_agent_outfit_change());
+    assert!(!LunaConfig::load_from(directory.config_path()).allow_agent_outfit_change());
+    let saved = fs::read_to_string(directory.config_path()).expect("工具配置应当可以读取");
+    assert!(saved.contains("allow_agent_outfit_change = false"));
+}
+
+#[test]
 fn agent_screenshot_permission_revision_notifies_subscribers() {
     let directory = TestDirectory::new();
     let config = LunaConfig::load_from(directory.config_path());
@@ -215,11 +237,12 @@ fn agent_screenshot_permission_revision_notifies_subscribers() {
 }
 
 #[test]
-fn invalid_agent_screenshot_permission_stays_closed() {
+fn invalid_tool_switches_use_their_defaults() {
     let directory = TestDirectory::new();
     directory.write(
         r#"[tools]
 allow_agent_screenshot = "yes"
+allow_agent_outfit_change = "yes"
 
 [debug]
 show_fps = true
@@ -228,6 +251,7 @@ show_fps = true
 
     let config = LunaConfig::load_from(directory.config_path());
     assert!(!config.allow_agent_screenshot());
+    assert!(config.allow_agent_outfit_change());
     assert!(config.show_fps());
     assert!(config.startup_warning().is_some());
 }

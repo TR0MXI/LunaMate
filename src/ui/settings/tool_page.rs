@@ -36,6 +36,35 @@ impl SettingsView {
                             ))
                             .child(
                                 setting_row(
+                                    t!("tools.allow_agent_outfit_change").to_string(),
+                                    palette,
+                                )
+                                .child(
+                                    toggle_switch(
+                                        "allow-agent-outfit-change",
+                                        self.allow_agent_outfit_change,
+                                        palette,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.set_allow_agent_outfit_change(
+                                                !this.allow_agent_outfit_change,
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                                ),
+                            )
+                            .child(
+                                div()
+                                    .pt_3()
+                                    .pb_4()
+                                    .text_xs()
+                                    .text_color(palette.muted_foreground)
+                                    .child(t!("tools.outfit_change_notice").to_string()),
+                            )
+                            .child(
+                                setting_row(
                                     t!("tools.allow_agent_screenshot").to_string(),
                                     palette,
                                 )

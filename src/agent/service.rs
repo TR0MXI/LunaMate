@@ -24,6 +24,7 @@ use crate::config::{
 };
 
 use super::{
+    AgentOutfitRequest, AgentOutfitResult,
     media::{ImageAttachment, capture_primary_screen},
     session::{ChatContextMessage, ChatRole},
 };
@@ -39,13 +40,17 @@ const SCREEN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_STREAM_CONTENT_BYTES: usize = 64 * 1024;
 pub(super) const MAX_HANDOFF_CONTENT_BYTES: usize = 256 * 1024;
 const MAX_TOOL_CALLS: usize = 4;
+const MAX_OUTFIT_TOOL_OPTIONS: usize = 128;
+const MAX_OUTFIT_NAME_BYTES: usize = 512;
 pub(super) const FLUSH_BYTES: usize = 512;
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(1_500)];
 pub(super) const SCREEN_CAPTURE_TOOL: &str = "capture_screen";
+pub(super) const CHANGE_OUTFIT_TOOL: &str = "change_outfit";
 
 /// 网络任务发送给聊天实体的有界事件。
 pub(super) enum ChatStreamEvent {
     Delta(String),
+    ChangeOutfit(AgentOutfitRequest),
     Finished,
     Failed(String),
 }
@@ -56,6 +61,9 @@ pub(super) struct ChatServiceRequest {
     pub(super) system_prompt: String,
     pub(super) messages: Vec<ChatContextMessage>,
     pub(super) screenshot_permission_revision: Option<u64>,
+    pub(super) allow_agent_outfit_change: bool,
+    pub(super) outfits: Vec<String>,
+    pub(super) outfit_revision: u64,
     pub(super) language: AppLanguage,
 }
 
@@ -149,6 +157,9 @@ async fn stream_chat(
         system_prompt,
         messages,
         screenshot_permission_revision,
+        allow_agent_outfit_change,
+        outfits,
+        outfit_revision,
         language,
     } = request;
     let total_deadline = Instant::now() + TOTAL_RESPONSE_TIMEOUT;
@@ -173,16 +184,28 @@ async fn stream_chat(
         .filter(|revision| CONFIG.agent_screenshot_permission_is_current(*revision));
     let register_screenshot_tool = screenshot_permission_revision.is_some()
         && provider_supports_binary_and_tools(model.provider);
+    let outfits = bounded_outfits(outfits);
+    let registered_outfits =
+        outfit_tool_options(model.provider, allow_agent_outfit_change, &outfits);
+    let register_outfit_tool = !registered_outfits.is_empty();
+    let register_any_tool = register_screenshot_tool || register_outfit_tool;
     let base_options = base_chat_options(&model.advanced);
     let model = ModelIden::new(adapter_kind(model.provider), model.model);
-    let mut chat_request =
-        build_request(system_prompt, messages, register_screenshot_tool, language);
+    let mut chat_request = build_request(
+        system_prompt,
+        messages,
+        register_screenshot_tool,
+        registered_outfits,
+        language,
+    );
     let mut used_screen_capture = false;
+    let mut used_tools = false;
     loop {
-        let required_permission = (register_screenshot_tool || used_screen_capture)
+        let required_permission = ((!used_tools && register_screenshot_tool)
+            || used_screen_capture)
             .then_some(screenshot_permission_revision)
             .flatten();
-        let capture_tool_handoff = register_screenshot_tool || used_screen_capture;
+        let capture_tool_handoff = register_any_tool || used_tools;
         let attempt = StreamAttempt {
             model: model.clone(),
             request: chat_request.clone(),
@@ -213,7 +236,7 @@ async fn stream_chat(
                 assistant_message,
                 calls,
             } => {
-                if used_screen_capture {
+                if used_tools {
                     let _ = send_terminal_event(
                         &mut events,
                         ChatStreamEvent::Failed(t!("chat.error.tool_loop").to_string()),
@@ -222,9 +245,15 @@ async fn stream_chat(
                     .await;
                     return;
                 }
-                let mut continuation =
-                    execute_tool_calls(&calls, total_deadline, screenshot_permission_revision)
-                        .await;
+                let mut continuation = execute_tool_calls(
+                    &calls,
+                    total_deadline,
+                    screenshot_permission_revision,
+                    &outfits,
+                    outfit_revision,
+                    &mut events,
+                )
+                .await;
                 if !screenshot_permission_revision
                     .is_some_and(|revision| CONFIG.agent_screenshot_permission_is_current(revision))
                 {
@@ -246,15 +275,23 @@ async fn stream_chat(
                             ])));
                     }
                 } else {
-                    // genai 0.6.5 的部分适配器会接收签名流却无法在请求中回写；把截图并入原用户轮次可安全重试而不伪造 handoff。
-                    append_stateless_capture_result(
+                    // genai 0.6.5 的部分适配器会接收签名流却无法在请求中回写；把本地结果并入原用户轮次可安全重试而不伪造 handoff。
+                    append_stateless_tool_results(
                         &mut chat_request,
-                        continuation.image.as_ref(),
+                        &continuation.stateless_results,
                         language,
                     );
+                    if continuation.screen_capture_requested {
+                        append_stateless_capture_result(
+                            &mut chat_request,
+                            continuation.image.as_ref(),
+                            language,
+                        );
+                    }
                 }
                 chat_request.tools = None;
-                used_screen_capture = true;
+                used_screen_capture = continuation.screen_capture_requested;
+                used_tools = true;
             }
         }
     }
@@ -415,6 +452,18 @@ pub(super) const fn provider_supports_binary_and_tools(provider: LlmProvider) ->
     !matches!(provider, LlmProvider::Cohere)
 }
 
+pub(super) fn outfit_tool_options(
+    provider: LlmProvider,
+    allowed: bool,
+    outfits: &[String],
+) -> &[String] {
+    if allowed && outfits.len() > 1 && provider_supports_binary_and_tools(provider) {
+        outfits
+    } else {
+        &[]
+    }
+}
+
 pub(super) fn auth_data(model: &LlmModelConfig) -> AuthData {
     model
         .api_key
@@ -427,6 +476,7 @@ pub(super) fn build_request(
     system_prompt: String,
     messages: Vec<ChatContextMessage>,
     allow_agent_screenshot: bool,
+    outfits: &[String],
     language: AppLanguage,
 ) -> ChatRequest {
     let messages = messages
@@ -453,8 +503,15 @@ pub(super) fn build_request(
     if !system_prompt.trim().is_empty() {
         chat_request = chat_request.with_system(system_prompt);
     }
+    let mut tools = Vec::with_capacity(2);
     if allow_agent_screenshot {
-        chat_request = chat_request.with_tools([screen_capture_tool(language)]);
+        tools.push(screen_capture_tool(language));
+    }
+    if outfits.len() > 1 {
+        tools.push(change_outfit_tool(outfits, language));
+    }
+    if !tools.is_empty() {
+        chat_request = chat_request.with_tools(tools);
     }
     chat_request
 }
@@ -474,6 +531,45 @@ fn screen_capture_tool(language: AppLanguage) -> Tool {
             "required": [],
             "additionalProperties": false
         }))
+}
+
+fn change_outfit_tool(outfits: &[String], language: AppLanguage) -> Tool {
+    Tool::new(CHANGE_OUTFIT_TOOL)
+        .with_description(
+            t!(
+                "chat.tool.change_outfit_description",
+                locale = language.id()
+            )
+            .to_string(),
+        )
+        .with_schema(json!({
+            "type": "object",
+            "properties": {
+                "outfit": {
+                    "type": "string",
+                    "description": t!(
+                        "chat.tool.change_outfit_argument",
+                        locale = language.id()
+                    ).to_string(),
+                    "enum": outfits
+                }
+            },
+            "required": ["outfit"],
+            "additionalProperties": false
+        }))
+}
+
+fn bounded_outfits(outfits: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    outfits
+        .into_iter()
+        .filter(|outfit| {
+            !outfit.is_empty()
+                && outfit.len() <= MAX_OUTFIT_NAME_BYTES
+                && seen.insert(outfit.clone())
+        })
+        .take(MAX_OUTFIT_TOOL_OPTIONS)
+        .collect()
 }
 
 fn screen_capture_handoff_prompt(language: AppLanguage) -> String {
@@ -513,6 +609,30 @@ pub(super) fn append_stateless_capture_result(
         request
             .messages
             .push(GenaiMessage::user(MessageContent::from_parts(parts)));
+    }
+}
+
+fn append_stateless_tool_results(
+    request: &mut ChatRequest,
+    results: &[String],
+    language: AppLanguage,
+) {
+    if results.is_empty() {
+        return;
+    }
+    let prompt = t!(
+        "chat.tool.result_handoff",
+        locale = language.id(),
+        results = results.join("\n")
+    )
+    .to_string();
+    let part = ContentPart::from_text(format!("\n\n{prompt}"));
+    if let Some(message) = request.messages.last_mut() {
+        message.content.extend(vec![part]);
+    } else {
+        request
+            .messages
+            .push(GenaiMessage::user(MessageContent::from_parts(vec![part])));
     }
 }
 
@@ -893,6 +1013,8 @@ fn message_content_is_bounded(content: &MessageContent, maximum: usize) -> bool 
 struct ToolContinuation {
     responses: Vec<ToolResponse>,
     image: Option<ImageAttachment>,
+    screen_capture_requested: bool,
+    stateless_results: Vec<String>,
 }
 
 impl ToolContinuation {
@@ -900,10 +1022,13 @@ impl ToolContinuation {
         if self.image.take().is_none() {
             return;
         }
-        for response in &mut self.responses {
+        for (index, response) in self.responses.iter_mut().enumerate() {
             if response.fn_name.as_deref() == Some(SCREEN_CAPTURE_TOOL) {
-                response.content =
-                    json!({"status": "error", "code": "permission_revoked"}).to_string();
+                let content = json!({"status": "error", "code": "permission_revoked"});
+                response.content = content.to_string();
+                if let Some(result) = self.stateless_results.get_mut(index) {
+                    *result = stateless_tool_result(SCREEN_CAPTURE_TOOL, &content);
+                }
             }
         }
     }
@@ -913,44 +1038,125 @@ async fn execute_tool_calls(
     calls: &[ToolCall],
     total_deadline: Instant,
     permission_revision: Option<u64>,
+    outfits: &[String],
+    outfit_revision: u64,
+    events: &mut mpsc::Sender<ChatStreamEvent>,
 ) -> ToolContinuation {
     let mut responses = Vec::with_capacity(calls.len());
     let mut image = None;
+    let mut screen_capture_requested = false;
+    let mut stateless_results = Vec::with_capacity(calls.len());
     for call in calls {
-        let content = if call.fn_name != SCREEN_CAPTURE_TOOL {
-            json!({"status": "error", "code": "unknown_tool"})
-        } else if !tool_arguments_are_empty(&call.fn_arguments) {
-            json!({"status": "error", "code": "invalid_arguments"})
-        } else if !permission_revision
-            .is_some_and(|revision| CONFIG.agent_screenshot_permission_is_current(revision))
-        {
-            json!({"status": "error", "code": "permission_disabled"})
-        } else if image.is_some() {
-            json!({"status": "error", "code": "screen_already_captured"})
-        } else {
-            match permission_revision
-                .filter(|revision| CONFIG.agent_screenshot_permission_is_current(*revision))
-            {
-                Some(revision) => match capture_screen(total_deadline, revision).await {
-                    Ok(captured) if CONFIG.agent_screenshot_permission_is_current(revision) => {
-                        let content = json!({
-                            "status": "ok",
-                            "image": "attached_in_next_user_message",
-                            "width": captured.width(),
-                            "height": captured.height()
-                        });
-                        image = Some(captured);
-                        content
+        let content = match call.fn_name.as_str() {
+            SCREEN_CAPTURE_TOOL => {
+                screen_capture_requested = true;
+                if !tool_arguments_are_empty(&call.fn_arguments) {
+                    json!({"status": "error", "code": "invalid_arguments"})
+                } else if !permission_revision
+                    .is_some_and(|revision| CONFIG.agent_screenshot_permission_is_current(revision))
+                {
+                    json!({"status": "error", "code": "permission_disabled"})
+                } else if image.is_some() {
+                    json!({"status": "error", "code": "screen_already_captured"})
+                } else {
+                    match permission_revision
+                        .filter(|revision| CONFIG.agent_screenshot_permission_is_current(*revision))
+                    {
+                        Some(revision) => match capture_screen(total_deadline, revision).await {
+                            Ok(captured)
+                                if CONFIG.agent_screenshot_permission_is_current(revision) =>
+                            {
+                                let content = json!({
+                                    "status": "ok",
+                                    "image": "attached_in_next_user_message",
+                                    "width": captured.width(),
+                                    "height": captured.height()
+                                });
+                                image = Some(captured);
+                                content
+                            }
+                            Ok(_) => {
+                                json!({"status": "error", "code": "permission_revoked"})
+                            }
+                            Err(code) => json!({"status": "error", "code": code}),
+                        },
+                        None => json!({"status": "error", "code": "permission_disabled"}),
                     }
-                    Ok(_) => json!({"status": "error", "code": "permission_revoked"}),
+                }
+            }
+            CHANGE_OUTFIT_TOOL => match outfit_argument(&call.fn_arguments, outfits) {
+                Ok(outfit) => match request_outfit_change(
+                    outfit.to_owned(),
+                    outfit_revision,
+                    total_deadline,
+                    events,
+                )
+                .await
+                {
+                    Ok(()) => json!({"status": "ok", "outfit": outfit}),
                     Err(code) => json!({"status": "error", "code": code}),
                 },
-                None => json!({"status": "error", "code": "permission_disabled"}),
-            }
+                Err(code) => json!({"status": "error", "code": code}),
+            },
+            _ => json!({"status": "error", "code": "unknown_tool"}),
         };
+        stateless_results.push(stateless_tool_result(&call.fn_name, &content));
         responses.push(ToolResponse::from_tool_call(call, content.to_string()));
     }
-    ToolContinuation { responses, image }
+    ToolContinuation {
+        responses,
+        image,
+        screen_capture_requested,
+        stateless_results,
+    }
+}
+
+pub(super) fn outfit_argument<'a>(
+    arguments: &'a serde_json::Value,
+    outfits: &[String],
+) -> Result<&'a str, &'static str> {
+    let Some(arguments) = arguments.as_object() else {
+        return Err("invalid_arguments");
+    };
+    if arguments.len() != 1 {
+        return Err("invalid_arguments");
+    }
+    let Some(outfit) = arguments.get("outfit").and_then(serde_json::Value::as_str) else {
+        return Err("invalid_arguments");
+    };
+    if !outfits.iter().any(|available| available == outfit) {
+        return Err("outfit_unavailable");
+    }
+    Ok(outfit)
+}
+
+pub(super) async fn request_outfit_change(
+    outfit: String,
+    outfit_revision: u64,
+    total_deadline: Instant,
+    events: &mut mpsc::Sender<ChatStreamEvent>,
+) -> Result<(), &'static str> {
+    let (request, result) = AgentOutfitRequest::channel(outfit, outfit_revision);
+    match timeout_at(
+        total_deadline,
+        events.send(ChatStreamEvent::ChangeOutfit(request)),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => return Err("view_unavailable"),
+        Err(_) => return Err("change_timeout"),
+    }
+    match timeout_at(total_deadline, result.recv()).await {
+        Ok(Ok(AgentOutfitResult::Applied)) => Ok(()),
+        Ok(Ok(AgentOutfitResult::Failed)) => Err("change_failed"),
+        Ok(Err(_)) => Err("view_unavailable"),
+        Err(_) => Err("change_timeout"),
+    }
+}
+
+fn stateless_tool_result(name: &str, content: &serde_json::Value) -> String {
+    format!("{name}: {content}")
 }
 
 fn tool_arguments_are_empty(arguments: &serde_json::Value) -> bool {

@@ -231,6 +231,15 @@ fn parse_document(document: &DocumentMut) -> (LoadedConfig, Option<String>) {
         }
     }
 
+    if let Some(item) = nested_item(document, "tools", "allow_agent_outfit_change") {
+        match item.as_bool() {
+            Some(allowed) => loaded.allow_agent_outfit_change = allowed,
+            None => {
+                warnings.push("tools.allow_agent_outfit_change 无效，已允许 Agent 换装".to_owned())
+            }
+        }
+    }
+
     loaded.logging = parse_logging_settings(document, &mut warnings);
 
     if let Some(item) = nested_item(document, "interaction", "eye_tracking") {

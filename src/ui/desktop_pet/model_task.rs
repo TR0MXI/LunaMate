@@ -138,6 +138,7 @@ impl DesktopPetView {
         self.config.update(cx, |config, cx| {
             config.set_preview_capabilities(ModelPreviewCapabilities::default(), cx);
         });
+        self.clear_agent_outfits(cx);
 
         let Some(model_path) = model_path else {
             self.model_state = ModelLoadState::NoModel;
@@ -233,6 +234,7 @@ impl DesktopPetView {
                                     cx,
                                 );
                             });
+                            this.clear_agent_outfits(cx);
                             this.frame = None;
                             this.model_commands = None;
                             this.model_cancellation = None;
@@ -266,6 +268,7 @@ impl DesktopPetView {
                     this.config.update(cx, |config, cx| {
                         config.set_preview_capabilities(capabilities.clone(), cx);
                     });
+                    this.sync_agent_outfits(cx);
                     cx.notify();
                     true
                 })
@@ -429,6 +432,7 @@ impl DesktopPetView {
                                         cx,
                                     );
                                 });
+                                this.clear_agent_outfits(cx);
                                 this.model_commands = None;
                                 if let Some(cancellation) = this.model_cancellation.take() {
                                     cancellation.cancel();

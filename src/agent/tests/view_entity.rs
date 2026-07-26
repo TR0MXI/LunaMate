@@ -11,7 +11,7 @@ use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
 use super::ConfigGuard;
 use crate::{
     agent::{
-        AgentMemoryAccess,
+        AgentMemoryAccess, AgentOutfitRequest,
         service::{ChatBackend, ChatServiceRequest, ChatStreamEvent},
         session::ChatSession,
         store::ChatSessionStore,
@@ -127,6 +127,20 @@ fn toggling_the_input_bar_updates_visibility(cx: &mut TestAppContext) {
         view.set_input_visible(true, window, cx);
         view.set_input_visible(false, window, cx);
         view.refresh_settings(cx);
+    });
+}
+
+#[gpui::test]
+fn replacing_the_outfit_snapshot_rejects_an_older_tool_request(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx, Arc::new(SilentBackend), None);
+    let (request, _result) = AgentOutfitRequest::channel("侦探".to_owned(), 1);
+
+    view.update(cx, |view, _cx| {
+        view.set_available_outfits(vec!["默认服装".to_owned(), "侦探".to_owned()]);
+        assert!(view.outfit_request_is_current(&request));
+
+        view.set_available_outfits(vec!["默认服装".to_owned(), "女仆".to_owned()]);
+        assert!(!view.outfit_request_is_current(&request));
     });
 }
 

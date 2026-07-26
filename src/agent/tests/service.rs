@@ -40,12 +40,16 @@ fn request_keeps_system_prompt_separate_from_history() {
             image: None,
         }],
         screenshot_permission_revision: None,
+        allow_agent_outfit_change: true,
+        outfits: Vec::new(),
+        outfit_revision: 0,
         language: AppLanguage::English,
     };
     let built = build_request(
         request.system_prompt,
         request.messages,
         request.screenshot_permission_revision.is_some(),
+        &request.outfits,
         request.language,
     );
 
@@ -56,10 +60,10 @@ fn request_keeps_system_prompt_separate_from_history() {
 
 #[test]
 fn screenshot_tool_is_registered_only_when_permission_is_enabled() {
-    let disabled = build_request(String::new(), Vec::new(), false, AppLanguage::English);
+    let disabled = build_request(String::new(), Vec::new(), false, &[], AppLanguage::English);
     assert!(disabled.tools.is_none());
 
-    let enabled = build_request(String::new(), Vec::new(), true, AppLanguage::English);
+    let enabled = build_request(String::new(), Vec::new(), true, &[], AppLanguage::English);
     let tools = enabled.tools.expect("开启权限后应当注册截屏工具");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name.as_str(), SCREEN_CAPTURE_TOOL);
@@ -73,7 +77,7 @@ fn screenshot_tool_description_uses_the_explicit_application_language() {
         AppLanguage::English,
         AppLanguage::Japanese,
     ] {
-        let request = build_request(String::new(), Vec::new(), true, language);
+        let request = build_request(String::new(), Vec::new(), true, &[], language);
         let tools = request.tools.expect("开启权限后应当注册截屏工具");
         assert_eq!(
             tools[0].description.as_deref(),
@@ -89,9 +93,110 @@ fn screenshot_tool_description_uses_the_explicit_application_language() {
 }
 
 #[test]
+fn outfit_tool_is_registered_only_when_the_model_has_an_extra_outfit() {
+    let default_only = vec!["Default outfit".to_owned()];
+    let request = build_request(
+        String::new(),
+        Vec::new(),
+        false,
+        &default_only,
+        AppLanguage::English,
+    );
+    assert!(request.tools.is_none());
+
+    let outfits = vec!["Default outfit".to_owned(), "Detective".to_owned()];
+    let request = build_request(
+        String::new(),
+        Vec::new(),
+        false,
+        &outfits,
+        AppLanguage::English,
+    );
+    let tools = request.tools.expect("存在额外服装时应当注册换装工具");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name.as_str(), CHANGE_OUTFIT_TOOL);
+    assert_eq!(
+        tools[0]
+            .schema
+            .as_ref()
+            .expect("换装工具必须提供参数 schema")["properties"]["outfit"]["enum"],
+        serde_json::json!(outfits)
+    );
+
+    let request = build_request(
+        String::new(),
+        Vec::new(),
+        true,
+        &["Default outfit".to_owned(), "Detective".to_owned()],
+        AppLanguage::English,
+    );
+    assert_eq!(request.tools.expect("两个可用工具都应注册").len(), 2);
+}
+
+#[test]
+fn outfit_tool_text_uses_the_explicit_application_language() {
+    let outfits = vec!["default".to_owned(), "alternate".to_owned()];
+    for language in [
+        AppLanguage::SimplifiedChinese,
+        AppLanguage::TraditionalChinese,
+        AppLanguage::English,
+        AppLanguage::Japanese,
+    ] {
+        let request = build_request(String::new(), Vec::new(), false, &outfits, language);
+        let tool = request
+            .tools
+            .expect("存在额外服装时应当注册换装工具")
+            .into_iter()
+            .find(|tool| tool.name.as_str() == CHANGE_OUTFIT_TOOL)
+            .expect("请求中应当包含换装工具");
+        assert_eq!(
+            tool.description.as_deref(),
+            Some(
+                t!(
+                    "chat.tool.change_outfit_description",
+                    locale = language.id()
+                )
+                .as_ref()
+            )
+        );
+        assert_eq!(
+            tool.schema.as_ref().expect("换装工具必须提供参数 schema")["properties"]["outfit"]["description"],
+            t!("chat.tool.change_outfit_argument", locale = language.id()).as_ref()
+        );
+    }
+}
+
+#[test]
+fn outfit_tool_rejects_unknown_or_malformed_choices() {
+    let outfits = vec!["Default outfit".to_owned(), "Detective".to_owned()];
+    assert_eq!(
+        outfit_argument(&serde_json::json!({"outfit": "Detective"}), &outfits),
+        Ok("Detective")
+    );
+    assert_eq!(
+        outfit_argument(&serde_json::json!({"outfit": "Missing"}), &outfits),
+        Err("outfit_unavailable")
+    );
+    assert_eq!(
+        outfit_argument(
+            &serde_json::json!({"outfit": "Detective", "extra": true}),
+            &outfits
+        ),
+        Err("invalid_arguments")
+    );
+}
+
+#[test]
 fn cohere_adapter_is_rejected_for_binary_and_tool_requests() {
     assert!(!provider_supports_binary_and_tools(LlmProvider::Cohere));
     assert!(provider_supports_binary_and_tools(LlmProvider::OpenAi));
+    let outfits = vec!["default".to_owned(), "alternate".to_owned()];
+    assert!(outfit_tool_options(LlmProvider::Cohere, true, &outfits).is_empty());
+    assert!(outfit_tool_options(LlmProvider::OpenAi, false, &outfits).is_empty());
+    assert_eq!(
+        outfit_tool_options(LlmProvider::OpenAi, true, &outfits),
+        outfits
+    );
     // Cohere 是唯一被排除的 Provider；其余目录项都必须支持图片与工具。
     for provider in LLM_PROVIDERS {
         assert_eq!(
@@ -143,6 +248,7 @@ fn history_without_pixels_degrades_to_a_text_placeholder() {
             image: Some(restored),
         }],
         false,
+        &[],
         AppLanguage::English,
     );
 
@@ -172,6 +278,7 @@ fn assistant_history_and_blank_system_prompts_are_preserved_verbatim() {
             },
         ],
         false,
+        &[],
         AppLanguage::English,
     );
 
@@ -191,6 +298,7 @@ fn failed_capture_handoff_tells_the_model_to_continue_without_the_image() {
             image: None,
         }],
         true,
+        &[],
         AppLanguage::English,
     );
 
@@ -222,7 +330,7 @@ fn capture_handoff_prompts_use_the_explicit_application_language() {
         AppLanguage::English,
         AppLanguage::Japanese,
     ] {
-        let mut request = build_request(String::new(), Vec::new(), true, language);
+        let mut request = build_request(String::new(), Vec::new(), true, &[], language);
         append_stateless_capture_result(&mut request, None, language);
         let expected = t!(
             "chat.tool.screen_capture_unavailable",
@@ -237,7 +345,7 @@ fn capture_handoff_prompts_use_the_explicit_application_language() {
                 .any(|text| text.contains(expected.as_ref()))
         );
 
-        let mut request = build_request(String::new(), Vec::new(), true, language);
+        let mut request = build_request(String::new(), Vec::new(), true, &[], language);
         append_stateless_capture_result(&mut request, Some(&image), language);
         let expected = t!("chat.tool.screen_capture_handoff", locale = language.id());
         assert!(
@@ -252,7 +360,7 @@ fn capture_handoff_prompts_use_the_explicit_application_language() {
 
 #[test]
 fn capture_handoff_creates_a_user_turn_when_the_request_has_no_messages() {
-    let mut request = build_request(String::new(), Vec::new(), true, AppLanguage::English);
+    let mut request = build_request(String::new(), Vec::new(), true, &[], AppLanguage::English);
 
     append_stateless_capture_result(&mut request, None, AppLanguage::English);
 
@@ -272,6 +380,7 @@ fn user_image_is_encoded_as_multipart_content() {
             image: Some(image),
         }],
         false,
+        &[],
         AppLanguage::English,
     );
 
@@ -294,6 +403,7 @@ fn signed_tool_handoff_retries_from_original_user_message() {
             image: None,
         }],
         true,
+        &[],
         AppLanguage::English,
     );
 
@@ -446,6 +556,30 @@ async fn tool_only_terminal_event_returns_complete_tool_call() {
         assistant_message.content.first_reasoning_content(),
         Some("reasoning handoff")
     );
+}
+
+#[tokio::test]
+async fn outfit_tool_waits_for_the_desktop_pet_to_apply_the_change() {
+    let (sender, mut receiver) = mpsc::channel(1);
+    let task = tokio::spawn(async move {
+        let mut sender = sender;
+        request_outfit_change(
+            "Detective".to_owned(),
+            42,
+            Instant::now() + Duration::from_secs(1),
+            &mut sender,
+        )
+        .await
+    });
+
+    let Some(ChatStreamEvent::ChangeOutfit(request)) = receiver.next().await else {
+        panic!("换装工具应当向桌宠视图发送语义请求");
+    };
+    assert_eq!(request.outfit(), "Detective");
+    assert_eq!(request.revision(), 42);
+    request.complete(true);
+
+    assert_eq!(task.await.expect("换装工具任务不应 panic"), Ok(()));
 }
 
 #[tokio::test]

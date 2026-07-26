@@ -22,7 +22,7 @@ use parking_lot::{Condvar, Mutex};
 use rust_i18n::t;
 
 use crate::{
-    agent::AgentView,
+    agent::{AgentOutfitRequest, AgentView, AgentViewEvent},
     config::{AppearanceSettings, CONFIG, ConfigWindow, ModelWindowSize, ThemePreset},
     model::{
         FrameRateMeter, FrameWake, GpuUnderlay, GpuUnderlayEvent, GpuUnderlaySize, ModelCommand,
@@ -36,8 +36,8 @@ use crate::{
 };
 
 use super::{
-    SettingsEvent, SettingsView, SettingsWindowView, TrayMenuView, UiPalette, apply,
-    apply_language, cache_window_position, desktop_pet_window_size, gpu_underlay_size,
+    AgentOutfitAction, SettingsEvent, SettingsView, SettingsWindowView, TrayMenuView, UiPalette,
+    apply, apply_language, cache_window_position, desktop_pet_window_size, gpu_underlay_size,
     gpu_underlay_size_for_window, raster_dimensions_for_window, restored_window_bounds,
     settings_window_sizes, tray_menu_window_options,
 };
@@ -174,6 +174,7 @@ pub(crate) struct DesktopPetView {
     model_task: Option<Task<()>>,
     _config_subscription: Subscription,
     _chat_subscription: Subscription,
+    _agent_event_subscription: Subscription,
     _bounds_subscription: Subscription,
     _appearance_subscription: Subscription,
 }
@@ -239,11 +240,24 @@ impl DesktopPetView {
                 cx.notify();
             }
         });
+        let agent_event_subscription =
+            cx.subscribe(&chat, |_this, _, event: &AgentViewEvent, cx| match event {
+                AgentViewEvent::ChangeOutfit(request) => {
+                    let request = request.clone();
+                    cx.spawn(async move |this, cx| {
+                        let _ = this.update(cx, |this, cx| {
+                            this.apply_agent_outfit_request(&request, cx);
+                        });
+                    })
+                    .detach();
+                }
+            });
         let config_subscription =
             cx.subscribe(&config, |this, _, event: &SettingsEvent, cx| match event {
                 SettingsEvent::ModelChanged(model_path) => {
                     this.load_model(model_path.clone(), cx);
                 }
+                SettingsEvent::ModelCatalogChanged => this.sync_agent_outfits(cx),
                 SettingsEvent::FrameRateChanged => this.wake_frame_rate_scheduler(),
                 SettingsEvent::EyeTrackingChanged(enabled) => {
                     this.eye_tracking_enabled = *enabled;
@@ -296,6 +310,13 @@ impl DesktopPetView {
                         chat.refresh_settings(cx);
                     });
                 }
+                SettingsEvent::AgentOutfitToolChanged(enabled) => {
+                    if *enabled {
+                        this.sync_agent_outfits(cx);
+                    } else {
+                        this.clear_agent_outfits(cx);
+                    }
+                }
                 SettingsEvent::PersonaContextCleared(persona) => {
                     this.chat.update(cx, |chat, cx| {
                         chat.clear_persona_context(persona, cx);
@@ -311,6 +332,7 @@ impl DesktopPetView {
                     this.model_state.refresh_localized_warning();
                     apply(settings, None, cx);
                     this.sync_system_tray_appearance(cx);
+                    this.sync_agent_outfits(cx);
                 }
             });
         cache_window_position(window, ConfigWindow::DesktopPet);
@@ -377,6 +399,7 @@ impl DesktopPetView {
             model_task: None,
             _config_subscription: config_subscription,
             _chat_subscription: chat_subscription,
+            _agent_event_subscription: agent_event_subscription,
             _bounds_subscription: bounds_subscription,
             _appearance_subscription: appearance_subscription,
         };
@@ -441,6 +464,86 @@ impl DesktopPetView {
         *target = [0.0, 0.0];
         drop(target);
         self.wake_model();
+    }
+
+    fn clear_agent_outfits(&self, cx: &mut Context<Self>) {
+        self.chat.update(cx, |chat, _| {
+            chat.set_available_outfits(Vec::new());
+        });
+    }
+
+    fn sync_agent_outfits(&self, cx: &mut Context<Self>) {
+        let outfits = if matches!(self.model_state, ModelLoadState::Ready { .. }) {
+            self.config.read(cx).available_agent_outfits()
+        } else {
+            Vec::new()
+        };
+        self.chat.update(cx, |chat, _| {
+            chat.set_available_outfits(outfits);
+        });
+    }
+
+    fn apply_agent_outfit_request(&mut self, request: &AgentOutfitRequest, cx: &mut Context<Self>) {
+        if !CONFIG.allow_agent_outfit_change()
+            || !self.chat.read(cx).outfit_request_is_current(request)
+        {
+            request.complete(false);
+            return;
+        }
+        let Some(action) = self.config.read(cx).resolve_agent_outfit(request.outfit()) else {
+            request.complete(false);
+            return;
+        };
+        let applied = match action {
+            AgentOutfitAction::Unchanged => true,
+            action @ AgentOutfitAction::LoadVariant(_) => {
+                match self
+                    .config
+                    .update(cx, |config, cx| config.commit_agent_outfit(action, cx))
+                {
+                    Ok(Some(model_path)) => {
+                        self.load_model(Some(model_path), cx);
+                        true
+                    }
+                    Ok(None) | Err(_) => false,
+                }
+            }
+            AgentOutfitAction::PreviewExpression(name) => {
+                let sent = self.model_commands.as_ref().is_some_and(|sender| {
+                    sender
+                        .try_send(ModelCommand::PreviewExpression(name.clone()))
+                        .is_ok()
+                });
+                if sent {
+                    self.wake_model();
+                    self.config
+                        .update(cx, |config, cx| {
+                            config
+                                .commit_agent_outfit(AgentOutfitAction::PreviewExpression(name), cx)
+                        })
+                        .is_ok()
+                } else {
+                    false
+                }
+            }
+            AgentOutfitAction::ResetExpression => {
+                let sent = self
+                    .model_commands
+                    .as_ref()
+                    .is_some_and(|sender| sender.try_send(ModelCommand::ResetExpression).is_ok());
+                if sent {
+                    self.wake_model();
+                    self.config
+                        .update(cx, |config, cx| {
+                            config.commit_agent_outfit(AgentOutfitAction::ResetExpression, cx)
+                        })
+                        .is_ok()
+                } else {
+                    false
+                }
+            }
+        };
+        request.complete(applied);
     }
 
     fn wake_model(&self) {
@@ -508,6 +611,7 @@ impl DesktopPetView {
                 self.config.update(cx, |config, cx| {
                     config.set_preview_capabilities(capabilities, cx);
                 });
+                self.sync_agent_outfits(cx);
                 cx.notify();
             }
             GpuUnderlayEvent::FrameAvailable { generation } => {
@@ -546,6 +650,7 @@ impl DesktopPetView {
                 self.config.update(cx, |config, cx| {
                     config.set_preview_capabilities(ModelPreviewCapabilities::default(), cx);
                 });
+                self.clear_agent_outfits(cx);
                 self.model_commands = None;
                 cx.notify();
             }

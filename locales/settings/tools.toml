@@ -24,6 +24,18 @@ _version = 2
 "en" = "Allow Agent to capture the screen"
 "ja" = "Agent に画面のキャプチャを許可"
 
+[tools.allow_agent_outfit_change]
+"zh-CN" = "允许 Agent 自主换装"
+"zh-TW" = "允許 Agent 自主換裝"
+"en" = "Allow Agent to change outfits"
+"ja" = "Agent に衣装の変更を許可"
+
+[tools.outfit_change_notice]
+"zh-CN" = "开启后，仅当当前模型存在默认服装以外的有效服装时，才会向模型提供换装工具。"
+"zh-TW" = "開啟後，僅在目前模型存在預設服裝以外的有效服裝時，才會向模型提供換裝工具。"
+"en" = "When enabled, the outfit tool is provided only if the current model has a valid outfit besides its default."
+"ja" = "有効にすると、現在のモデルにデフォルト以外の有効な衣装がある場合のみ、衣装変更ツールがモデルに提供されます。"
+
 [tools.screenshot_notice]
 "zh-CN" = "截屏只会在模型调用工具时执行，并发送给当前模型 Provider。"
 "zh-TW" = "截圖只會在模型呼叫工具時執行，並傳送給目前的模型 Provider。"

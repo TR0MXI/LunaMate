@@ -42,6 +42,24 @@ _version = 2
 "en" = "The capture_screen tool could not provide the requested screenshot. Continue without it."
 "ja" = "capture_screen ツールは要求されたスクリーンショットを取得できませんでした。画像なしで回答を続けてください。"
 
+[chat.tool.change_outfit_description]
+"zh-CN" = "将当前 Live2D 角色切换为指定服装。仅在符合当前情境或用户要求时调用，每轮最多调用一次。"
+"zh-TW" = "將目前的 Live2D 角色切換為指定服裝。僅在符合目前情境或使用者要求時呼叫，每輪最多呼叫一次。"
+"en" = "Change the current Live2D character into a specified outfit. Call this only when it fits the current context or the user's request, and at most once per turn."
+"ja" = "現在の Live2D キャラクターを指定した衣装に着替えさせます。現在の状況またはユーザーの要望に合う場合に限り、1ターンにつき1回だけ呼び出してください。"
+
+[chat.tool.change_outfit_argument]
+"zh-CN" = "要切换的服装，必须从当前模型的可用服装中选择。"
+"zh-TW" = "要切換的服裝，必須從目前模型的可用服裝中選擇。"
+"en" = "The outfit to change into. Choose one of the outfits available for the current model."
+"ja" = "着替える衣装です。現在のモデルで利用可能な衣装から選択してください。"
+
+[chat.tool.result_handoff]
+"zh-CN" = "本地工具执行结果如下：\n%{results}\n请根据结果继续回答。"
+"zh-TW" = "本機工具執行結果如下：\n%{results}\n請根據結果繼續回答。"
+"en" = "The local tool results are shown below:\n%{results}\nContinue your response using these results."
+"ja" = "ローカルツールの実行結果は次のとおりです：\n%{results}\nこの結果に基づいて回答を続けてください。"
+
 [chat.select_image]
 "zh-CN" = "选择图片"
 "zh-TW" = "選擇圖片"
@@ -289,10 +307,10 @@ _version = 2
 "ja" = "現在の Provider アダプターは画像入力に対応していません"
 
 [chat.error.tool_loop]
-"zh-CN" = "模型重复请求截屏，已终止本轮工具调用"
-"zh-TW" = "模型重複要求截圖，已終止本輪工具呼叫"
-"en" = "The model repeatedly requested a screenshot, so this tool turn was stopped"
-"ja" = "モデルが画面キャプチャを繰り返し要求したため、ツール処理を停止しました"
+"zh-CN" = "模型重复请求工具，已终止本轮工具调用"
+"zh-TW" = "模型重複要求工具，已終止本輪工具呼叫"
+"en" = "The model repeatedly requested tools, so this tool turn was stopped"
+"ja" = "モデルがツールを繰り返し要求したため、ツール処理を停止しました"
 
 [chat.error.invalid_limits]
 "zh-CN" = "聊天限制必须至少容纳一轮对话和一个字节"

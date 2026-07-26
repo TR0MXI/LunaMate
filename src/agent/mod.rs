@@ -14,6 +14,7 @@ mod tests;
 
 use std::sync::Arc;
 
+use async_channel::{Receiver, Sender};
 use gpui::{App, AppContext, Entity, Window};
 use rust_i18n::t;
 
@@ -35,6 +36,65 @@ pub(crate) use settings::{
 };
 use store::ChatSessionStore;
 pub(crate) use view::AgentView;
+
+/// Agent 工具请求桌宠切换到当前模型的一套服装。
+#[derive(Clone)]
+pub(crate) struct AgentOutfitRequest {
+    outfit: String,
+    revision: u64,
+    result: Sender<AgentOutfitResult>,
+}
+
+#[derive(Clone, Copy)]
+enum AgentOutfitResult {
+    Applied,
+    Failed,
+}
+
+impl AgentOutfitRequest {
+    /// 创建一次有界换装请求及其单消费者结果端。
+    fn channel(outfit: String, revision: u64) -> (Self, Receiver<AgentOutfitResult>) {
+        let (result, receiver) = async_channel::bounded(1);
+        (
+            Self {
+                outfit,
+                revision,
+                result,
+            },
+            receiver,
+        )
+    }
+
+    /// 返回模型选择的本地化服装名称。
+    pub(crate) fn outfit(&self) -> &str {
+        &self.outfit
+    }
+
+    /// 返回创建请求时的服装清单 revision，用于拒绝模型切换后的迟到调用。
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// 返回请求结果接收端是否已随会话取消或窗口关闭而消失。
+    fn is_cancelled(&self) -> bool {
+        self.result.is_closed()
+    }
+
+    /// 将 GPUI 线程上的换装受理结果交还给后台工具循环。
+    pub(crate) fn complete(&self, applied: bool) {
+        let result = if applied {
+            AgentOutfitResult::Applied
+        } else {
+            AgentOutfitResult::Failed
+        };
+        let _ = self.result.try_send(result);
+    }
+}
+
+/// Agent 视图向桌宠根视图发布的本地能力请求。
+pub(crate) enum AgentViewEvent {
+    ChangeOutfit(AgentOutfitRequest),
+}
 
 /// 保存启动时恢复的会话与配置，直到主窗口挂载对应视图。
 pub(crate) struct Agent {

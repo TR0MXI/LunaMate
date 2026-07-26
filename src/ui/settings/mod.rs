@@ -8,6 +8,7 @@ mod tool_page;
 mod window;
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -42,6 +43,8 @@ pub(crate) use window::SettingsWindowView;
 pub(crate) enum SettingsEvent {
     /// 当前模型或服装清单发生变化。
     ModelChanged(Option<PathBuf>),
+    /// 当前模型路径未变，但重新扫描后的可用服装集合发生变化。
+    ModelCatalogChanged,
     /// 渲染帧率已更新，后台调度器应尽快重新读取原子配置。
     FrameRateChanged,
     /// 眼部跟随开关已更新。
@@ -60,12 +63,34 @@ pub(crate) enum SettingsEvent {
     ResetExpression,
     /// 供应商或人格配置已经发布。
     AgentChanged,
+    /// Agent 换装工具开关已更新，当前服装快照应立即发布或撤销。
+    AgentOutfitToolChanged(bool),
     /// 指定人格的短期上下文需要由持有会话的视图清除。
     PersonaContextCleared(String),
     /// 外观设置已经发布，所有窗口应刷新主题和语言。
     AppearanceChanged(AppearanceSettings),
     /// 已清除持久化位置，所有现存窗口应立即返回默认位置。
     WindowPositionsReset,
+}
+
+/// Agent 换装工具在当前模型状态下解析出的语义动作。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum AgentOutfitAction {
+    Unchanged,
+    LoadVariant(PathBuf),
+    PreviewExpression(String),
+    ResetExpression,
+}
+
+#[derive(Clone)]
+enum AgentOutfitTarget {
+    Variant(PathBuf),
+    Expression(String),
+}
+
+struct AgentOutfitCandidate {
+    name: String,
+    target: AgentOutfitTarget,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,6 +127,7 @@ pub(crate) struct SettingsView {
     show_fps: bool,
     use_native_tray_menu: bool,
     allow_agent_screenshot: bool,
+    allow_agent_outfit_change: bool,
     screenshot_permission_retry_required: bool,
     logging: LoggingSettings,
     appearance: AppearanceSettings,
@@ -161,6 +187,7 @@ impl SettingsView {
             show_fps: CONFIG.show_fps(),
             use_native_tray_menu: CONFIG.use_native_tray_menu(),
             allow_agent_screenshot: CONFIG.allow_agent_screenshot(),
+            allow_agent_outfit_change: CONFIG.allow_agent_outfit_change(),
             screenshot_permission_retry_required: CONFIG
                 .agent_screenshot_permission_retry_required(),
             logging: *CONFIG.logging_settings(),
@@ -409,6 +436,12 @@ impl SettingsView {
         self.catalog.counts()
     }
 
+    /// 只切换测试实体中的换装工具状态，不写入用户配置。
+    #[cfg(test)]
+    pub(in crate::ui) fn set_agent_outfit_tool_enabled_for_test(&mut self, enabled: bool) {
+        self.allow_agent_outfit_change = enabled;
+    }
+
     /// 返回设置窗口是否已经创建输入组件。
     #[cfg(test)]
     pub(in crate::ui) fn window_is_active_for_test(&self) -> bool {
@@ -461,6 +494,120 @@ impl SettingsView {
     ) {
         self.preview_capabilities = capabilities;
         cx.notify();
+    }
+
+    /// 返回当前已加载模型可交给 Agent 选择的本地化服装名称。
+    pub(in crate::ui) fn available_agent_outfits(&self) -> Vec<String> {
+        self.agent_outfit_candidates()
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .collect()
+    }
+
+    /// 将 Agent 传回的枚举名称解析为当前目录和 generation 下的语义动作。
+    pub(in crate::ui) fn resolve_agent_outfit(&self, requested: &str) -> Option<AgentOutfitAction> {
+        let candidate = self
+            .agent_outfit_candidates()
+            .into_iter()
+            .find(|candidate| candidate.name == requested)?;
+        Some(match candidate.target {
+            AgentOutfitTarget::Variant(relative_path) => {
+                if self.catalog.selected_relative_path() == Some(relative_path.as_path()) {
+                    if self.active_outfit.is_some() {
+                        AgentOutfitAction::ResetExpression
+                    } else {
+                        AgentOutfitAction::Unchanged
+                    }
+                } else {
+                    AgentOutfitAction::LoadVariant(relative_path)
+                }
+            }
+            AgentOutfitTarget::Expression(name) => {
+                if self.active_outfit.as_deref() == Some(name.as_str()) {
+                    AgentOutfitAction::Unchanged
+                } else {
+                    AgentOutfitAction::PreviewExpression(name)
+                }
+            }
+        })
+    }
+
+    /// 在桌宠已经受理对应模型命令后提交换装 UI 状态，并在清单变体切换时持久化选择。
+    pub(in crate::ui) fn commit_agent_outfit(
+        &mut self,
+        action: AgentOutfitAction,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<PathBuf>, String> {
+        match action {
+            AgentOutfitAction::Unchanged => Ok(None),
+            AgentOutfitAction::LoadVariant(relative_path) => {
+                let model_path = self
+                    .catalog
+                    .select_variant(&relative_path)
+                    .map_err(|error| {
+                        let error = error.to_string();
+                        self.set_status(
+                            t!("status.model_action_failed", error = error.clone()).to_string(),
+                            cx,
+                        );
+                        error
+                    })?;
+                self.commit_model_selection(cx);
+                Ok(Some(model_path))
+            }
+            AgentOutfitAction::PreviewExpression(name) => {
+                self.active_outfit = Some(name);
+                cx.notify();
+                Ok(None)
+            }
+            AgentOutfitAction::ResetExpression => {
+                self.active_outfit = None;
+                cx.notify();
+                Ok(None)
+            }
+        }
+    }
+
+    fn agent_outfit_candidates(&self) -> Vec<AgentOutfitCandidate> {
+        if !self.allow_agent_outfit_change {
+            return Vec::new();
+        }
+        let Some(family) = self.catalog.selected_family() else {
+            return Vec::new();
+        };
+        let variants = family.variants();
+        let default_outfit = variants.len() == 1;
+        let mut candidates = variants
+            .iter()
+            .map(|variant| AgentOutfitCandidate {
+                name: if default_outfit {
+                    t!("model.default_outfit").to_string()
+                } else {
+                    variant.display_name().to_owned()
+                },
+                target: AgentOutfitTarget::Variant(variant.relative_path().to_path_buf()),
+            })
+            .chain(
+                family
+                    .outfits()
+                    .iter()
+                    .filter(|outfit| {
+                        self.preview_capabilities
+                            .outfits()
+                            .iter()
+                            .any(|name| name == outfit.expression_name())
+                    })
+                    .map(|outfit| AgentOutfitCandidate {
+                        name: outfit.display_name().to_owned(),
+                        target: AgentOutfitTarget::Expression(outfit.expression_name().to_owned()),
+                    }),
+            )
+            .collect::<Vec<_>>();
+        let mut used_names = HashSet::with_capacity(candidates.len());
+        for candidate in &mut candidates {
+            candidate.name = unique_outfit_name(&candidate.name, &mut used_names);
+        }
+        candidates
     }
 
     fn set_status(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
@@ -527,12 +674,16 @@ impl SettingsView {
     }
 
     fn publish_model_selection(&mut self, model_path: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.commit_model_selection(cx);
+        cx.emit(SettingsEvent::ModelChanged(model_path));
+    }
+
+    fn commit_model_selection(&mut self, cx: &mut Context<Self>) {
         self.revision = self.revision.wrapping_add(1);
         let revision = self.revision;
         self.model_revision = self.model_revision.wrapping_add(1);
         self.active_outfit = None;
         let relative_path = self.catalog.selected_relative_path().map(Path::to_path_buf);
-        cx.emit(SettingsEvent::ModelChanged(model_path));
         cx.notify();
 
         let config_revision = CONFIG.reserve_model_revision();
@@ -640,6 +791,8 @@ impl SettingsView {
                         this.set_status(status, cx);
                         if new_path != old_path {
                             this.publish_model_selection(new_path, cx);
+                        } else {
+                            cx.emit(SettingsEvent::ModelCatalogChanged);
                         }
                     }
                     Err(error) => {
@@ -914,6 +1067,24 @@ impl SettingsView {
         self.track_write_task(task);
     }
 
+    fn set_allow_agent_outfit_change(&mut self, allowed: bool, cx: &mut Context<Self>) {
+        if self.allow_agent_outfit_change == allowed {
+            return;
+        }
+        self.allow_agent_outfit_change = allowed;
+        cx.emit(SettingsEvent::AgentOutfitToolChanged(allowed));
+        self.revision = self.revision.wrapping_add(1);
+        let revision = self.revision;
+        cx.notify();
+
+        let config_revision = CONFIG.reserve_allow_agent_outfit_change_revision();
+        self.persist_setting(
+            revision,
+            move || CONFIG.set_allow_agent_outfit_change_at_revision(allowed, config_revision),
+            cx,
+        );
+    }
+
     fn set_logging_settings(&mut self, settings: LoggingSettings, cx: &mut Context<Self>) {
         if self.logging == settings {
             return;
@@ -1148,6 +1319,19 @@ impl SettingsView {
         appearance.language = language;
         self.set_appearance(appearance, false, window, cx);
     }
+}
+
+fn unique_outfit_name(base: &str, used_names: &mut HashSet<String>) -> String {
+    if used_names.insert(base.to_owned()) {
+        return base.to_owned();
+    }
+    for suffix in 2_u32.. {
+        let candidate = format!("{base} ({suffix})");
+        if used_names.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("无界递增后缀必须能生成唯一服装名称")
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}

@@ -96,6 +96,7 @@ struct LoadedConfig {
     show_fps: bool,
     use_native_tray_menu: bool,
     allow_agent_screenshot: bool,
+    allow_agent_outfit_change: bool,
     logging: LoggingSettings,
     appearance: AppearanceSettings,
     snapshot: ConfigSnapshot,
@@ -114,6 +115,7 @@ impl Default for LoadedConfig {
             show_fps: false,
             use_native_tray_menu: false,
             allow_agent_screenshot: false,
+            allow_agent_outfit_change: true,
             logging: LoggingSettings::default(),
             appearance: AppearanceSettings::default(),
             snapshot: ConfigSnapshot::default(),
@@ -134,6 +136,7 @@ pub(crate) struct LunaConfig {
     show_fps: AtomicBool,
     use_native_tray_menu: AtomicBool,
     allow_agent_screenshot: AtomicBool,
+    allow_agent_outfit_change: AtomicBool,
     requested_allow_agent_screenshot: AtomicBool,
     agent_screenshot_permission_retry_required: AtomicBool,
     applied_allow_agent_screenshot_revision: AtomicU64,
@@ -154,6 +157,7 @@ pub(crate) struct LunaConfig {
     show_fps_request_revision: AtomicU64,
     use_native_tray_menu_request_revision: AtomicU64,
     allow_agent_screenshot_request_revision: AtomicU64,
+    allow_agent_outfit_change_request_revision: AtomicU64,
     logging_request_revision: AtomicU64,
     appearance_request_revision: AtomicU64,
     reset_positions_request_revision: AtomicU64,
@@ -186,6 +190,7 @@ impl LunaConfig {
             show_fps: AtomicBool::new(loaded.show_fps),
             use_native_tray_menu: AtomicBool::new(loaded.use_native_tray_menu),
             allow_agent_screenshot: AtomicBool::new(loaded.allow_agent_screenshot),
+            allow_agent_outfit_change: AtomicBool::new(loaded.allow_agent_outfit_change),
             requested_allow_agent_screenshot: AtomicBool::new(loaded.allow_agent_screenshot),
             agent_screenshot_permission_retry_required: AtomicBool::new(false),
             applied_allow_agent_screenshot_revision: AtomicU64::new(0),
@@ -206,6 +211,7 @@ impl LunaConfig {
             show_fps_request_revision: AtomicU64::new(0),
             use_native_tray_menu_request_revision: AtomicU64::new(0),
             allow_agent_screenshot_request_revision: AtomicU64::new(0),
+            allow_agent_outfit_change_request_revision: AtomicU64::new(0),
             logging_request_revision: AtomicU64::new(0),
             appearance_request_revision: AtomicU64::new(0),
             reset_positions_request_revision: AtomicU64::new(0),
@@ -255,6 +261,11 @@ impl LunaConfig {
     /// 返回当前是否存在已持久化且未被更新请求撤销的 Agent 截屏授权。
     pub(crate) fn allow_agent_screenshot(&self) -> bool {
         self.agent_screenshot_permission_revision().is_some()
+    }
+
+    /// 返回是否允许 Agent 为当前 Live2D 模型注册并执行换装工具。
+    pub(crate) fn allow_agent_outfit_change(&self) -> bool {
+        self.allow_agent_outfit_change.load(Ordering::Relaxed)
     }
 
     /// 返回设置界面最近一次请求的截屏授权状态；该值不代表权限已经持久化生效。
@@ -445,6 +456,35 @@ impl LunaConfig {
                 set_item_value(
                     &mut document["debug"]["use_native_tray_menu"],
                     Value::from(enabled),
+                );
+            },
+        )?;
+        Ok(applied.then_some(()))
+    }
+
+    /// 为 Agent 换装工具开关写入分配单调 revision。
+    pub(crate) fn reserve_allow_agent_outfit_change_revision(&self) -> u64 {
+        self.reserve_request_revision(&self.allow_agent_outfit_change_request_revision)
+    }
+
+    /// 仅提交仍然最新的 Agent 换装工具开关写入。
+    pub(crate) fn set_allow_agent_outfit_change_at_revision(
+        &self,
+        allowed: bool,
+        revision: u64,
+    ) -> Result<Option<()>, ConfigWriteError> {
+        let applied = self.edit_config_at_revision(
+            &self.allow_agent_outfit_change_request_revision,
+            revision,
+            || {
+                self.allow_agent_outfit_change
+                    .store(allowed, Ordering::Relaxed);
+            },
+            |document| {
+                ensure_table_like(&mut document["tools"]);
+                set_item_value(
+                    &mut document["tools"]["allow_agent_outfit_change"],
+                    Value::from(allowed),
                 );
             },
         )?;
