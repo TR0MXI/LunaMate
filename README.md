@@ -7,7 +7,7 @@ LunaMate 是一款使用 Rust 构建的跨平台 Live2D 桌面宠物。项目以
 
 项目仍在开发中，目前包含以下能力：
 
-- Live2D 模型渲染、动作、表情、视线跟随和 HitArea 点击反馈。
+- Live2D 模型渲染、动作、表情、视线跟随，以及按 HitArea 部位触发的 Agent 互动。
 - Windows、macOS 和 Wayland 独立 GPU underlay，以及 X11 或 GPU 不可用时的 CPU 回退。
 - 可配置 Provider、模型和 endpoint 的流式多模态 LLM 对话、图片输入，以及有界会话持久化。
 - 默认关闭且需要用户在 Tool 设置中显式授权的 Agent 屏幕截图工具。

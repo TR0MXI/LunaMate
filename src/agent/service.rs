@@ -19,7 +19,9 @@ use rust_i18n::t;
 use serde_json::json;
 use tokio::time::{Instant, sleep, timeout_at};
 
-use crate::config::{CONFIG, LlmAdvancedOptions, LlmModelConfig, LlmProvider, ReasoningEffort};
+use crate::config::{
+    AppLanguage, CONFIG, LlmAdvancedOptions, LlmModelConfig, LlmProvider, ReasoningEffort,
+};
 
 use super::{
     media::{ImageAttachment, capture_primary_screen},
@@ -40,9 +42,6 @@ const MAX_TOOL_CALLS: usize = 4;
 pub(super) const FLUSH_BYTES: usize = 512;
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(1_500)];
 pub(super) const SCREEN_CAPTURE_TOOL: &str = "capture_screen";
-/// 交回截图时给模型的固定指引；两条 handoff 路径必须使用同一措辞。
-const CAPTURE_HANDOFF_PROMPT: &str =
-    "The authorized capture_screen tool produced this screenshot. Inspect it before answering.";
 
 /// 网络任务发送给聊天实体的有界事件。
 pub(super) enum ChatStreamEvent {
@@ -57,6 +56,7 @@ pub(super) struct ChatServiceRequest {
     pub(super) system_prompt: String,
     pub(super) messages: Vec<ChatContextMessage>,
     pub(super) screenshot_permission_revision: Option<u64>,
+    pub(super) language: AppLanguage,
 }
 
 /// 可由本地 fake 替换的流式请求边界。
@@ -149,6 +149,7 @@ async fn stream_chat(
         system_prompt,
         messages,
         screenshot_permission_revision,
+        language,
     } = request;
     let total_deadline = Instant::now() + TOTAL_RESPONSE_TIMEOUT;
     if !provider_supports_binary_and_tools(model.provider)
@@ -174,7 +175,8 @@ async fn stream_chat(
         && provider_supports_binary_and_tools(model.provider);
     let base_options = base_chat_options(&model.advanced);
     let model = ModelIden::new(adapter_kind(model.provider), model.model);
-    let mut chat_request = build_request(system_prompt, messages, register_screenshot_tool);
+    let mut chat_request =
+        build_request(system_prompt, messages, register_screenshot_tool, language);
     let mut used_screen_capture = false;
     loop {
         let required_permission = (register_screenshot_tool || used_screen_capture)
@@ -239,13 +241,17 @@ async fn stream_chat(
                         chat_request
                             .messages
                             .push(GenaiMessage::user(MessageContent::from_parts(vec![
-                                ContentPart::from_text(CAPTURE_HANDOFF_PROMPT),
+                                ContentPart::from_text(screen_capture_handoff_prompt(language)),
                                 part,
                             ])));
                     }
                 } else {
                     // genai 0.6.5 的部分适配器会接收签名流却无法在请求中回写；把截图并入原用户轮次可安全重试而不伪造 handoff。
-                    append_stateless_capture_result(&mut chat_request, continuation.image.as_ref());
+                    append_stateless_capture_result(
+                        &mut chat_request,
+                        continuation.image.as_ref(),
+                        language,
+                    );
                 }
                 chat_request.tools = None;
                 used_screen_capture = true;
@@ -421,6 +427,7 @@ pub(super) fn build_request(
     system_prompt: String,
     messages: Vec<ChatContextMessage>,
     allow_agent_screenshot: bool,
+    language: AppLanguage,
 ) -> ChatRequest {
     let messages = messages
         .into_iter()
@@ -432,8 +439,9 @@ pub(super) fn build_request(
                         image,
                     ])),
                     None => GenaiMessage::user(format!(
-                        "{}\n\n[The image from this historical message is no longer available.]",
-                        message.content
+                        "{}\n\n[{}]",
+                        message.content,
+                        t!("chat.history_image_unavailable", locale = language.id())
                     )),
                 },
                 None => GenaiMessage::user(message.content),
@@ -446,15 +454,19 @@ pub(super) fn build_request(
         chat_request = chat_request.with_system(system_prompt);
     }
     if allow_agent_screenshot {
-        chat_request = chat_request.with_tools([screen_capture_tool()]);
+        chat_request = chat_request.with_tools([screen_capture_tool(language)]);
     }
     chat_request
 }
 
-fn screen_capture_tool() -> Tool {
+fn screen_capture_tool(language: AppLanguage) -> Tool {
     Tool::new(SCREEN_CAPTURE_TOOL)
         .with_description(
-            "Capture the user's screen as a still image when current visual context is necessary to answer. Do not call it speculatively or more than once.",
+            t!(
+                "chat.tool.screen_capture_description",
+                locale = language.id()
+            )
+            .to_string(),
         )
         .with_schema(json!({
             "type": "object",
@@ -462,6 +474,10 @@ fn screen_capture_tool() -> Tool {
             "required": [],
             "additionalProperties": false
         }))
+}
+
+fn screen_capture_handoff_prompt(language: AppLanguage) -> String {
+    t!("chat.tool.screen_capture_handoff", locale = language.id()).to_string()
 }
 
 fn image_content_part(image: &ImageAttachment) -> Option<ContentPart> {
@@ -476,13 +492,18 @@ fn image_content_part(image: &ImageAttachment) -> Option<ContentPart> {
 pub(super) fn append_stateless_capture_result(
     request: &mut ChatRequest,
     image: Option<&ImageAttachment>,
+    language: AppLanguage,
 ) {
-    let mut parts = vec![ContentPart::from_text(if image.is_some() {
-        format!("\n\n{CAPTURE_HANDOFF_PROMPT}")
+    let prompt = if image.is_some() {
+        screen_capture_handoff_prompt(language)
     } else {
-        "\n\nThe requested capture_screen tool could not provide a screenshot. Continue without it."
-            .to_owned()
-    })];
+        t!(
+            "chat.tool.screen_capture_unavailable",
+            locale = language.id()
+        )
+        .to_string()
+    };
+    let mut parts = vec![ContentPart::from_text(format!("\n\n{prompt}"))];
     if let Some(part) = image.and_then(image_content_part) {
         parts.push(part);
     }

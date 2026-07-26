@@ -8,7 +8,8 @@ language model integrations.
 
 The project is under active development and currently includes:
 
-- Live2D rendering, motions, expressions, eye tracking, and HitArea click reactions.
+- Live2D rendering, motions, expressions, eye tracking, and Agent interactions triggered by
+  named HitAreas.
 - Independent GPU underlays on Windows, macOS, and Wayland, with a CPU fallback on X11 or when
   GPU initialization is unavailable.
 - Streaming multimodal LLM chat with configurable providers, models, and endpoints, image input,

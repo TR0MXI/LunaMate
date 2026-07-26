@@ -64,11 +64,12 @@ impl Render for DesktopPetView {
                             Some(painted_frame.clone())
                         };
                         if hit_frame.as_ref().is_some_and(|frame| {
-                            this.activate_hit_area_at(
+                            this.send_hit_area_event_at(
                                 frame,
                                 model_generation,
                                 mouse.up.position,
                                 window,
+                                cx,
                             )
                         }) {
                             cx.stop_propagation();

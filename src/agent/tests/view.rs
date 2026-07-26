@@ -1,4 +1,33 @@
-use crate::agent::view::{AgentOverlayLayout, ReplyLifecycle};
+use crate::{
+    agent::view::{AgentOverlayLayout, ReplyLifecycle, model_click_event_prompt},
+    config::AppLanguage,
+};
+
+#[test]
+fn model_click_event_names_the_part_in_each_application_language() {
+    let cases = [
+        (
+            AppLanguage::SimplifiedChinese,
+            "[事件] 用户点击了 Live2D 模型的“Head”部位。请以当前人格自然回应这次互动。",
+        ),
+        (
+            AppLanguage::TraditionalChinese,
+            "[事件] 使用者點擊了 Live2D 模型的「Head」部位。請以目前人格自然回應這次互動。",
+        ),
+        (
+            AppLanguage::English,
+            "[Event] The user clicked the \"Head\" area of the Live2D model. Respond naturally to this interaction in character.",
+        ),
+        (
+            AppLanguage::Japanese,
+            "[イベント] ユーザーが Live2D モデルの「Head」部位をクリックしました。現在のペルソナとして自然に反応してください。",
+        ),
+    ];
+
+    for (language, expected) in cases {
+        assert_eq!(model_click_event_prompt("Head", language), expected);
+    }
+}
 
 #[test]
 fn narrow_overlay_keeps_space_for_input_and_reply() {

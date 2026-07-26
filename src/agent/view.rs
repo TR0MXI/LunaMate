@@ -23,7 +23,9 @@ use gpui_component::{
 use gpui_tokio::Tokio;
 use rust_i18n::t;
 
-use crate::config::{CONFIG, LlmModelConfig, SharedLlmSettings, SharedPersonaSettings};
+use crate::config::{
+    AppLanguage, CONFIG, LlmModelConfig, SharedLlmSettings, SharedPersonaSettings,
+};
 
 use super::{
     AgentMemoryAccess, AgentShutdown, chat_limits,
@@ -44,6 +46,15 @@ const REPLY_MIN_HEIGHT: f32 = 78.0;
 const REPLY_VERTICAL_INSET: f32 = 12.0;
 const OVERLAY_BOTTOM_RESERVED: f32 = 108.0;
 const NARROW_OVERLAY_BREAKPOINT: f32 = 180.0;
+
+pub(super) fn model_click_event_prompt(part_name: &str, language: AppLanguage) -> String {
+    t!(
+        "chat.event.model_part_clicked",
+        locale = language.id(),
+        part = part_name
+    )
+    .to_string()
+}
 
 /// 桌宠窗口中的单会话 Agent 覆盖层。
 pub(crate) struct AgentView {
@@ -305,7 +316,7 @@ impl AgentView {
     /// 直接投递一条用户消息，跳过输入框与焦点管理。
     #[cfg(test)]
     pub(super) fn send_message_for_test(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
-        self.send_message_with_image(text.to_owned(), None, cx)
+        self.send_message_with_image(text.to_owned(), None, CONFIG.appearance().language, cx)
     }
 
     /// 从全局配置刷新供应商与人格；活动请求继续使用启动时的旧快照。
@@ -465,6 +476,21 @@ impl AgentView {
         self.reply_lifecycle.visible()
     }
 
+    /// 将模型部位点击作为当前人格会话中的一轮本地化事件发送给 Provider。
+    pub(crate) fn send_model_click_event(
+        &mut self,
+        part_name: &str,
+        language: AppLanguage,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        // 连续点击不能用 Busy 状态覆盖仍在流式更新的上一条回复。
+        if self.is_streaming() {
+            return false;
+        }
+        let prompt = model_click_event_prompt(part_name, language);
+        self.send_message_with_image(prompt, None, language, cx)
+    }
+
     /// 挂载后为启动阶段的持久化告警安排一次可取消淡出。
     pub(super) fn start_initial_reply_fade(&mut self, cx: &mut Context<Self>) {
         if self.status.is_some() && self.reply_message_id.is_none() {
@@ -503,7 +529,8 @@ impl AgentView {
             .pending_image
             .as_ref()
             .map(|pending| pending.attachment.clone());
-        if self.send_message_with_image(text, image, cx) {
+        let language = CONFIG.appearance().language;
+        if self.send_message_with_image(text, image, language, cx) {
             self.image_picker_revision = self.image_picker_revision.wrapping_add(1).max(1);
             self.image_picker_task = None;
             self.pending_image = None;
@@ -583,6 +610,7 @@ impl AgentView {
         &mut self,
         text: String,
         image: Option<ImageAttachment>,
+        language: AppLanguage,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.shutdown_revision.is_some() {
@@ -613,6 +641,7 @@ impl AgentView {
             system_prompt: self.active_system_prompt(),
             messages: started.context,
             screenshot_permission_revision: CONFIG.agent_screenshot_permission_revision(),
+            language,
         };
         self.cancel_network_request();
         let (sender, mut receiver) = mpsc::channel(STREAM_CHANNEL_CAPACITY);

@@ -8,7 +8,7 @@ use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, mpsc::TrySendError},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -1063,12 +1063,13 @@ impl DesktopPetView {
         }
     }
 
-    fn activate_hit_area_at(
+    fn send_hit_area_event_at(
         &mut self,
         frame: &RenderedModelFrame,
         generation: u64,
         position: gpui::Point<gpui::Pixels>,
         window: &Window,
+        cx: &mut Context<Self>,
     ) -> bool {
         if self.chat_input_open || self.model_generation != generation {
             return false;
@@ -1081,21 +1082,11 @@ impl DesktopPetView {
         ) else {
             return false;
         };
-        let Some(sender) = &self.model_commands else {
-            return false;
-        };
-
-        match sender.try_send(ModelCommand::ActivateHitArea(hit_area.activation())) {
-            Ok(()) => {
-                self.wake_model();
-                true
-            }
-            Err(TrySendError::Full(_)) => false,
-            Err(TrySendError::Disconnected(_)) => {
-                self.model_commands = None;
-                false
-            }
-        }
+        let part_name = hit_area.name().to_owned();
+        let language = self.appearance.borrow().language;
+        self.chat.update(cx, |chat, cx| {
+            chat.send_model_click_event(&part_name, language, cx)
+        })
     }
 }
 

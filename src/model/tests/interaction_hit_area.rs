@@ -48,12 +48,8 @@ fn rejects_vertical_contain_letterbox() {
 
 #[test]
 fn hit_area_uses_inclusive_raster_bounds() {
-    let area = RenderedHitArea::new(
-        Arc::from("HitArea"),
-        Arc::from("Body"),
-        [10.0, 20.0, 30.0, 40.0],
-    )
-    .expect("finite bounds should create a hit area");
+    let area = RenderedHitArea::new(Arc::from("Body"), [10.0, 20.0, 30.0, 40.0])
+        .expect("finite bounds should create a hit area");
 
     assert!(area.contains([10.0, 20.0]));
     assert!(area.contains([30.0, 40.0]));
@@ -70,31 +66,16 @@ fn invalid_dimensions_and_coordinates_are_rejected() {
         window_point_to_raster([f32::NAN, 0.0], [360.0, 640.0], [360, 640]),
         None
     );
-    assert!(
-        RenderedHitArea::new(
-            Arc::from("HitArea"),
-            Arc::from("Body"),
-            [f32::NAN, 0.0, 1.0, 1.0],
-        )
-        .is_none()
-    );
+    assert!(RenderedHitArea::new(Arc::from("Body"), [f32::NAN, 0.0, 1.0, 1.0],).is_none());
 }
 
 #[test]
 fn frame_hit_test_preserves_model_declaration_order() {
     let areas = vec![
-        RenderedHitArea::new(
-            Arc::from("BodyDrawable"),
-            Arc::from("Body"),
-            [20.0, 20.0, 80.0, 80.0],
-        )
-        .expect("body bounds should be valid"),
-        RenderedHitArea::new(
-            Arc::from("HeadDrawable"),
-            Arc::from("Head"),
-            [40.0, 40.0, 60.0, 60.0],
-        )
-        .expect("head bounds should be valid"),
+        RenderedHitArea::new(Arc::from("Body"), [20.0, 20.0, 80.0, 80.0])
+            .expect("body bounds should be valid"),
+        RenderedHitArea::new(Arc::from("Head"), [40.0, 40.0, 60.0, 60.0])
+            .expect("head bounds should be valid"),
     ];
     let image = RenderImage::new(vec![Frame::new(RgbaImage::new(100, 100))]);
     let frame = RenderedModelFrame::new(image, areas, [100, 100]);
@@ -112,12 +93,8 @@ fn frame_hit_test_preserves_model_declaration_order() {
 
 #[test]
 fn gpu_frame_keeps_hit_testing_without_a_gpui_image() {
-    let area = RenderedHitArea::new(
-        Arc::from("BodyDrawable"),
-        Arc::from("Body"),
-        [10.0, 10.0, 90.0, 90.0],
-    )
-    .expect("GPU 帧命中区域应有效");
+    let area = RenderedHitArea::new(Arc::from("Body"), [10.0, 10.0, 90.0, 90.0])
+        .expect("GPU 帧命中区域应有效");
     let frame = RenderedModelFrame::gpu(vec![area], [100, 100]);
 
     assert!(frame.image().is_none());
@@ -138,29 +115,22 @@ fn gpu_frame_maps_each_surface_axis_without_contain_letterboxing() {
 
 #[test]
 fn inverted_or_degenerate_bounds_do_not_create_a_hit_area() {
-    let id: Arc<str> = Arc::from("BodyDrawable");
     let name: Arc<str> = Arc::from("Body");
 
-    assert!(RenderedHitArea::new(id.clone(), name.clone(), [30.0, 0.0, 10.0, 40.0]).is_none());
-    assert!(RenderedHitArea::new(id.clone(), name.clone(), [0.0, 40.0, 10.0, 20.0]).is_none());
-    assert!(
-        RenderedHitArea::new(id.clone(), name.clone(), [0.0, 0.0, f32::INFINITY, 1.0]).is_none()
-    );
+    assert!(RenderedHitArea::new(name.clone(), [30.0, 0.0, 10.0, 40.0]).is_none());
+    assert!(RenderedHitArea::new(name.clone(), [0.0, 40.0, 10.0, 20.0]).is_none());
+    assert!(RenderedHitArea::new(name.clone(), [0.0, 0.0, f32::INFINITY, 1.0]).is_none());
 
     // 退化为一个点的包围盒仍然合法：闭区间检测只命中该点。
-    let point = RenderedHitArea::new(id, name, [5.0, 5.0, 5.0, 5.0]).expect("单点包围盒应当合法");
+    let point = RenderedHitArea::new(name, [5.0, 5.0, 5.0, 5.0]).expect("单点包围盒应当合法");
     assert!(point.contains([5.0, 5.0]));
     assert!(!point.contains([5.0, 5.000_01]));
 }
 
 #[test]
 fn non_finite_probe_points_never_hit_an_area() {
-    let area = RenderedHitArea::new(
-        Arc::from("BodyDrawable"),
-        Arc::from("Body"),
-        [f32::MIN, f32::MIN, f32::MAX, f32::MAX],
-    )
-    .expect("覆盖整个平面的包围盒应当合法");
+    let area = RenderedHitArea::new(Arc::from("Body"), [f32::MIN, f32::MIN, f32::MAX, f32::MAX])
+        .expect("覆盖整个平面的包围盒应当合法");
 
     for point in [
         [f32::NAN, 0.0],
@@ -173,18 +143,11 @@ fn non_finite_probe_points_never_hit_an_area() {
 }
 
 #[test]
-fn activation_carries_the_declared_identifier_and_name() {
-    let area = RenderedHitArea::new(
-        Arc::from("D_Head"),
-        Arc::from("Head"),
-        [0.0, 0.0, 10.0, 10.0],
-    )
-    .expect("测试包围盒应当合法");
+fn hit_area_exposes_the_declared_part_name() {
+    let area = RenderedHitArea::new(Arc::from("Head"), [0.0, 0.0, 10.0, 10.0])
+        .expect("测试包围盒应当合法");
 
-    let activation = area.activation();
-
-    assert_eq!(activation.id(), "D_Head");
-    assert_eq!(activation.name(), "Head");
+    assert_eq!(area.name(), "Head");
 }
 
 #[test]
@@ -255,12 +218,8 @@ fn frames_without_hit_areas_never_report_a_hit() {
 
 #[test]
 fn frames_with_a_degenerate_viewport_report_no_hit() {
-    let area = RenderedHitArea::new(
-        Arc::from("BodyDrawable"),
-        Arc::from("Body"),
-        [0.0, 0.0, 64.0, 64.0],
-    )
-    .expect("测试包围盒应当合法");
+    let area = RenderedHitArea::new(Arc::from("Body"), [0.0, 0.0, 64.0, 64.0])
+        .expect("测试包围盒应当合法");
     let frame = RenderedModelFrame::gpu(vec![area], [64, 64]);
 
     assert!(
@@ -293,7 +252,7 @@ fn quad_mesh(opacity: f32, corners: [[f32; 2]; 3]) -> Moc3DrawableMesh {
 #[test]
 fn bounds_follow_transformed_drawable_vertices() {
     let meshes = [quad_mesh(1.0, [[-1.0, -1.0], [1.0, -1.0], [0.0, 2.0]])];
-    let hit_areas = [HitAreaCapability::new_for_test("D_Body", "Body", 0, 0)];
+    let hit_areas = [HitAreaCapability::new_for_test("Body", 0, 0)];
 
     // 模型坐标经过与渲染一致的变换后才写入包围盒。
     let rendered = render_hit_areas(&hit_areas, 1, &meshes, |[x, y]| {
@@ -311,7 +270,7 @@ fn bounds_follow_transformed_drawable_vertices() {
 #[test]
 fn fully_transparent_drawables_are_not_clickable() {
     let meshes = [quad_mesh(0.0, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])];
-    let hit_areas = [HitAreaCapability::new_for_test("D_Body", "Body", 0, 0)];
+    let hit_areas = [HitAreaCapability::new_for_test("Body", 0, 0)];
 
     assert!(render_hit_areas(&hit_areas, 1, &meshes, |position| position).is_empty());
 
@@ -323,7 +282,7 @@ fn fully_transparent_drawables_are_not_clickable() {
 #[test]
 fn non_finite_transform_results_drop_the_whole_drawable() {
     let meshes = [quad_mesh(1.0, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])];
-    let hit_areas = [HitAreaCapability::new_for_test("D_Body", "Body", 0, 0)];
+    let hit_areas = [HitAreaCapability::new_for_test("Body", 0, 0)];
 
     let rendered = render_hit_areas(&hit_areas, 1, &meshes, |[x, y]| {
         if y > 0.5 { [f32::NAN, y] } else { [x, y] }
@@ -336,8 +295,8 @@ fn non_finite_transform_results_drop_the_whole_drawable() {
 fn drawables_shared_by_several_hit_areas_are_scanned_once_per_frame() {
     let meshes = [quad_mesh(1.0, [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]])];
     let hit_areas = [
-        HitAreaCapability::new_for_test("D_Body", "Body", 0, 0),
-        HitAreaCapability::new_for_test("D_Body", "Head", 0, 0),
+        HitAreaCapability::new_for_test("Body", 0, 0),
+        HitAreaCapability::new_for_test("Head", 0, 0),
     ];
     let mut transformed = 0_usize;
 
@@ -356,8 +315,8 @@ fn drawables_shared_by_several_hit_areas_are_scanned_once_per_frame() {
 fn a_hidden_shared_drawable_is_skipped_for_every_referencing_hit_area() {
     let meshes = [quad_mesh(0.0, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])];
     let hit_areas = [
-        HitAreaCapability::new_for_test("D_Body", "Body", 0, 0),
-        HitAreaCapability::new_for_test("D_Body", "Head", 0, 0),
+        HitAreaCapability::new_for_test("Body", 0, 0),
+        HitAreaCapability::new_for_test("Head", 0, 0),
     ];
     let mut transformed = 0_usize;
 
@@ -373,13 +332,8 @@ fn a_hidden_shared_drawable_is_skipped_for_every_referencing_hit_area() {
 #[test]
 fn hit_areas_referencing_missing_drawables_or_slots_are_skipped() {
     let meshes = [quad_mesh(1.0, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])];
-    let out_of_range_drawable = [HitAreaCapability::new_for_test(
-        "D_Missing",
-        "Missing",
-        5,
-        0,
-    )];
-    let out_of_range_slot = [HitAreaCapability::new_for_test("D_Body", "Body", 0, 9)];
+    let out_of_range_drawable = [HitAreaCapability::new_for_test("Missing", 5, 0)];
+    let out_of_range_slot = [HitAreaCapability::new_for_test("Body", 0, 9)];
 
     assert!(render_hit_areas(&out_of_range_drawable, 1, &meshes, |p| p).is_empty());
     assert!(render_hit_areas(&out_of_range_slot, 1, &meshes, |p| p).is_empty());
@@ -388,7 +342,7 @@ fn hit_areas_referencing_missing_drawables_or_slots_are_skipped() {
 #[test]
 fn drawables_without_vertices_produce_no_bounds() {
     let empty = Moc3DrawableMesh::from_parts(0, 0, 1.0, 0.0, Vec::new(), Vec::new(), Vec::new());
-    let hit_areas = [HitAreaCapability::new_for_test("D_Body", "Body", 0, 0)];
+    let hit_areas = [HitAreaCapability::new_for_test("Body", 0, 0)];
 
     assert!(render_hit_areas(&hit_areas, 1, &[empty], |position| position).is_empty());
 }

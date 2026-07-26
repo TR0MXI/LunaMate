@@ -12,6 +12,36 @@ _version = 2
 "en" = "Please inspect this image."
 "ja" = "この画像を確認してください。"
 
+[chat.event.model_part_clicked]
+"zh-CN" = "[事件] 用户点击了 Live2D 模型的“%{part}”部位。请以当前人格自然回应这次互动。"
+"zh-TW" = "[事件] 使用者點擊了 Live2D 模型的「%{part}」部位。請以目前人格自然回應這次互動。"
+"en" = "[Event] The user clicked the \"%{part}\" area of the Live2D model. Respond naturally to this interaction in character."
+"ja" = "[イベント] ユーザーが Live2D モデルの「%{part}」部位をクリックしました。現在のペルソナとして自然に反応してください。"
+
+[chat.history_image_unavailable]
+"zh-CN" = "这条历史消息中的图片已不可用。"
+"zh-TW" = "這則歷史訊息中的圖片已無法使用。"
+"en" = "The image from this historical message is no longer available."
+"ja" = "この過去のメッセージの画像は利用できなくなりました。"
+
+[chat.tool.screen_capture_description]
+"zh-CN" = "仅在回答确实需要当前视觉上下文时，将用户屏幕截取为静态图片。不得试探性调用，且每轮最多调用一次。"
+"zh-TW" = "僅在回答確實需要目前視覺內容時，將使用者螢幕擷取為靜態圖片。不得試探性呼叫，且每輪最多呼叫一次。"
+"en" = "Capture the user's screen as a still image only when current visual context is necessary to answer. Do not call it speculatively or more than once per turn."
+"ja" = "回答に現在の視覚情報が本当に必要な場合に限り、ユーザーの画面を静止画像としてキャプチャしてください。試行目的で呼び出さず、1ターンにつき1回だけ使用してください。"
+
+[chat.tool.screen_capture_handoff]
+"zh-CN" = "已获授权的 capture_screen 工具生成了这张截屏。请先查看图片再回答。"
+"zh-TW" = "已獲授權的 capture_screen 工具產生了這張截圖。請先查看圖片再回答。"
+"en" = "The authorized capture_screen tool produced this screenshot. Inspect it before answering."
+"ja" = "許可された capture_screen ツールがこのスクリーンショットを生成しました。回答する前に画像を確認してください。"
+
+[chat.tool.screen_capture_unavailable]
+"zh-CN" = "capture_screen 工具未能提供请求的截屏。请在没有截屏的情况下继续回答。"
+"zh-TW" = "capture_screen 工具無法提供要求的截圖。請在沒有截圖的情況下繼續回答。"
+"en" = "The capture_screen tool could not provide the requested screenshot. Continue without it."
+"ja" = "capture_screen ツールは要求されたスクリーンショットを取得できませんでした。画像なしで回答を続けてください。"
+
 [chat.select_image]
 "zh-CN" = "选择图片"
 "zh-TW" = "選擇圖片"

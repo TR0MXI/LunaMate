@@ -4,9 +4,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::model::{
-    AnimatedModel, ModelCommand, ModelLoadError, RenderCancellation, live2d::render_model,
-};
+use crate::model::{AnimatedModel, ModelLoadError, RenderCancellation, live2d::render_model};
 
 #[test]
 fn invalid_raster_dimensions_have_a_distinct_fatal_error() {
@@ -122,25 +120,4 @@ fn renders_to_a_rectangular_target_when_local_model_is_available() {
 
     assert_eq!(bytes.len(), 72 * 128 * 4);
     assert!(bytes.chunks_exact(4).any(|pixel| pixel[3] > 0));
-}
-
-#[test]
-#[ignore = "需要本地授权的 Hiyori 模型；提交最小 fixture 后应移除此标记"]
-fn local_body_hit_area_starts_a_tap_motion_when_available() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("models/hiyori_free/runtime/hiyori_free_t08.model3.json");
-
-    let mut model = AnimatedModel::load(&path, 128, 128, RenderCancellation::default())
-        .expect("local test model should load");
-    let frame = model
-        .render_frame(Duration::ZERO, [0.0, 0.0])
-        .expect("first frame should render");
-    let body = frame
-        .hit_areas()
-        .iter()
-        .find(|hit_area| hit_area.name() == "Body")
-        .expect("local test model should declare a Body hit area");
-
-    assert!(model.handle_command(ModelCommand::ActivateHitArea(body.activation())));
-    assert!(!model.handle_command(ModelCommand::ActivateHitArea(body.activation())));
 }

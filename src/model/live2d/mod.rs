@@ -18,15 +18,13 @@ use super::{
     animation::{self, AnimationController, MotionPlayResult},
     capabilities::{AuxiliaryResourceBudget, ModelCapabilities, ModelLoadDiagnostics},
     expression::{self, ExpressionController},
-    interaction::{ModelCommand, RenderedModelFrame, render_hit_areas, try_tap_motion_groups},
+    interaction::{ModelCommand, RenderedModelFrame, render_hit_areas},
 };
 
 pub(crate) use self::gpu_renderer::{GpuModelRenderer, SurfaceAlphaMode};
 use self::renderer::{CpuRenderer, ModelTransform};
 pub(crate) use self::renderer::{RenderCancellation, RenderError};
 use self::resources::{ResourceValidationError, validate_model_resources};
-
-const INTERACTION_COOLDOWN: Duration = Duration::from_millis(300);
 
 /// 设置窗口可以向用户展示并触发的已加载模型能力。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -141,7 +139,6 @@ pub(crate) struct AnimatedModel {
     renderer: Option<CpuRenderer>,
     width: u32,
     height: u32,
-    interaction_cooldown: Duration,
     cancellation: RenderCancellation,
 }
 
@@ -259,7 +256,6 @@ impl AnimatedModel {
             renderer,
             width,
             height,
-            interaction_cooldown: Duration::ZERO,
             cancellation,
         })
     }
@@ -284,28 +280,11 @@ impl AnimatedModel {
             || self.expression.needs_continuous_frames()
             || self.model.runtime().physics().is_some()
             || self.model.runtime().model().pose().is_some()
-            || !self.interaction_cooldown.is_zero()
     }
 
     /// 处理一个离散模型命令，并返回命令是否启动了可见交互。
     pub(crate) fn handle_command(&mut self, command: ModelCommand) -> bool {
         match command {
-            ModelCommand::ActivateHitArea(area) => {
-                if !self.interaction_cooldown.is_zero() {
-                    return false;
-                }
-
-                let started = try_tap_motion_groups(&area, |group| {
-                    matches!(
-                        self.animation.play_interaction(group),
-                        MotionPlayResult::Started
-                    )
-                });
-                if started {
-                    self.interaction_cooldown = INTERACTION_COOLDOWN;
-                }
-                started
-            }
             ModelCommand::PreviewMotion(group) => matches!(
                 self.animation.play_interaction(&group),
                 MotionPlayResult::Started
@@ -351,7 +330,6 @@ impl AnimatedModel {
     ) -> Result<Vec<super::interaction::RenderedHitArea>, RenderError> {
         self.cancellation.checkpoint()?;
         let delta = delta.min(Duration::from_millis(100));
-        self.interaction_cooldown = self.interaction_cooldown.saturating_sub(delta);
         let delta_seconds = delta.as_secs_f32();
         // 每帧从模型默认值重新合成动作、表情和交互参数，避免上一帧覆盖值残留。
         {

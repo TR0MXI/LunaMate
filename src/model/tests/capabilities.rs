@@ -42,7 +42,7 @@ fn declared_hit_areas_resolve_to_drawables_without_diagnostics() {
 
 #[test]
 #[ignore = "需要自备 Live2D 模型构建运行时；无模型分发授权，请在本地放置模型后手动运行"]
-fn hit_area_identifiers_and_names_are_preserved_in_declaration_order() {
+fn hit_area_names_are_preserved_in_declaration_order() {
     let model =
         mocari::assets::load_model_runtime(local_model_path()).expect("自备测试模型应当可以加载");
     let declared = model
@@ -50,14 +50,14 @@ fn hit_area_identifiers_and_names_are_preserved_in_declaration_order() {
         .model()
         .hit_areas()
         .iter()
-        .map(|hit_area| (hit_area.id().to_owned(), hit_area.name().to_owned()))
+        .map(|hit_area| hit_area.name().to_owned())
         .collect::<Vec<_>>();
 
     let (capabilities, _diagnostics) = ModelCapabilities::inspect(&model);
     let resolved = capabilities
         .hit_areas()
         .iter()
-        .map(|hit_area| (hit_area.id().to_string(), hit_area.name().to_string()))
+        .map(|hit_area| hit_area.name().to_string())
         .collect::<Vec<_>>();
 
     // 解析结果只会跳过无效引用，保留下来的项必须维持清单声明顺序。

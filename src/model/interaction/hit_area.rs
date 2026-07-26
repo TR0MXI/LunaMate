@@ -7,39 +7,30 @@ use mocari::moc3::Moc3DrawableMesh;
 
 use super::super::capabilities::HitAreaCapability;
 
-use super::HitAreaActivation;
-
 /// 与一张已显示模型图像保持同步的 HitArea。
 #[derive(Clone, Debug)]
 pub(crate) struct RenderedHitArea {
-    id: Arc<str>,
     name: Arc<str>,
     bounds: RasterBounds,
 }
 
 impl RenderedHitArea {
     /// 从光栅坐标包围盒创建命中区域；非法坐标会被拒绝。
-    pub(crate) fn new(id: Arc<str>, name: Arc<str>, bounds: [f32; 4]) -> Option<Self> {
+    pub(crate) fn new(name: Arc<str>, bounds: [f32; 4]) -> Option<Self> {
         Some(Self {
-            id,
             name,
             bounds: RasterBounds::new(bounds)?,
         })
     }
 
-    /// 返回可发送给后台模型的语义激活事件。
-    pub(crate) fn activation(&self) -> HitAreaActivation {
-        HitAreaActivation::new(self.id.clone(), self.name.clone())
+    /// 返回模型清单中面向交互语义的原始部位名称。
+    pub(crate) fn name(&self) -> &str {
+        &self.name
     }
 
     /// 判断一个光栅坐标点是否位于当前包围盒内。
     pub(in crate::model) fn contains(&self, point: [f32; 2]) -> bool {
         self.bounds.contains(point)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn name(&self) -> &str {
-        &self.name
     }
 }
 
@@ -132,7 +123,7 @@ pub(crate) fn render_hit_areas(
                     }
                 },
             };
-            RenderedHitArea::new(hit_area.id().clone(), hit_area.name().clone(), bounds)
+            RenderedHitArea::new(hit_area.name().clone(), bounds)
         })
         .collect()
 }

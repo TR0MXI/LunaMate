@@ -16,8 +16,8 @@ use crate::{
         session::{ChatContextMessage, ChatRole},
     },
     config::{
-        LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, REASONING_EFFORT_LEVELS,
-        ReasoningEffort,
+        AppLanguage, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider,
+        REASONING_EFFORT_LEVELS, ReasoningEffort,
     },
 };
 
@@ -40,11 +40,13 @@ fn request_keeps_system_prompt_separate_from_history() {
             image: None,
         }],
         screenshot_permission_revision: None,
+        language: AppLanguage::English,
     };
     let built = build_request(
         request.system_prompt,
         request.messages,
         request.screenshot_permission_revision.is_some(),
+        request.language,
     );
 
     assert_eq!(built.system.as_deref(), Some("persona"));
@@ -54,13 +56,36 @@ fn request_keeps_system_prompt_separate_from_history() {
 
 #[test]
 fn screenshot_tool_is_registered_only_when_permission_is_enabled() {
-    let disabled = build_request(String::new(), Vec::new(), false);
+    let disabled = build_request(String::new(), Vec::new(), false, AppLanguage::English);
     assert!(disabled.tools.is_none());
 
-    let enabled = build_request(String::new(), Vec::new(), true);
+    let enabled = build_request(String::new(), Vec::new(), true, AppLanguage::English);
     let tools = enabled.tools.expect("开启权限后应当注册截屏工具");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name.as_str(), SCREEN_CAPTURE_TOOL);
+}
+
+#[test]
+fn screenshot_tool_description_uses_the_explicit_application_language() {
+    for language in [
+        AppLanguage::SimplifiedChinese,
+        AppLanguage::TraditionalChinese,
+        AppLanguage::English,
+        AppLanguage::Japanese,
+    ] {
+        let request = build_request(String::new(), Vec::new(), true, language);
+        let tools = request.tools.expect("开启权限后应当注册截屏工具");
+        assert_eq!(
+            tools[0].description.as_deref(),
+            Some(
+                t!(
+                    "chat.tool.screen_capture_description",
+                    locale = language.id()
+                )
+                .as_ref()
+            )
+        );
+    }
 }
 
 #[test]
@@ -118,6 +143,7 @@ fn history_without_pixels_degrades_to_a_text_placeholder() {
             image: Some(restored),
         }],
         false,
+        AppLanguage::English,
     );
 
     assert_eq!(request.messages.len(), 1);
@@ -146,6 +172,7 @@ fn assistant_history_and_blank_system_prompts_are_preserved_verbatim() {
             },
         ],
         false,
+        AppLanguage::English,
     );
 
     // 只含空白的系统提示词等同于未设置，不应发送空 system 消息。
@@ -164,26 +191,70 @@ fn failed_capture_handoff_tells_the_model_to_continue_without_the_image() {
             image: None,
         }],
         true,
+        AppLanguage::English,
     );
 
-    append_stateless_capture_result(&mut request, None);
+    append_stateless_capture_result(&mut request, None, AppLanguage::English);
 
     assert_eq!(request.messages.len(), 1);
     assert!(request.messages[0].content.binaries().is_empty());
-    assert!(
-        request.messages[0]
-            .content
-            .texts()
-            .iter()
-            .any(|text| text.contains("could not provide a screenshot"))
-    );
+    assert!(request.messages[0].content.texts().iter().any(|text| {
+        text.contains(
+            t!(
+                "chat.tool.screen_capture_unavailable",
+                locale = AppLanguage::English.id()
+            )
+            .as_ref(),
+        )
+    }));
+}
+
+#[test]
+fn capture_handoff_prompts_use_the_explicit_application_language() {
+    let image = prepare_dynamic_image(
+        image::DynamicImage::new_rgb8(10, 6),
+        "screenshot.jpg".to_owned(),
+    )
+    .expect("测试截图应当可以规范化");
+    for language in [
+        AppLanguage::SimplifiedChinese,
+        AppLanguage::TraditionalChinese,
+        AppLanguage::English,
+        AppLanguage::Japanese,
+    ] {
+        let mut request = build_request(String::new(), Vec::new(), true, language);
+        append_stateless_capture_result(&mut request, None, language);
+        let expected = t!(
+            "chat.tool.screen_capture_unavailable",
+            locale = language.id()
+        );
+
+        assert!(
+            request.messages[0]
+                .content
+                .texts()
+                .iter()
+                .any(|text| text.contains(expected.as_ref()))
+        );
+
+        let mut request = build_request(String::new(), Vec::new(), true, language);
+        append_stateless_capture_result(&mut request, Some(&image), language);
+        let expected = t!("chat.tool.screen_capture_handoff", locale = language.id());
+        assert!(
+            request.messages[0]
+                .content
+                .texts()
+                .iter()
+                .any(|text| text.contains(expected.as_ref()))
+        );
+    }
 }
 
 #[test]
 fn capture_handoff_creates_a_user_turn_when_the_request_has_no_messages() {
-    let mut request = build_request(String::new(), Vec::new(), true);
+    let mut request = build_request(String::new(), Vec::new(), true, AppLanguage::English);
 
-    append_stateless_capture_result(&mut request, None);
+    append_stateless_capture_result(&mut request, None, AppLanguage::English);
 
     assert_eq!(request.messages.len(), 1);
     assert!(!request.messages[0].content.texts().is_empty());
@@ -201,6 +272,7 @@ fn user_image_is_encoded_as_multipart_content() {
             image: Some(image),
         }],
         false,
+        AppLanguage::English,
     );
 
     assert_eq!(request.messages[0].content.first_text(), Some("inspect"));
@@ -222,9 +294,10 @@ fn signed_tool_handoff_retries_from_original_user_message() {
             image: None,
         }],
         true,
+        AppLanguage::English,
     );
 
-    append_stateless_capture_result(&mut request, Some(&image));
+    append_stateless_capture_result(&mut request, Some(&image), AppLanguage::English);
 
     assert_eq!(request.messages.len(), 1);
     assert_eq!(request.messages[0].content.binaries().len(), 1);
