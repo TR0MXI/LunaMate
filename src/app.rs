@@ -47,6 +47,10 @@ const APP_ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/check.svg"),
     ),
     (
+        "icons/eye-off.svg",
+        include_bytes!("../assets/icons/eye-off.svg"),
+    ),
+    (
         "icons/image-plus.svg",
         include_bytes!("../assets/icons/image-plus.svg"),
     ),
@@ -146,7 +150,7 @@ fn spawn_final_agent_save(
 fn create_system_tray(
     runtime: &tokio::runtime::Handle,
 ) -> Option<(Rc<SystemTray>, Receiver<SystemTrayAction>)> {
-    match SystemTray::install(runtime) {
+    match SystemTray::install(runtime, CONFIG.use_native_tray_menu()) {
         Ok((tray, actions)) => Some((Rc::new(tray), actions)),
         Err(error) => {
             log::warn!("{}", t!("log.tray_init_failed", error = error));
@@ -188,6 +192,14 @@ fn listen_for_system_tray_actions(
                 SystemTrayAction::OpenSettings => {
                     if model_for_tray
                         .update(cx, |model, cx| model.open_config_window(cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                SystemTrayAction::OpenMenu(anchor) => {
+                    if model_for_tray
+                        .update(cx, |model, cx| model.toggle_tray_menu(anchor, cx))
                         .is_err()
                     {
                         break;

@@ -46,6 +46,10 @@ fn core_settings_text_exists_in_every_supported_language() {
             "settings.debug_title"
         );
         assert_ne!(
+            rust_i18n::t!("debug.use_native_tray_menu", locale = locale),
+            "debug.use_native_tray_menu"
+        );
+        assert_ne!(
             rust_i18n::t!("system.eye_tracking", locale = locale),
             "system.eye_tracking"
         );

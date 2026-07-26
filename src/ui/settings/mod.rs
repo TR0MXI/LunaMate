@@ -44,6 +44,8 @@ pub(crate) enum SettingsEvent {
     EyeTrackingChanged(bool),
     /// 主窗口帧率显示开关已更新。
     ShowFpsChanged(bool),
+    /// 托盘右键菜单是否强制回退为系统原生实现。
+    NativeTrayMenuChanged(bool),
     /// 桌宠主窗口尺寸档位已更新。
     ModelWindowSizeChanged(ModelWindowSize),
     /// 请求主模型 generation 播放一个动作。
@@ -88,6 +90,7 @@ pub(crate) struct SettingsView {
     remember_window_positions: bool,
     eye_tracking: bool,
     show_fps: bool,
+    use_native_tray_menu: bool,
     allow_agent_screenshot: bool,
     screenshot_permission_retry_required: bool,
     logging: LoggingSettings,
@@ -139,6 +142,7 @@ impl SettingsView {
             remember_window_positions: CONFIG.remember_window_positions(),
             eye_tracking: CONFIG.eye_tracking(),
             show_fps: CONFIG.show_fps(),
+            use_native_tray_menu: CONFIG.use_native_tray_menu(),
             allow_agent_screenshot: CONFIG.allow_agent_screenshot(),
             screenshot_permission_retry_required: CONFIG
                 .agent_screenshot_permission_retry_required(),
@@ -698,6 +702,24 @@ impl SettingsView {
         self.persist_setting(
             revision,
             move || CONFIG.set_show_fps_at_revision(show, config_revision),
+            cx,
+        );
+    }
+
+    fn set_use_native_tray_menu(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.use_native_tray_menu == enabled {
+            return;
+        }
+        self.use_native_tray_menu = enabled;
+        cx.emit(SettingsEvent::NativeTrayMenuChanged(enabled));
+        self.revision = self.revision.wrapping_add(1);
+        let revision = self.revision;
+        cx.notify();
+
+        let config_revision = CONFIG.reserve_use_native_tray_menu_revision();
+        self.persist_setting(
+            revision,
+            move || CONFIG.set_use_native_tray_menu_at_revision(enabled, config_revision),
             cx,
         );
     }

@@ -1,4 +1,4 @@
-//! 创建系统托盘，并把原生菜单事件转换为有界应用动作。
+//! 创建系统托盘，并把图标点击与原生菜单事件转换为有界应用动作。
 
 use async_channel::{Receiver, Sender, TrySendError};
 use rust_i18n::t;
@@ -6,12 +6,84 @@ use tokio::runtime::Handle;
 
 const ACTION_CHANNEL_CAPACITY: usize = 16;
 const TRAY_ICON_SIZE: u32 = 32;
+const FALLBACK_TRAY_ICON_LOGICAL_SIZE: f32 = 24.0;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SystemTrayAction {
     ToggleDesktopPet,
     OpenSettings,
+    #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
+    OpenMenu(TrayMenuAnchor),
     Quit,
+}
+
+/// 描述自定义托盘菜单使用的逻辑屏幕坐标锚点。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TrayMenuAnchor {
+    pub(crate) icon_origin: [f32; 2],
+    pub(crate) icon_size: [f32; 2],
+    pub(crate) scale_factor: f64,
+}
+
+impl TrayMenuAnchor {
+    #[cfg_attr(
+        not(any(target_os = "windows", target_os = "macos", test)),
+        allow(dead_code)
+    )]
+    pub(in crate::platform) fn from_physical(
+        click_position: [f64; 2],
+        icon_position: [f64; 2],
+        size: [u32; 2],
+        scale_factor: f64,
+    ) -> Self {
+        let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
+            scale_factor
+        } else {
+            1.0
+        };
+        let logical_coordinate = |value: f64| {
+            let value = value / scale_factor;
+            if value.is_finite() {
+                value.clamp(f64::from(f32::MIN), f64::from(f32::MAX)) as f32
+            } else {
+                0.0
+            }
+        };
+        let logical_size = |value: u32| {
+            let value = logical_coordinate(f64::from(value));
+            if value > 0.0 {
+                value
+            } else {
+                FALLBACK_TRAY_ICON_LOGICAL_SIZE
+            }
+        };
+        let click_position = [
+            logical_coordinate(click_position[0]),
+            logical_coordinate(click_position[1]),
+        ];
+        let reported_origin = [
+            logical_coordinate(icon_position[0]),
+            logical_coordinate(icon_position[1]),
+        ];
+        let icon_size = [logical_size(size[0]), logical_size(size[1])];
+        let click_inside_reported_icon = (reported_origin[0]..=reported_origin[0] + icon_size[0])
+            .contains(&click_position[0])
+            && (reported_origin[1]..=reported_origin[1] + icon_size[1])
+                .contains(&click_position[1]);
+        let icon_origin = if click_inside_reported_icon {
+            reported_origin
+        } else {
+            [
+                click_position[0] - icon_size[0] / 2.0,
+                click_position[1] - icon_size[1] / 2.0,
+            ]
+        };
+        Self {
+            icon_origin,
+            icon_size,
+            scale_factor,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -53,14 +125,23 @@ impl TrayLabels {
 /// 持有平台托盘资源，直到 GPUI 事件任务随应用退出而释放。
 pub(crate) struct SystemTray {
     inner: imp::PlatformTray,
+    actions: Sender<SystemTrayAction>,
 }
 
 impl SystemTray {
     /// 创建托盘并返回菜单动作接收端。
-    pub(crate) fn install(runtime: &Handle) -> Result<(Self, Receiver<SystemTrayAction>), String> {
+    pub(crate) fn install(
+        runtime: &Handle,
+        use_native_menu: bool,
+    ) -> Result<(Self, Receiver<SystemTrayAction>), String> {
         let (actions, receiver) = async_channel::bounded(ACTION_CHANNEL_CAPACITY);
-        let inner = imp::PlatformTray::new(actions, runtime, TrayLabels::localized())?;
-        Ok((Self { inner }, receiver))
+        let inner = imp::PlatformTray::new(
+            actions.clone(),
+            runtime,
+            TrayLabels::localized(),
+            use_native_menu,
+        )?;
+        Ok((Self { inner, actions }, receiver))
     }
 
     /// 将桌宠的实际显隐状态同步回可勾选菜单项。
@@ -71,6 +152,26 @@ impl SystemTray {
     /// 同步当前 GPUI 语义色，并在语言切换后刷新原生菜单文本。
     pub(crate) fn sync_appearance(&self, style: TrayIconStyle) -> Result<(), String> {
         self.inner.sync_appearance(style, TrayLabels::localized())
+    }
+
+    /// 即时切换右键是否由系统原生菜单处理。
+    pub(crate) fn set_use_native_menu(&self, enabled: bool) {
+        self.inner.set_use_native_menu(enabled);
+    }
+
+    /// 返回当前右键是否应由原生菜单处理；不支持自绘的平台恒为 `true`。
+    pub(crate) fn uses_native_menu(&self) -> bool {
+        self.inner.uses_native_menu()
+    }
+
+    /// 自定义窗口无法创建时，在当前光标位置显示保留的原生菜单。
+    pub(crate) fn show_native_menu(&self) {
+        self.inner.show_native_menu();
+    }
+
+    /// 将自定义菜单项重新汇入与原生菜单相同的有界动作队列。
+    pub(crate) fn request_action(&self, action: SystemTrayAction) {
+        dispatch_action(&self.actions, action);
     }
 }
 
@@ -110,16 +211,21 @@ fn circle_coverage(x: f32, y: f32, center_x: f32, center_y: f32, radius: f32) ->
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod imp {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
     use async_channel::Sender;
     use tokio::runtime::Handle;
     use tray_icon::{
-        Icon, TrayIcon, TrayIconBuilder,
+        Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
         menu::{CheckMenuItem, Menu, MenuEvent, MenuItem},
     };
 
     use super::{
-        SystemTrayAction, TRAY_ICON_SIZE, TrayIconStyle, TrayLabels, dispatch_action,
-        tray_icon_rgba,
+        SystemTrayAction, TRAY_ICON_SIZE, TrayIconStyle, TrayLabels, TrayMenuAnchor,
+        dispatch_action, tray_icon_rgba,
     };
 
     const HIDE_DESKTOP_PET_ID: &str = "lunamate-hide-desktop-pet";
@@ -131,6 +237,7 @@ mod imp {
         hide_desktop_pet: CheckMenuItem,
         settings: MenuItem,
         quit: MenuItem,
+        use_native_menu: Arc<AtomicBool>,
     }
 
     impl PlatformTray {
@@ -138,6 +245,7 @@ mod imp {
             actions: Sender<SystemTrayAction>,
             _runtime: &Handle,
             labels: TrayLabels,
+            use_native_menu: bool,
         ) -> Result<Self, String> {
             let hide_desktop_pet = CheckMenuItem::with_id(
                 HIDE_DESKTOP_PET_ID,
@@ -163,9 +271,13 @@ mod imp {
                 .with_icon(icon)
                 .with_icon_as_template(cfg!(target_os = "macos"))
                 .with_menu(Box::new(menu))
+                .with_menu_on_right_click(use_native_menu)
                 .build()
                 .map_err(|error| format!("无法创建系统托盘：{error}"))?;
+            let tray_id = tray_icon.id().clone();
+            let native_menu = Arc::new(AtomicBool::new(use_native_menu));
 
+            let actions_for_menu = actions.clone();
             MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
                 let action = match event.id.as_ref() {
                     HIDE_DESKTOP_PET_ID => Some(SystemTrayAction::ToggleDesktopPet),
@@ -174,8 +286,34 @@ mod imp {
                     _ => None,
                 };
                 if let Some(action) = action {
-                    dispatch_action(&actions, action);
+                    dispatch_action(&actions_for_menu, action);
                 }
+            }));
+            let actions_for_click = actions;
+            let native_menu_for_click = native_menu.clone();
+            TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+                let TrayIconEvent::Click {
+                    id,
+                    position,
+                    rect,
+                    button: MouseButton::Right,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
+                else {
+                    return;
+                };
+                if id != tray_id || native_menu_for_click.load(Ordering::Acquire) {
+                    return;
+                }
+                let scale_factor = tray_scale_factor(position.x, position.y);
+                let anchor = TrayMenuAnchor::from_physical(
+                    [position.x, position.y],
+                    [rect.position.x, rect.position.y],
+                    [rect.size.width, rect.size.height],
+                    scale_factor,
+                );
+                dispatch_action(&actions_for_click, SystemTrayAction::OpenMenu(anchor));
             }));
 
             Ok(Self {
@@ -183,6 +321,7 @@ mod imp {
                 hide_desktop_pet,
                 settings,
                 quit,
+                use_native_menu: native_menu,
             })
         }
 
@@ -209,6 +348,64 @@ mod imp {
                 .set_icon(Some(icon))
                 .map_err(|error| format!("无法更新主题托盘图标：{error}"))?;
             Ok(())
+        }
+
+        pub(super) fn set_use_native_menu(&self, enabled: bool) {
+            self.use_native_menu.store(enabled, Ordering::Release);
+            self.tray_icon.set_show_menu_on_right_click(enabled);
+        }
+
+        pub(super) fn uses_native_menu(&self) -> bool {
+            self.use_native_menu.load(Ordering::Acquire)
+        }
+
+        pub(super) fn show_native_menu(&self) {
+            self.tray_icon.show_menu();
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn tray_scale_factor(x: f64, y: f64) -> f64 {
+        use windows::Win32::{
+            Foundation::POINT,
+            Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromPoint},
+            UI::{
+                HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
+                WindowsAndMessaging::USER_DEFAULT_SCREEN_DPI,
+            },
+        };
+
+        let point = POINT {
+            x: x.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+            y: y.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+        };
+        // SAFETY: `point` 是不含指针的已初始化屏幕坐标，调用只按值读取。
+        let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+        let mut dpi_x = USER_DEFAULT_SCREEN_DPI;
+        let mut dpi_y = USER_DEFAULT_SCREEN_DPI;
+        if monitor.is_invalid()
+            // SAFETY: monitor 来自上一步系统查询；两个输出指针独占指向有效的局部 `u32`。
+            || unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }
+                .is_err()
+        {
+            return 1.0;
+        }
+        f64::from(dpi_x) / f64::from(USER_DEFAULT_SCREEN_DPI)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn tray_scale_factor(_x: f64, _y: f64) -> f64 {
+        use cocoa::{appkit::NSScreen, base::nil};
+
+        // SAFETY: `tray-icon` 在 AppKit 主线程同步发送点击事件；返回的 NSScreen 只在
+        // 当前调用中读取，不保存 Objective-C 对象指针。
+        unsafe {
+            let screen = NSScreen::mainScreen(nil);
+            if screen == nil {
+                1.0
+            } else {
+                NSScreen::backingScaleFactor(screen)
+            }
         }
     }
 }
@@ -310,6 +507,7 @@ mod imp {
             actions: Sender<SystemTrayAction>,
             runtime: &Handle,
             labels: TrayLabels,
+            _use_native_menu: bool,
         ) -> Result<Self, String> {
             let hidden = Arc::new(AtomicBool::new(false));
             let (refresh, refresh_receiver) = async_channel::bounded(1);
@@ -379,6 +577,14 @@ mod imp {
                 Err(TrySendError::Closed(())) => Err("系统托盘后台任务已结束".to_owned()),
             }
         }
+
+        pub(super) fn set_use_native_menu(&self, _enabled: bool) {}
+
+        pub(super) fn uses_native_menu(&self) -> bool {
+            true
+        }
+
+        pub(super) fn show_native_menu(&self) {}
     }
 
     impl Drop for PlatformTray {
@@ -414,6 +620,7 @@ mod imp {
             _actions: Sender<SystemTrayAction>,
             _runtime: &Handle,
             _labels: TrayLabels,
+            _use_native_menu: bool,
         ) -> Result<Self, String> {
             Err("当前平台不支持系统托盘".to_owned())
         }
@@ -427,5 +634,13 @@ mod imp {
         ) -> Result<(), String> {
             Ok(())
         }
+
+        pub(super) fn set_use_native_menu(&self, _enabled: bool) {}
+
+        pub(super) fn uses_native_menu(&self) -> bool {
+            true
+        }
+
+        pub(super) fn show_native_menu(&self) {}
     }
 }

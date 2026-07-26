@@ -30,15 +30,16 @@ use crate::{
         RenderedModelFrame,
     },
     platform::{
-        SystemTray, TrayIconStyle, WindowMover, WindowPositionController, configure_settings_window,
+        NativeTrayMenuWindow, SystemTray, TrayIconStyle, TrayMenuAnchor, WindowMover,
+        WindowPositionController, configure_settings_window, configure_tray_menu_window,
     },
 };
 
 use super::{
-    SettingsEvent, SettingsView, SettingsWindowView, UiPalette, apply, apply_language,
-    cache_window_position, desktop_pet_window_size, gpu_underlay_size,
+    SettingsEvent, SettingsView, SettingsWindowView, TrayMenuView, UiPalette, apply,
+    apply_language, cache_window_position, desktop_pet_window_size, gpu_underlay_size,
     gpu_underlay_size_for_window, raster_dimensions_for_window, restored_window_bounds,
-    settings_window_sizes,
+    settings_window_sizes, tray_menu_window_options,
 };
 
 const FPS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
@@ -148,6 +149,7 @@ pub(crate) struct DesktopPetView {
     position_controller: WindowPositionController,
     pending_model_window_size: Option<ModelWindowSize>,
     config_window: Option<AnyWindowHandle>,
+    tray_menu_window: Option<AnyWindowHandle>,
     selected_model: Option<PathBuf>,
     model_state: ModelLoadState,
     raster_dimensions: [u32; 2],
@@ -185,6 +187,9 @@ impl DesktopPetView {
             }
             if let Some(mut underlay) = this.gpu_underlay.take() {
                 underlay.shutdown();
+            }
+            if let Some(handle) = this.tray_menu_window.take() {
+                let _ = handle.update(cx, |_, window, _| window.remove_window());
             }
             let current = this.current_rendered_image.take();
             if let Some(previous) = this.previous_rendered_image.take()
@@ -233,6 +238,14 @@ impl DesktopPetView {
                     cx.notify();
                 }
                 SettingsEvent::ShowFpsChanged(show) => this.set_show_fps(*show, cx),
+                SettingsEvent::NativeTrayMenuChanged(enabled) => {
+                    if let Some(tray) = &this.system_tray {
+                        tray.set_use_native_menu(*enabled);
+                    }
+                    if *enabled {
+                        this.close_tray_menu(cx);
+                    }
+                }
                 SettingsEvent::ModelWindowSizeChanged(size) => {
                     this.pending_model_window_size = Some(*size);
                     cx.notify();
@@ -327,6 +340,7 @@ impl DesktopPetView {
             position_controller: WindowPositionController::default(),
             pending_model_window_size: None,
             config_window: None,
+            tray_menu_window: None,
             selected_model: None,
             model_state: ModelLoadState::NoModel,
             raster_dimensions: if gpu_events.is_some() {
@@ -885,6 +899,100 @@ impl DesktopPetView {
         match result {
             Ok(handle) => self.config_window = Some(handle.into()),
             Err(error) => log::error!("{}", t!("log.settings_window_create_failed", error = error)),
+        }
+    }
+
+    pub(crate) fn toggle_tray_menu(&mut self, anchor: TrayMenuAnchor, cx: &mut Context<Self>) {
+        let Some(tray) = self.system_tray.clone() else {
+            return;
+        };
+        if tray.uses_native_menu() {
+            self.close_tray_menu(cx);
+            tray.show_native_menu();
+            return;
+        }
+        if let Some(handle) = self.tray_menu_window.take()
+            && handle
+                .update(cx, |_, window, _| window.remove_window())
+                .is_ok()
+        {
+            return;
+        }
+        let desktop_pet_hidden = !self.desktop_pet_visible;
+        let (options, menu_bounds) = tray_menu_window_options(anchor, cx);
+        let tray_for_window = tray.clone();
+        let result = cx.open_window(options, move |window, cx| {
+            if let Err(error) = configure_tray_menu_window(window) {
+                log::warn!(
+                    "{}",
+                    t!("log.tray_menu_window_config_failed", error = error)
+                );
+            }
+            let view =
+                cx.new(|cx| TrayMenuView::new(tray_for_window, desktop_pet_hidden, window, cx));
+            cx.new(|cx| {
+                Root::new(view, window, cx)
+                    .bordered(false)
+                    .bg(transparent_black())
+            })
+        });
+        match result {
+            Ok(handle) => {
+                let handle: AnyWindowHandle = handle.into();
+                let native_window = handle.update(cx, |_, window, _| {
+                    NativeTrayMenuWindow::prepare(window, menu_bounds, anchor.scale_factor)
+                });
+                let native_window = native_window
+                    .map_err(|error| error.to_string())
+                    .and_then(|result| result);
+                let native_window = match native_window {
+                    Ok(native_window) => native_window,
+                    Err(error) => {
+                        log::warn!(
+                            "{}",
+                            t!("log.tray_menu_window_config_failed", error = error)
+                        );
+                        let _ = handle.update(cx, |_, window, _| window.remove_window());
+                        tray.show_native_menu();
+                        return;
+                    }
+                };
+                self.tray_menu_window = Some(handle);
+                let tray_for_fallback = tray.clone();
+                // 原生 SetWindowPos 会同步派发 WM_MOVE、WM_SIZE 与 WM_DPICHANGED，必须等
+                // 当前 App borrow 结束后执行，避免重入 GPUI。显示前再校验当前窗口 generation。
+                cx.spawn(async move |this, cx| {
+                    let current = this
+                        .update(cx, |this, _| this.tray_menu_window == Some(handle))
+                        .unwrap_or(false);
+                    if !current {
+                        return;
+                    }
+                    if let Err(error) = native_window.show() {
+                        log::warn!(
+                            "{}",
+                            t!("log.tray_menu_window_config_failed", error = error)
+                        );
+                        let _ = this.update(cx, |this, cx| {
+                            if this.tray_menu_window == Some(handle) {
+                                this.close_tray_menu(cx);
+                                tray_for_fallback.show_native_menu();
+                            }
+                        });
+                    }
+                })
+                .detach();
+            }
+            Err(error) => {
+                log::warn!("{}", t!("log.tray_menu_create_failed", error = error));
+                tray.show_native_menu();
+            }
+        }
+    }
+
+    fn close_tray_menu(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.tray_menu_window.take() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
         }
     }
 

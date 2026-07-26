@@ -191,3 +191,15 @@ _version = 2
 "zh-TW" = "系統匣服務已停止，後續狀態更新將不再生效"
 "en" = "The system tray service stopped; subsequent state updates will not take effect"
 "ja" = "システムトレイサービスが停止したため、以降の状態更新は反映されません"
+
+[log.tray_menu_create_failed]
+"zh-CN" = "无法创建自定义托盘菜单，已回退系统菜单：%{error}"
+"zh-TW" = "無法建立自訂系統匣選單，已改用系統選單：%{error}"
+"en" = "Could not create the custom tray menu; falling back to the native menu: %{error}"
+"ja" = "カスタムトレイメニューを作成できないため、システムメニューにフォールバックしました: %{error}"
+
+[log.tray_menu_window_config_failed]
+"zh-CN" = "配置自定义托盘菜单原生窗口失败：%{error}"
+"zh-TW" = "設定自訂系統匣選單原生視窗失敗：%{error}"
+"en" = "Failed to configure the native custom tray menu window: %{error}"
+"ja" = "カスタムトレイメニューのネイティブウィンドウ設定に失敗しました: %{error}"

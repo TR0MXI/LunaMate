@@ -472,6 +472,24 @@ impl SettingsView {
                                     ),
                                 ),
                             )
+                            .child(
+                                setting_row(t!("debug.use_native_tray_menu").to_string(), palette)
+                                    .child(
+                                        toggle_switch(
+                                            "use-native-tray-menu",
+                                            self.use_native_tray_menu,
+                                            palette,
+                                        )
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| {
+                                                this.set_use_native_tray_menu(
+                                                    !this.use_native_tray_menu,
+                                                    cx,
+                                                );
+                                            }),
+                                        ),
+                                    ),
+                            )
                             .child(system_section_label(
                                 t!("debug.logging").to_string(),
                                 palette,

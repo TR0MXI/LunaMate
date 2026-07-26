@@ -50,6 +50,7 @@ fn missing_config_uses_complete_defaults() {
     assert!(config.remember_window_positions());
     assert!(config.eye_tracking());
     assert!(!config.show_fps());
+    assert!(!config.use_native_tray_menu());
     assert!(!config.allow_agent_screenshot());
     assert_eq!(
         config.logging_settings().as_ref(),
@@ -84,6 +85,7 @@ selected = "luna/runtime/luna.model3.json"
 
 [debug]
 show_fps = true
+use_native_tray_menu = true
 
 [tools]
 allow_agent_screenshot = true
@@ -105,6 +107,7 @@ y = 48
     assert!(!config.remember_window_positions());
     assert!(!config.eye_tracking());
     assert!(config.show_fps());
+    assert!(config.use_native_tray_menu());
     assert!(config.allow_agent_screenshot());
     assert_eq!(
         config.selected_model(),
@@ -131,13 +134,31 @@ fn interaction_and_debug_switches_round_trip() {
         .set_show_fps_at_revision(true, fps_revision)
         .expect("帧率显示开关应当可以持久化")
         .expect("最新帧率显示请求应当生效");
+    let tray_revision = config.reserve_use_native_tray_menu_revision();
+    config
+        .set_use_native_tray_menu_at_revision(true, tray_revision)
+        .expect("原生托盘菜单开关应当可以持久化")
+        .expect("最新原生托盘菜单请求应当生效");
 
     let reloaded = LunaConfig::load_from(directory.config_path());
     assert!(!reloaded.eye_tracking());
     assert!(reloaded.show_fps());
+    assert!(reloaded.use_native_tray_menu());
     let saved = fs::read_to_string(directory.config_path()).expect("调试配置应当可以读取");
     assert!(saved.contains("eye_tracking = false"));
     assert!(saved.contains("show_fps = true"));
+    assert!(saved.contains("use_native_tray_menu = true"));
+}
+
+#[test]
+fn invalid_native_tray_menu_switch_uses_custom_default() {
+    let directory = TestDirectory::new();
+    directory.write("[debug]\nuse_native_tray_menu = \"yes\"\n");
+
+    let config = LunaConfig::load_from(directory.config_path());
+
+    assert!(!config.use_native_tray_menu());
+    assert!(config.startup_warning().is_some());
 }
 
 #[test]

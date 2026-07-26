@@ -194,6 +194,15 @@ fn parse_document(document: &DocumentMut) -> (LoadedConfig, Option<String>) {
         }
     }
 
+    if let Some(item) = nested_item(document, "debug", "use_native_tray_menu") {
+        match item.as_bool() {
+            Some(enabled) => loaded.use_native_tray_menu = enabled,
+            None => {
+                warnings.push("debug.use_native_tray_menu 无效，已使用自定义托盘菜单".to_owned())
+            }
+        }
+    }
+
     if let Some(item) = nested_item(document, "tools", "allow_agent_screenshot") {
         match item.as_bool() {
             Some(allowed) => loaded.allow_agent_screenshot = allowed,

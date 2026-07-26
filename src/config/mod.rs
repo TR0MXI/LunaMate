@@ -81,6 +81,7 @@ struct LoadedConfig {
     remember_window_positions: bool,
     eye_tracking: bool,
     show_fps: bool,
+    use_native_tray_menu: bool,
     allow_agent_screenshot: bool,
     logging: LoggingSettings,
     appearance: AppearanceSettings,
@@ -97,6 +98,7 @@ impl Default for LoadedConfig {
             remember_window_positions: true,
             eye_tracking: true,
             show_fps: false,
+            use_native_tray_menu: false,
             allow_agent_screenshot: false,
             logging: LoggingSettings::default(),
             appearance: AppearanceSettings::default(),
@@ -115,6 +117,7 @@ pub(crate) struct LunaConfig {
     remember_window_positions: AtomicBool,
     eye_tracking: AtomicBool,
     show_fps: AtomicBool,
+    use_native_tray_menu: AtomicBool,
     allow_agent_screenshot: AtomicBool,
     requested_allow_agent_screenshot: AtomicBool,
     agent_screenshot_permission_retry_required: AtomicBool,
@@ -132,6 +135,7 @@ pub(crate) struct LunaConfig {
     remember_positions_request_revision: AtomicU64,
     eye_tracking_request_revision: AtomicU64,
     show_fps_request_revision: AtomicU64,
+    use_native_tray_menu_request_revision: AtomicU64,
     allow_agent_screenshot_request_revision: AtomicU64,
     logging_request_revision: AtomicU64,
     appearance_request_revision: AtomicU64,
@@ -163,6 +167,7 @@ impl LunaConfig {
             remember_window_positions: AtomicBool::new(loaded.remember_window_positions),
             eye_tracking: AtomicBool::new(loaded.eye_tracking),
             show_fps: AtomicBool::new(loaded.show_fps),
+            use_native_tray_menu: AtomicBool::new(loaded.use_native_tray_menu),
             allow_agent_screenshot: AtomicBool::new(loaded.allow_agent_screenshot),
             requested_allow_agent_screenshot: AtomicBool::new(loaded.allow_agent_screenshot),
             agent_screenshot_permission_retry_required: AtomicBool::new(false),
@@ -180,6 +185,7 @@ impl LunaConfig {
             remember_positions_request_revision: AtomicU64::new(0),
             eye_tracking_request_revision: AtomicU64::new(0),
             show_fps_request_revision: AtomicU64::new(0),
+            use_native_tray_menu_request_revision: AtomicU64::new(0),
             allow_agent_screenshot_request_revision: AtomicU64::new(0),
             logging_request_revision: AtomicU64::new(0),
             appearance_request_revision: AtomicU64::new(0),
@@ -220,6 +226,11 @@ impl LunaConfig {
     /// 返回是否在桌宠窗口显示运行时帧率。
     pub(crate) fn show_fps(&self) -> bool {
         self.show_fps.load(Ordering::Relaxed)
+    }
+
+    /// 返回是否强制使用系统提供的托盘右键菜单。
+    pub(crate) fn use_native_tray_menu(&self) -> bool {
+        self.use_native_tray_menu.load(Ordering::Relaxed)
     }
 
     /// 返回当前是否存在已持久化且未被更新请求撤销的 Agent 截屏授权。
@@ -371,6 +382,32 @@ impl LunaConfig {
             |document| {
                 ensure_table_like(&mut document["debug"]);
                 set_item_value(&mut document["debug"]["show_fps"], Value::from(show));
+            },
+        )?;
+        Ok(applied.then_some(()))
+    }
+
+    /// 为原生托盘右键菜单开关写入分配单调 revision。
+    pub(crate) fn reserve_use_native_tray_menu_revision(&self) -> u64 {
+        self.reserve_request_revision(&self.use_native_tray_menu_request_revision)
+    }
+
+    /// 仅提交仍然最新的原生托盘右键菜单开关写入。
+    pub(crate) fn set_use_native_tray_menu_at_revision(
+        &self,
+        enabled: bool,
+        revision: u64,
+    ) -> Result<Option<()>, ConfigWriteError> {
+        let applied = self.edit_config_at_revision(
+            &self.use_native_tray_menu_request_revision,
+            revision,
+            || self.use_native_tray_menu.store(enabled, Ordering::Relaxed),
+            |document| {
+                ensure_table_like(&mut document["debug"]);
+                set_item_value(
+                    &mut document["debug"]["use_native_tray_menu"],
+                    Value::from(enabled),
+                );
             },
         )?;
         Ok(applied.then_some(()))

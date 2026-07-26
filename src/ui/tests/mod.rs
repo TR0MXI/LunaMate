@@ -4,4 +4,5 @@ mod desktop_pet;
 mod desktop_pet_model_task;
 mod settings;
 mod theme;
+mod tray_menu;
 mod window;
