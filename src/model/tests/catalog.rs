@@ -3,7 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::model::catalog::{MAX_DISCOVERY_DEPTH, ModelCatalog, ModelFamily};
+use crate::model::catalog::{
+    MAX_DISCOVERY_DEPTH, ModelCatalog, ModelFamily, ensure_model_directory,
+};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -163,6 +165,17 @@ fn missing_model_root_is_treated_as_an_empty_catalog() {
     assert!(catalog.warning().is_none());
     assert!(catalog.selected_model_path().is_none());
     assert!(catalog.selected_family().is_none());
+}
+
+#[test]
+fn ensuring_a_missing_model_root_creates_it() {
+    let directory = TestDirectory::new();
+    let root = directory.path().join("models");
+    assert!(!root.exists());
+
+    ensure_model_directory(&root).expect("缺失的模型目录应当可以创建");
+
+    assert!(root.is_dir());
 }
 
 #[test]

@@ -56,6 +56,7 @@ const APP_ASSETS: &[(&str, &[u8])] = app_assets![
     "chevron-down.svg",
     "chevron-right.svg",
     "eye-off.svg",
+    "folder-open.svg",
     "image-plus.svg",
     "message-circle.svg",
     "move.svg",
@@ -138,9 +139,8 @@ fn models_directory() -> PathBuf {
         return path.clone();
     }
 
-    executable_directory
-        .map(|directory| directory.join(MODELS_DIRECTORY))
-        .or(working_directory_models)
+    working_directory_models
+        .or_else(|| executable_directory.map(|directory| directory.join(MODELS_DIRECTORY)))
         .unwrap_or_else(|| PathBuf::from(MODELS_DIRECTORY))
 }
 

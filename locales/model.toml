@@ -12,6 +12,12 @@ _version = 2
 "en" = "Scanning"
 "ja" = "スキャン中"
 
+[model.open_folder]
+"zh-CN" = "打开模型文件夹"
+"zh-TW" = "開啟模型資料夾"
+"en" = "Open models folder"
+"ja" = "モデルフォルダーを開く"
+
 [model.count]
 "zh-CN" = "模型  %{count}"
 "zh-TW" = "模型  %{count}"

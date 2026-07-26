@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use gpui::{AnyElement, Context, IntoElement, div, prelude::*, px, svg};
-use gpui_component::StyledExt;
+use gpui_component::{StyledExt, tooltip::Tooltip};
 use rust_i18n::t;
 
 use crate::{model::ModelFamily, ui::UiPalette};
@@ -21,6 +21,7 @@ impl SettingsView {
         } else {
             t!("model.rescan").to_string()
         };
+        let open_folder_label = t!("model.open_folder").to_string();
 
         div()
             .size_full()
@@ -30,26 +31,57 @@ impl SettingsView {
             .child(
                 page_header(t!("settings.model_title").to_string(), palette).child(
                     div()
-                        .id("refresh-models")
                         .flex()
                         .items_center()
                         .gap_2()
-                        .rounded_md()
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .bg(palette.secondary)
-                        .text_color(palette.secondary_foreground)
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(palette.accent))
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh_models(cx)))
                         .child(
-                            svg()
-                                .path("icons/refresh-cw.svg")
-                                .size_4()
-                                .text_color(palette.primary),
+                            div()
+                                .id("open-model-directory")
+                                .size(px(28.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .bg(palette.secondary)
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(palette.accent))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.open_model_directory(cx)),
+                                )
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(open_folder_label.clone()).build(window, cx)
+                                })
+                                .child(
+                                    svg()
+                                        .path("icons/folder-open.svg")
+                                        .size_4()
+                                        .text_color(palette.primary),
+                                ),
                         )
-                        .child(refresh_label),
+                        .child(
+                            div()
+                                .id("refresh-models")
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .rounded_md()
+                                .px_3()
+                                .py_1()
+                                .text_xs()
+                                .bg(palette.secondary)
+                                .text_color(palette.secondary_foreground)
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(palette.accent))
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh_models(cx)))
+                                .child(
+                                    svg()
+                                        .path("icons/refresh-cw.svg")
+                                        .size_4()
+                                        .text_color(palette.primary),
+                                )
+                                .child(refresh_label),
+                        ),
                 ),
             )
             .child(

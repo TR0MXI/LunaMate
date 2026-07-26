@@ -54,6 +54,18 @@ _version = 2
 "en" = "Could not scan the models directory: %{error}"
 "ja" = "models ディレクトリをスキャンできませんでした: %{error}"
 
+[status.opening_model_directory]
+"zh-CN" = "正在打开模型文件夹"
+"zh-TW" = "正在開啟模型資料夾"
+"en" = "Opening the models folder"
+"ja" = "モデルフォルダーを開いています"
+
+[status.open_model_directory_failed]
+"zh-CN" = "无法打开模型文件夹：%{error}"
+"zh-TW" = "無法開啟模型資料夾：%{error}"
+"en" = "Could not open the models folder: %{error}"
+"ja" = "モデルフォルダーを開けませんでした: %{error}"
+
 [status.model_action_failed]
 "zh-CN" = "模型操作失败：%{error}"
 "zh-TW" = "模型操作失敗：%{error}"

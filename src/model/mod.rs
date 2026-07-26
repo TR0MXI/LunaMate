@@ -18,7 +18,7 @@ mod tests;
 pub(crate) use capabilities::ModelLoadDiagnostics;
 #[cfg(test)]
 pub(crate) use capabilities::{ModelDiagnosticCategory, ModelLoadDiagnostic};
-pub(crate) use catalog::{ModelCatalog, ModelFamily};
+pub(crate) use catalog::{ModelCatalog, ModelFamily, ensure_model_directory};
 pub(crate) use frame_scheduler::{
     FramePacer, FrameRateMeter, FrameWake, FrameWakeReceiver, frame_wake_channel,
 };

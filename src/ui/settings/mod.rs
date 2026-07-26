@@ -27,7 +27,7 @@ use crate::{
         LOGGING_MIN_FILE_SIZE_MB, LOGGING_MIN_KEEP_FILES, LoggingSettings, ModelWindowSize,
         ThemePreset,
     },
-    model::{ModelCatalog, ModelPreviewCapabilities},
+    model::{ModelCatalog, ModelPreviewCapabilities, ensure_model_directory},
 };
 
 use super::{apply, apply_language};
@@ -562,6 +562,31 @@ impl SettingsView {
     fn refresh_models(&mut self, cx: &mut Context<Self>) {
         let previous_selection = self.catalog.selected_relative_path().map(Path::to_path_buf);
         self.refresh_models_with_selection(previous_selection, cx);
+    }
+
+    fn open_model_directory(&mut self, cx: &mut Context<Self>) {
+        let root = self.catalog.root().to_path_buf();
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            let result = background
+                .spawn(async move {
+                    ensure_model_directory(&root)
+                        .map_err(|error| format!("{}：{error}", root.display()))?;
+                    Ok::<PathBuf, String>(root)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(directory) => {
+                    cx.open_with_system(&directory);
+                    this.set_status(t!("status.opening_model_directory").to_string(), cx);
+                }
+                Err(error) => this.set_status(
+                    t!("status.open_model_directory_failed", error = error).to_string(),
+                    cx,
+                ),
+            });
+        })
+        .detach();
     }
 
     fn refresh_models_with_selection(

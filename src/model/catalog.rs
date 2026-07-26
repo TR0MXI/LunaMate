@@ -13,6 +13,11 @@ use super::capabilities::ModelResourceResolver;
 const MODEL_FILE_SUFFIX: &str = ".model3.json";
 pub(in crate::model) const MAX_DISCOVERY_DEPTH: usize = 16;
 
+/// 确保模型根目录存在。
+pub(crate) fn ensure_model_directory(root: &Path) -> io::Result<()> {
+    fs::create_dir_all(root)
+}
+
 /// 表示一个可加载的 Live2D 模型清单；同一模型下的清单作为服装变体展示。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ModelVariant {
