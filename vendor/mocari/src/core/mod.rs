@@ -23,9 +23,9 @@ pub use blend::{
     BlendSlot, Rgb, blend_scalar_slots, blend_scalar_slots_clamped, multiply_rgb, screen_rgb,
 };
 pub use deformers::{
-    DeformerTransform, WarpInterpolation, rotation_deformer_transform_point,
-    transform_art_mesh_vertices_by_deformers, warp_deformer_transform_inside,
-    warp_deformer_transform_target,
+    DeformerTransform, RotationTarget, WarpInterpolation, WarpTarget,
+    rotation_deformer_transform_point, transform_art_mesh_vertices_by_deformers,
+    warp_deformer_transform_inside, warp_deformer_transform_target,
 };
 pub use ids::{DrawableId, Id, ParameterId, PartId};
 pub use interpolation::{

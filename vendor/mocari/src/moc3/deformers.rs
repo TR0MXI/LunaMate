@@ -3,7 +3,7 @@ use crate::{Result, core::Vector2};
 use super::{
     Moc3CountInfo, Moc3Header, Moc3SectionOffsets,
     compose::{
-        ComposedDeformer, ComposedDeformers, ComposedRotation, ComposedWarp, apply_composed_parent,
+        ComposedDeformer, ComposedDeformers, ComposedRotation, ComposedWarp, composed_parent_apply,
         parent_colors, parent_opacity_accum, parent_rotation_angle, parent_scale_accum,
     },
     keyform_bindings::{Moc3KeyformBindings, Moc3KeyformSlot},
@@ -347,8 +347,10 @@ impl Moc3Deformers {
                     }
                     let cols = usize::try_from(*self.warp_cols.get(specific)?).ok()?;
                     let rows = usize::try_from(*self.warp_rows.get(specific)?).ok()?;
-                    for point in &mut grid {
-                        *point = apply_composed_parent(&composed, parent, *point)?;
+                    // 控制点数量通常远多于美术网格顶点，父变形器只解析一次并批量应用。
+                    // 网格为空时跳过，保持与逐点实现一致的失败条件。
+                    if !grid.is_empty() {
+                        composed_parent_apply(&composed, parent)?.apply_slice(&mut grid)?;
                     }
                     let scale_accum = parent_scale_accum(&composed, parent);
                     let opacity = self.interpolated_warp_opacity(specific, &slots)?;
@@ -371,7 +373,8 @@ impl Moc3Deformers {
                     let slots =
                         self.rotation_keyform_slots(specific, bindings, parameter_values)?;
                     let rotation = self.interpolated_rotation(specific, &slots)?;
-                    let origin = apply_composed_parent(&composed, parent, rotation.translation)?;
+                    let origin =
+                        composed_parent_apply(&composed, parent)?.apply(rotation.translation)?;
                     let parent_angle =
                         parent_rotation_angle(&composed, parent, origin, rotation.translation)?;
                     let scale_accum = parent_scale_accum(&composed, parent);

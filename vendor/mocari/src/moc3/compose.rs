@@ -1,6 +1,4 @@
-use crate::core::{
-    Vector2, WarpInterpolation, rotation_deformer_transform_point, warp_deformer_transform_target,
-};
+use crate::core::{RotationTarget, Vector2, WarpInterpolation, WarpTarget};
 
 const ROTATION_PROBE_ITERATIONS: usize = 10;
 const ROTATION_PROBE_STEP_WARP_PARENT: f32 = -0.1;
@@ -19,16 +17,15 @@ pub(super) fn parent_rotation_angle(
         _ => ROTATION_PROBE_STEP_WARP_PARENT,
     };
 
+    // 所有探针都作用于同一个父变形器，网格不变量与旋转矩阵只需构造一次。
+    let parent = composed_parent_apply(composed, parent_index)?;
+
     let mut scale = 1.0f32;
     let mut direction = Vector2::default();
     for _ in 0..ROTATION_PROBE_ITERATIONS {
         let offset = step * scale;
 
-        let forward = apply_composed_parent(
-            composed,
-            parent_index,
-            Vector2::new(translation.x(), translation.y() + offset),
-        )?;
+        let forward = parent.apply(Vector2::new(translation.x(), translation.y() + offset))?;
         let dx = forward.x() - origin_world.x();
         let dy = forward.y() - origin_world.y();
         if dx != 0.0 || dy != 0.0 {
@@ -36,11 +33,7 @@ pub(super) fn parent_rotation_angle(
             break;
         }
 
-        let backward = apply_composed_parent(
-            composed,
-            parent_index,
-            Vector2::new(translation.x(), translation.y() - offset),
-        )?;
+        let backward = parent.apply(Vector2::new(translation.x(), translation.y() - offset))?;
         let dx = backward.x() - origin_world.x();
         let dy = backward.y() - origin_world.y();
         if dx != 0.0 || dy != 0.0 {
@@ -148,10 +141,12 @@ impl ComposedDeformers {
             return Some(());
         }
         let index = usize::try_from(parent_deformer_index).ok()?;
-        for vertex in vertices {
-            *vertex = apply_one(self.deformers.get(index)?, *vertex)?;
+        // 顶点为空时不解析变形器，保持与逐顶点实现一致：空网格不会因为父变形器
+        // 缺失或数据非法而失败。
+        if vertices.is_empty() {
+            return Some(());
         }
-        Some(())
+        ComposedApply::new(self.deformers.get(index)?)?.apply_slice(vertices)
     }
 
     pub(super) fn deformer_opacity(&self, parent_deformer_index: i32) -> f32 {
@@ -183,37 +178,66 @@ impl ComposedDeformers {
     }
 }
 
-pub(super) fn apply_one(deformer: &ComposedDeformer, point: Vector2) -> Option<Vector2> {
-    match deformer {
-        ComposedDeformer::Warp(warp) => warp_deformer_transform_target(
-            point,
-            &warp.grid,
-            warp.cols,
-            warp.rows,
-            WarpInterpolation::Quad,
-        ),
-        ComposedDeformer::Rotation(rotation) => Some(rotation_deformer_transform_point(
-            point,
-            rotation.angle_degrees,
-            rotation.scale,
-            rotation.origin,
-            rotation.flip_x,
-            rotation.flip_y,
-        )),
+/// 已解析并预校验的变形器应用体。
+///
+/// 把变形器查找、类型分派和每个变形器的不变量（warp 网格校验与外插基底、旋转
+/// 矩阵）提到顶点循环之外，使整段顶点共享同一次准备工作。
+pub(super) enum ComposedApply<'a> {
+    /// 父索引为负表示顶点直接落在世界坐标，无需变换。
+    Identity,
+    Warp(WarpTarget<'a>),
+    Rotation(RotationTarget),
+}
+
+impl<'a> ComposedApply<'a> {
+    pub(super) fn new(deformer: &'a ComposedDeformer) -> Option<Self> {
+        Some(match deformer {
+            ComposedDeformer::Warp(warp) => Self::Warp(WarpTarget::new(
+                &warp.grid,
+                warp.cols,
+                warp.rows,
+                WarpInterpolation::Quad,
+            )?),
+            ComposedDeformer::Rotation(rotation) => Self::Rotation(RotationTarget::new(
+                rotation.angle_degrees,
+                rotation.scale,
+                rotation.origin,
+                rotation.flip_x,
+                rotation.flip_y,
+            )),
+        })
+    }
+
+    pub(super) fn apply(&self, point: Vector2) -> Option<Vector2> {
+        match self {
+            Self::Identity => Some(point),
+            Self::Warp(warp) => warp.transform(point),
+            Self::Rotation(rotation) => Some(rotation.transform(point)),
+        }
+    }
+
+    pub(super) fn apply_slice(&self, points: &mut [Vector2]) -> Option<()> {
+        match self {
+            Self::Identity => Some(()),
+            Self::Warp(warp) => warp.transform_slice(points),
+            Self::Rotation(rotation) => {
+                rotation.transform_slice(points);
+                Some(())
+            }
+        }
     }
 }
 
-pub(super) fn apply_composed_parent(
+/// 解析父变形器并准备批量应用体。
+pub(super) fn composed_parent_apply(
     composed: &[Option<ComposedDeformer>],
     parent_index: i32,
-    point: Vector2,
-) -> Option<Vector2> {
+) -> Option<ComposedApply<'_>> {
     if parent_index < 0 {
-        return Some(point);
+        return Some(ComposedApply::Identity);
     }
     let index = usize::try_from(parent_index).ok()?;
-    let parent = composed.get(index)?.as_ref()?;
-    apply_one(parent, point)
+    ComposedApply::new(composed.get(index)?.as_ref()?)
 }
 
 pub(super) fn parent_scale_accum(composed: &[Option<ComposedDeformer>], parent_index: i32) -> f32 {

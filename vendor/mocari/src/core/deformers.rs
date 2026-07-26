@@ -17,6 +17,56 @@ pub enum DeformerTransform<'a> {
     },
 }
 
+/// 预计算旋转变形的 2×2 矩阵与平移。
+///
+/// 旋转矩阵只取决于变形器自身的角度、缩放和翻转，与被变换的顶点无关。批量
+/// 变换同一变形器下的顶点时先构造一次，可以避免每个顶点重复求三角函数。
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct RotationTarget {
+    m00: f32,
+    m01: f32,
+    m10: f32,
+    m11: f32,
+    translation: Vector2,
+}
+
+impl RotationTarget {
+    pub fn new(
+        angle_degrees: f32,
+        scale: f32,
+        translation: Vector2,
+        flip_x: bool,
+        flip_y: bool,
+    ) -> Self {
+        let theta = degrees_to_radian(angle_degrees);
+        let cos = theta.cos();
+        let sin = theta.sin();
+        let sign_x = if flip_x { -1.0 } else { 1.0 };
+        let sign_y = if flip_y { -1.0 } else { 1.0 };
+
+        Self {
+            m00: cos * scale * sign_x,
+            m01: -sin * scale * sign_y,
+            m10: sin * scale * sign_x,
+            m11: cos * scale * sign_y,
+            translation,
+        }
+    }
+
+    pub fn transform(&self, point: Vector2) -> Vector2 {
+        Vector2::new(
+            self.m00 * point.x() + self.m01 * point.y() + self.translation.x(),
+            self.m10 * point.x() + self.m11 * point.y() + self.translation.y(),
+        )
+    }
+
+    pub fn transform_slice(&self, points: &mut [Vector2]) {
+        for point in points {
+            *point = self.transform(*point);
+        }
+    }
+}
+
 pub fn rotation_deformer_transform_point(
     point: Vector2,
     angle_degrees: f32,
@@ -25,21 +75,7 @@ pub fn rotation_deformer_transform_point(
     flip_x: bool,
     flip_y: bool,
 ) -> Vector2 {
-    let theta = degrees_to_radian(angle_degrees);
-    let cos = theta.cos();
-    let sin = theta.sin();
-    let sign_x = if flip_x { -1.0 } else { 1.0 };
-    let sign_y = if flip_y { -1.0 } else { 1.0 };
-
-    let m00 = cos * scale * sign_x;
-    let m01 = -sin * scale * sign_y;
-    let m10 = sin * scale * sign_x;
-    let m11 = cos * scale * sign_y;
-
-    Vector2::new(
-        m00 * point.x() + m01 * point.y() + translation.x(),
-        m10 * point.x() + m11 * point.y() + translation.y(),
-    )
+    RotationTarget::new(angle_degrees, scale, translation, flip_x, flip_y).transform(point)
 }
 
 pub fn transform_art_mesh_vertices_by_deformers(
@@ -49,29 +85,26 @@ pub fn transform_art_mesh_vertices_by_deformers(
     let mut out = vertices.to_vec();
 
     for transform in transforms {
-        for vertex in &mut out {
-            *vertex = match *transform {
-                DeformerTransform::Rotation {
-                    angle_degrees,
-                    scale,
-                    translation,
-                    flip_x,
-                    flip_y,
-                } => rotation_deformer_transform_point(
-                    *vertex,
-                    angle_degrees,
-                    scale,
-                    translation,
-                    flip_x,
-                    flip_y,
-                ),
-                DeformerTransform::Warp {
-                    grid,
-                    cols,
-                    rows,
-                    interpolation,
-                } => warp_deformer_transform_target(*vertex, grid, cols, rows, interpolation)?,
-            };
+        // 顶点为空时不构造变形目标，保持与逐顶点实现一致：空网格不会因为
+        // 变形器数据非法而失败。
+        if out.is_empty() {
+            break;
+        }
+        match *transform {
+            DeformerTransform::Rotation {
+                angle_degrees,
+                scale,
+                translation,
+                flip_x,
+                flip_y,
+            } => RotationTarget::new(angle_degrees, scale, translation, flip_x, flip_y)
+                .transform_slice(&mut out),
+            DeformerTransform::Warp {
+                grid,
+                cols,
+                rows,
+                interpolation,
+            } => WarpTarget::new(grid, cols, rows, interpolation)?.transform_slice(&mut out)?,
         }
     }
 
@@ -84,23 +117,99 @@ pub enum WarpInterpolation {
     Triangle,
 }
 
-pub fn warp_deformer_transform_inside(
+/// 预校验后的 warp 变形目标。
+///
+/// `stride`、网格长度校验和外插基底都只取决于变形器网格本身，与被变换的顶点
+/// 无关。批量变换同一网格下的顶点时先构造一次，可以把这些不变量从每顶点路径
+/// 中移除；`warp_deformer_transform_target` 保留原有的单点可失败接口。
+#[derive(Debug, Copy, Clone)]
+pub struct WarpTarget<'a> {
+    grid: &'a [Vector2],
+    cols: usize,
+    rows: usize,
+    stride: usize,
+    interpolation: WarpInterpolation,
+    basis: WarpExtrapBasis,
+}
+
+impl<'a> WarpTarget<'a> {
+    /// 校验网格几何并预计算外插基底；网格无法表示 `cols`×`rows` 单元时返回 `None`。
+    pub fn new(
+        grid: &'a [Vector2],
+        cols: usize,
+        rows: usize,
+        interpolation: WarpInterpolation,
+    ) -> Option<Self> {
+        if cols == 0 || rows == 0 {
+            return None;
+        }
+        let stride = cols.checked_add(1)?;
+        let required = stride.checked_mul(rows.checked_add(1)?)?;
+        if grid.len() < required {
+            return None;
+        }
+
+        Some(Self {
+            grid,
+            cols,
+            rows,
+            stride,
+            interpolation,
+            // 四角只在网格更新时变化，外插顶点因此不必各自重建基底。
+            basis: WarpExtrapBasis::from_corners(grid, rows, cols, stride),
+        })
+    }
+
+    pub fn transform(&self, local_point: Vector2) -> Option<Vector2> {
+        let (x, y) = (local_point.x(), local_point.y());
+        if (0.0..1.0).contains(&x) && (0.0..1.0).contains(&y) {
+            return interpolate_inside(
+                local_point,
+                self.grid,
+                self.cols,
+                self.rows,
+                self.stride,
+                self.interpolation,
+            );
+        }
+
+        if !(-2.0..3.0).contains(&x) || !(-2.0..3.0).contains(&y) {
+            return Some(Vector2::new(
+                self.basis.dpdv.x() * x + self.basis.center.x() + self.basis.dpdu.x() * y,
+                self.basis.dpdv.y() * x + self.basis.center.y() + self.basis.dpdu.y() * y,
+            ));
+        }
+
+        let cell = self.basis.extrap_cell(
+            x,
+            y,
+            x * self.cols as f32,
+            y * self.rows as f32,
+            self.rows,
+            self.cols,
+            self.stride,
+            self.grid,
+        );
+        Some(triangle_interpolate(&cell))
+    }
+
+    pub fn transform_slice(&self, points: &mut [Vector2]) -> Option<()> {
+        for point in points {
+            *point = self.transform(*point)?;
+        }
+        Some(())
+    }
+}
+
+/// 在调用者已校验 `stride` 与网格长度后定位单元并插值。
+fn interpolate_inside(
     local_point: Vector2,
     grid: &[Vector2],
     cols: usize,
     rows: usize,
+    stride: usize,
     interpolation: WarpInterpolation,
 ) -> Option<Vector2> {
-    if !(0.0..1.0).contains(&local_point.x()) || !(0.0..1.0).contains(&local_point.y()) {
-        return None;
-    }
-
-    let stride = cols.checked_add(1)?;
-    let required = stride.checked_mul(rows.checked_add(1)?)?;
-    if grid.len() < required {
-        return None;
-    }
-
     let u = local_point.x() * cols as f32;
     let v = local_point.y() * rows as f32;
     let i = u.trunc() as usize;
@@ -123,6 +232,26 @@ pub fn warp_deformer_transform_inside(
     })
 }
 
+pub fn warp_deformer_transform_inside(
+    local_point: Vector2,
+    grid: &[Vector2],
+    cols: usize,
+    rows: usize,
+    interpolation: WarpInterpolation,
+) -> Option<Vector2> {
+    if !(0.0..1.0).contains(&local_point.x()) || !(0.0..1.0).contains(&local_point.y()) {
+        return None;
+    }
+
+    let stride = cols.checked_add(1)?;
+    let required = stride.checked_mul(rows.checked_add(1)?)?;
+    if grid.len() < required {
+        return None;
+    }
+
+    interpolate_inside(local_point, grid, cols, rows, stride, interpolation)
+}
+
 pub fn warp_deformer_transform_target(
     local_point: Vector2,
     grid: &[Vector2],
@@ -130,37 +259,7 @@ pub fn warp_deformer_transform_target(
     rows: usize,
     interpolation: WarpInterpolation,
 ) -> Option<Vector2> {
-    if (0.0..1.0).contains(&local_point.x()) && (0.0..1.0).contains(&local_point.y()) {
-        return warp_deformer_transform_inside(local_point, grid, cols, rows, interpolation);
-    }
-
-    let stride = cols.checked_add(1)?;
-    let required = stride.checked_mul(rows.checked_add(1)?)?;
-    if cols == 0 || rows == 0 || grid.len() < required {
-        return None;
-    }
-
-    let (x, y) = (local_point.x(), local_point.y());
-    let basis = WarpExtrapBasis::from_corners(grid, rows, cols, stride);
-
-    if !(-2.0..3.0).contains(&x) || !(-2.0..3.0).contains(&y) {
-        return Some(Vector2::new(
-            basis.dpdv.x() * x + basis.center.x() + basis.dpdu.x() * y,
-            basis.dpdv.y() * x + basis.center.y() + basis.dpdu.y() * y,
-        ));
-    }
-
-    let cell = basis.extrap_cell(
-        x,
-        y,
-        x * cols as f32,
-        y * rows as f32,
-        rows,
-        cols,
-        stride,
-        grid,
-    );
-    Some(triangle_interpolate(&cell))
+    WarpTarget::new(grid, cols, rows, interpolation)?.transform(local_point)
 }
 
 struct WarpCell {
@@ -172,6 +271,7 @@ struct WarpCell {
     p11: Vector2,
 }
 
+#[derive(Debug, Copy, Clone)]
 struct WarpExtrapBasis {
     center: Vector2,
     dpdu: Vector2,
