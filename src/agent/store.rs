@@ -11,58 +11,125 @@ use std::{
 
 use tokio::sync::Mutex;
 
-use crate::database::{Database, DatabaseError, StoredDocument};
+use crate::{
+    config::DEFAULT_PERSONA_ID,
+    database::{Database, DatabaseError, StoredDocument},
+};
 
 use super::session::{ChatError, ChatLimits, ChatSession, ChatSessionSnapshot};
 
 const DOCUMENT_SCOPE: &str = "agent";
-const DOCUMENT_KEY: &str = "chat-session";
+const DOCUMENT_KEY_PREFIX: &str = "chat-session/";
 const DOCUMENT_FORMAT_VERSION: u32 = 1;
 pub(super) const MAX_SESSION_BYTES: usize = 2 * 1024 * 1024;
 
-/// 序列化后台任务共享的单会话存储。
+/// 返回某个人格的会话文档键；人格 ID 已在配置层限制为安全字符集。
+fn document_key(persona_id: &str) -> String {
+    format!("{DOCUMENT_KEY_PREFIX}{persona_id}")
+}
+
+/// 返回某个人格已落盘的短期上下文占用；没有记录时返回零。
+///
+/// 只用于该人格当前未被加载的情况；已加载人格的实时占用由视图直接发布。
+///
+/// # Errors
+///
+/// 数据库读取、版本校验或快照解析失败时返回错误。
+pub(super) async fn persona_context_usage(
+    database: &Database,
+    persona_id: &str,
+) -> Result<(usize, usize), ChatStoreError> {
+    let Some(document) = database
+        .read_document(DOCUMENT_SCOPE, &document_key(persona_id))
+        .await
+        .map_err(ChatStoreError::Database)?
+    else {
+        return Ok((0, 0));
+    };
+    if document.format_version() != DOCUMENT_FORMAT_VERSION {
+        return Err(ChatStoreError::UnsupportedDocumentVersion(
+            document.format_version(),
+        ));
+    }
+    if document.contents().len() > MAX_SESSION_BYTES {
+        return Err(ChatStoreError::TooLarge);
+    }
+    let snapshot: ChatSessionSnapshot =
+        serde_json::from_slice(document.contents()).map_err(ChatStoreError::Format)?;
+    let bytes = snapshot
+        .messages
+        .iter()
+        .map(|message| message.content().len())
+        .sum();
+    Ok((snapshot.messages.len(), bytes))
+}
+
+/// 删除某个非当前人格的会话文档；当前人格由持有会话的视图直接写入空快照。
+///
+/// # Errors
+///
+/// 数据库删除失败时返回错误。
+pub(super) async fn delete_persona_session(
+    database: &Database,
+    persona_id: &str,
+) -> Result<(), ChatStoreError> {
+    database
+        .delete_document(DOCUMENT_SCOPE, &document_key(persona_id))
+        .await
+        .map_err(ChatStoreError::Database)
+}
+
+/// 序列化后台任务共享的单人格会话存储。
+///
+/// 每个人格拥有独立的短期上下文文档，切换人格等同于换一个存储实例，
+/// 因此迟到的写任务不可能把上一个人格的对话写进新人格的记录。
 pub(super) struct ChatSessionStore {
     database: Option<Arc<Database>>,
+    document_key: String,
     latest_revision: AtomicU64,
     highest_attempted_revision: AtomicU64,
     write_lock: Mutex<()>,
 }
 
 impl ChatSessionStore {
-    /// 从数据库恢复会话；数据库无记录时返回空会话。
+    /// 从数据库恢复指定人格的会话；数据库无记录时返回空会话。
     ///
     /// # Errors
     ///
     /// 数据库查询、快照解析或会话内容校验失败时返回错误。
     pub(super) async fn load(
         database: Arc<Database>,
+        persona_id: &str,
+        limits: ChatLimits,
     ) -> Result<(ChatSession, Arc<Self>), ChatStoreError> {
+        let key = document_key(persona_id);
         let session = if let Some(document) = database
-            .read_document(DOCUMENT_SCOPE, DOCUMENT_KEY)
+            .read_document(DOCUMENT_SCOPE, &key)
             .await
             .map_err(ChatStoreError::Database)?
         {
-            session_from_document(&document)?
+            session_from_document(&document, limits)?
         } else {
-            ChatSession::default()
+            ChatSession::new(limits).map_err(ChatStoreError::Session)?
         };
-        Ok((session, Arc::new(Self::new(Some(database)))))
+        Ok((session, Arc::new(Self::new(Some(database), key))))
     }
 
     /// 创建测试使用的可写空存储。
     #[cfg(test)]
     pub(super) fn empty(database: Arc<Database>) -> Arc<Self> {
-        Arc::new(Self::new(Some(database)))
+        Arc::new(Self::new(Some(database), document_key(DEFAULT_PERSONA_ID)))
     }
 
     /// 数据库初始化失败时保留会话运行能力，但明确拒绝伪装成持久化成功。
     pub(super) fn unavailable() -> Arc<Self> {
-        Arc::new(Self::new(None))
+        Arc::new(Self::new(None, document_key(DEFAULT_PERSONA_ID)))
     }
 
-    fn new(database: Option<Arc<Database>>) -> Self {
+    fn new(database: Option<Arc<Database>>, document_key: String) -> Self {
         Self {
             database,
+            document_key,
             // revision 只隔离当前进程的后台任务；重启后不能信任持久化值作为新起点。
             latest_revision: AtomicU64::new(0),
             highest_attempted_revision: AtomicU64::new(0),
@@ -95,7 +162,7 @@ impl ChatSessionStore {
         database
             .write_document(
                 DOCUMENT_SCOPE,
-                DOCUMENT_KEY,
+                &self.document_key,
                 DOCUMENT_FORMAT_VERSION,
                 &contents,
             )
@@ -121,7 +188,10 @@ impl ChatSessionStore {
     }
 }
 
-fn session_from_document(document: &StoredDocument) -> Result<ChatSession, ChatStoreError> {
+fn session_from_document(
+    document: &StoredDocument,
+    limits: ChatLimits,
+) -> Result<ChatSession, ChatStoreError> {
     if document.format_version() != DOCUMENT_FORMAT_VERSION {
         return Err(ChatStoreError::UnsupportedDocumentVersion(
             document.format_version(),
@@ -132,7 +202,7 @@ fn session_from_document(document: &StoredDocument) -> Result<ChatSession, ChatS
     }
     let snapshot: ChatSessionSnapshot =
         serde_json::from_slice(document.contents()).map_err(ChatStoreError::Format)?;
-    ChatSession::from_snapshot(snapshot, ChatLimits::default()).map_err(ChatStoreError::Session)
+    ChatSession::from_snapshot(snapshot, limits).map_err(ChatStoreError::Session)
 }
 
 fn serialize_snapshot(snapshot: &ChatSessionSnapshot) -> Result<Vec<u8>, ChatStoreError> {

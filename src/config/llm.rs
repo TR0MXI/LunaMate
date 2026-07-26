@@ -9,12 +9,29 @@ use url::{Host, Url};
 use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value};
 
 const MAX_MODELS: usize = 64;
-const MAX_ID_BYTES: usize = 64;
+pub(super) const MAX_ID_BYTES: usize = 64;
 const MAX_LABEL_BYTES: usize = 128;
 const MAX_MODEL_NAME_BYTES: usize = 256;
 const MAX_ENDPOINT_BYTES: usize = 2_048;
 const MAX_API_KEY_BYTES: usize = 4 * 1024;
-const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
+pub(super) const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
+
+/// 输出长度上限的可接受区间；上界只用于挡住明显的手写错误，实际上限由 Provider 决定。
+pub(crate) const MAX_OUTPUT_TOKENS_MIN: u32 = 1;
+pub(crate) const MAX_OUTPUT_TOKENS_MAX: u32 = 1_000_000;
+/// 思考预算 token 数区间，仅在思考强度取 `Budget` 时有效。
+pub(crate) const REASONING_BUDGET_MIN: u32 = 0;
+pub(crate) const REASONING_BUDGET_MAX: u32 = 1_000_000;
+pub(crate) const TEMPERATURE_MIN: f64 = 0.0;
+pub(crate) const TEMPERATURE_MAX: f64 = 2.0;
+pub(crate) const TOP_P_MIN: f64 = 0.0;
+pub(crate) const TOP_P_MAX: f64 = 1.0;
+
+/// 设置界面在启用某个高级参数时预填的建议值；未启用时不会发送该参数。
+pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4_096;
+pub(crate) const DEFAULT_REASONING_BUDGET: u32 = 8_192;
+pub(crate) const DEFAULT_TEMPERATURE: f64 = 1.0;
+pub(crate) const DEFAULT_TOP_P: f64 = 1.0;
 
 /// LunaMate 配置 schema 支持的稳定 Provider。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,8 +139,141 @@ impl LlmProvider {
     }
 }
 
+/// 供应商的思考强度档位；`Budget` 用 token 数直接表达思考预算。
+///
+/// `Off` 对应上游"显式关闭思考"，与"不发送该参数"是两种不同语义，因此高级设置里
+/// 用 `Option<ReasoningEffort>` 的 `None` 表示沿用 Provider 默认值。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReasoningEffort {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+    Budget(u32),
+}
+
+/// 除 `Budget` 外的全部档位，供设置界面按固定顺序渲染选择器。
+pub(crate) const REASONING_EFFORT_LEVELS: [ReasoningEffort; 7] = [
+    ReasoningEffort::Off,
+    ReasoningEffort::Minimal,
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
+    ReasoningEffort::XHigh,
+    ReasoningEffort::Max,
+];
+
+impl ReasoningEffort {
+    /// 返回写入配置文件的稳定小写标识；`Budget` 的 token 数单独存放在同级键。
+    pub(crate) const fn id(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+            Self::Budget(_) => "budget",
+        }
+    }
+
+    /// 从持久化标识与可选预算恢复档位；未知标识保持为配置错误。
+    fn from_id(id: &str, budget: Option<u32>) -> Option<Self> {
+        if id == "budget" {
+            return Some(Self::Budget(budget.unwrap_or(DEFAULT_REASONING_BUDGET)));
+        }
+        REASONING_EFFORT_LEVELS
+            .into_iter()
+            .find(|level| level.id() == id)
+    }
+
+    /// 返回 `Budget` 携带的 token 数，供设置界面回填数值输入框。
+    pub(crate) const fn budget(self) -> Option<u32> {
+        match self {
+            Self::Budget(tokens) => Some(tokens),
+            _ => None,
+        }
+    }
+}
+
+/// 供应商的可选请求参数；每个字段的 `None` 表示不发送并沿用 Provider 默认值。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct LlmAdvancedOptions {
+    pub(crate) reasoning_effort: Option<ReasoningEffort>,
+    pub(crate) max_output_tokens: Option<u32>,
+    pub(crate) temperature: Option<f64>,
+    pub(crate) top_p: Option<f64>,
+}
+
+impl LlmAdvancedOptions {
+    /// 校验各高级参数落在可接受区间内。
+    fn normalize(&mut self) -> Result<(), ConfigWriteError> {
+        if let Some(ReasoningEffort::Budget(tokens)) = self.reasoning_effort
+            && !(REASONING_BUDGET_MIN..=REASONING_BUDGET_MAX).contains(&tokens)
+        {
+            return Err(invalid(
+                t!(
+                    "llm.error.out_of_range",
+                    field = t!("llm.reasoning_budget"),
+                    min = REASONING_BUDGET_MIN,
+                    max = REASONING_BUDGET_MAX
+                )
+                .to_string(),
+            ));
+        }
+        if let Some(tokens) = self.max_output_tokens
+            && !(MAX_OUTPUT_TOKENS_MIN..=MAX_OUTPUT_TOKENS_MAX).contains(&tokens)
+        {
+            return Err(invalid(
+                t!(
+                    "llm.error.out_of_range",
+                    field = t!("llm.max_output_tokens"),
+                    min = MAX_OUTPUT_TOKENS_MIN,
+                    max = MAX_OUTPUT_TOKENS_MAX
+                )
+                .to_string(),
+            ));
+        }
+        check_ratio(
+            self.temperature,
+            TEMPERATURE_MIN,
+            TEMPERATURE_MAX,
+            t!("llm.temperature").as_ref(),
+        )?;
+        check_ratio(self.top_p, TOP_P_MIN, TOP_P_MAX, t!("llm.top_p").as_ref())?;
+        Ok(())
+    }
+}
+
+fn check_ratio(
+    value: Option<f64>,
+    min: f64,
+    max: f64,
+    field: &str,
+) -> Result<(), ConfigWriteError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if !value.is_finite() || value < min || value > max {
+        return Err(invalid(
+            t!(
+                "llm.error.out_of_range",
+                field = field,
+                min = format!("{min}"),
+                max = format!("{max}")
+            )
+            .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// 一个可选择的语言模型配置；API key 由用户直接填写并保存在本地配置中。
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct LlmModelConfig {
     pub(crate) id: String,
     pub(crate) label: String,
@@ -131,6 +281,7 @@ pub(crate) struct LlmModelConfig {
     pub(crate) model: String,
     pub(crate) endpoint: Option<String>,
     pub(crate) api_key: Option<String>,
+    pub(crate) advanced: LlmAdvancedOptions,
 }
 
 impl LlmModelConfig {
@@ -153,6 +304,7 @@ impl LlmModelConfig {
         self.api_key =
             normalize_optional(&self.api_key, MAX_API_KEY_BYTES, t!("llm.api_key").as_ref())?;
         self.endpoint = normalize_endpoint(self.provider, self.endpoint.as_deref())?;
+        self.advanced.normalize()?;
         Ok(())
     }
 }
@@ -167,16 +319,18 @@ impl fmt::Debug for LlmModelConfig {
             .field("model", &self.model)
             .field("endpoint", &self.endpoint)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("advanced", &self.advanced)
             .finish()
     }
 }
 
-/// 一次性发布的语言模型、当前选择与系统提示词配置。
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// 一次性发布的供应商目录与当前默认供应商。
+///
+/// 系统提示词属于人格配置域，未绑定供应商的人格才会回退到这里的默认选择。
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct LlmSettings {
     pub(crate) models: Vec<LlmModelConfig>,
     pub(crate) selected_model: Option<String>,
-    pub(crate) system_prompt: String,
 }
 
 impl LlmSettings {
@@ -186,20 +340,16 @@ impl LlmSettings {
         self.models.iter().find(|model| model.id == selected)
     }
 
+    /// 按 ID 查找供应商条目，供已绑定供应商的人格解析实际连接配置。
+    pub(crate) fn model(&self, id: &str) -> Option<&LlmModelConfig> {
+        self.models.iter().find(|model| model.id == id)
+    }
+
     /// 规范化并校验准备发布的完整配置。
     pub(crate) fn normalized(mut self) -> Result<Self, ConfigWriteError> {
         if self.models.len() > MAX_MODELS {
             return Err(invalid(
                 t!("llm.error.max_models", max = MAX_MODELS).to_string(),
-            ));
-        }
-        if self.system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
-            return Err(invalid(
-                t!(
-                    "llm.error.system_prompt_too_long",
-                    max = MAX_SYSTEM_PROMPT_BYTES
-                )
-                .to_string(),
             ));
         }
 
@@ -351,12 +501,6 @@ pub(super) fn parse_llm_settings(
             None => warnings.push("llm.selected 必须是字符串，已忽略".to_owned()),
         }
     }
-    if let Some(prompt) = llm.get("system_prompt") {
-        match prompt.as_str() {
-            Some(prompt) => settings.system_prompt = prompt.to_owned(),
-            None => warnings.push("llm.system_prompt 必须是字符串，已忽略".to_owned()),
-        }
-    }
     if let Some(models) = llm.get("models") {
         match models.as_array_of_tables() {
             Some(models) => {
@@ -392,16 +536,6 @@ pub(super) fn parse_llm_settings(
         }
     }
 
-    if settings.system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
-        warnings.push(
-            t!(
-                "llm.error.system_prompt_too_long",
-                max = MAX_SYSTEM_PROMPT_BYTES
-            )
-            .to_string(),
-        );
-        settings.system_prompt = String::new();
-    }
     settings.selected_model = settings
         .selected_model
         .map(|selected| selected.trim().to_owned())
@@ -435,7 +569,65 @@ fn parse_llm_model(table: &Table) -> Result<LlmModelConfig, ConfigWriteError> {
         model: required("model")?,
         endpoint: optional("endpoint"),
         api_key: optional("api_key"),
+        advanced: parse_advanced_options(table)?,
     })
+}
+
+/// 单个高级参数写错时整条供应商都会被跳过，因此这里返回错误而不是静默降级。
+fn parse_advanced_options(table: &Table) -> Result<LlmAdvancedOptions, ConfigWriteError> {
+    let integer = |key: &'static str| -> Result<Option<u32>, ConfigWriteError> {
+        match table.get(key) {
+            None => Ok(None),
+            Some(item) => item
+                .as_integer()
+                .and_then(|value| u32::try_from(value).ok())
+                .map(Some)
+                .ok_or_else(|| ConfigWriteError::InvalidValue(format!("{key} 必须是非负整数"))),
+        }
+    };
+    let ratio = |key: &'static str| -> Result<Option<f64>, ConfigWriteError> {
+        match table.get(key) {
+            None => Ok(None),
+            // 手写配置常把 1.0 写成 1，这里统一接受整数与浮点两种字面量。
+            Some(item) => item
+                .as_float()
+                .or_else(|| item.as_integer().map(|value| value as f64))
+                .map(Some)
+                .ok_or_else(|| ConfigWriteError::InvalidValue(format!("{key} 必须是数字"))),
+        }
+    };
+
+    let budget = integer("reasoning_budget")?;
+    let reasoning_effort = match table.get("reasoning_effort") {
+        None => None,
+        Some(item) => {
+            let id = item.as_str().ok_or_else(|| {
+                ConfigWriteError::InvalidValue("reasoning_effort 必须是字符串".to_owned())
+            })?;
+            Some(
+                ReasoningEffort::from_id(id, budget)
+                    .ok_or_else(|| ConfigWriteError::InvalidValue(format!("未知思考强度：{id}")))?,
+            )
+        }
+    };
+
+    Ok(LlmAdvancedOptions {
+        reasoning_effort,
+        max_output_tokens: integer("max_output_tokens")?,
+        temperature: ratio("temperature")?,
+        top_p: ratio("top_p")?,
+    })
+}
+
+/// 读取旧版全局系统提示词，仅用于首次生成默认人格。
+pub(super) fn parse_legacy_system_prompt(document: &DocumentMut) -> String {
+    document
+        .get("llm")
+        .and_then(|llm| llm.get("system_prompt"))
+        .and_then(Item::as_str)
+        .filter(|prompt| prompt.len() <= MAX_SYSTEM_PROMPT_BYTES)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSettings) {
@@ -450,10 +642,6 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
         ),
         None => remove_key(document, "llm", "selected"),
     }
-    set_item_value(
-        &mut document["llm"]["system_prompt"],
-        Value::from(settings.system_prompt.clone()),
-    );
 
     let existing_models = document
         .get("llm")
@@ -483,7 +671,38 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
             table.remove("api_key");
         }
         table.remove("api_key_env");
+        write_advanced_options(&mut table, &model.advanced);
         models.push(table);
     }
     document["llm"]["models"] = Item::ArrayOfTables(models);
+}
+
+fn write_advanced_options(table: &mut Table, advanced: &LlmAdvancedOptions) {
+    let mut write_optional = |key: &str, value: Option<Value>| match value {
+        Some(value) => set_item_value(&mut table[key], value),
+        None => {
+            table.remove(key);
+        }
+    };
+    write_optional(
+        "reasoning_effort",
+        advanced
+            .reasoning_effort
+            .map(|effort| Value::from(effort.id())),
+    );
+    write_optional(
+        "reasoning_budget",
+        advanced
+            .reasoning_effort
+            .and_then(ReasoningEffort::budget)
+            .map(|tokens| Value::from(i64::from(tokens))),
+    );
+    write_optional(
+        "max_output_tokens",
+        advanced
+            .max_output_tokens
+            .map(|tokens| Value::from(i64::from(tokens))),
+    );
+    write_optional("temperature", advanced.temperature.map(Value::from));
+    write_optional("top_p", advanced.top_p.map(Value::from));
 }

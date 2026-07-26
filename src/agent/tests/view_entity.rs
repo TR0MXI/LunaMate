@@ -8,14 +8,16 @@ use std::{pin::Pin, sync::Arc, time::Duration};
 use futures::{channel::mpsc, future::Future};
 use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
 
+use super::ConfigGuard;
 use crate::{
     agent::{
+        AgentMemoryAccess,
         service::{ChatBackend, ChatServiceRequest, ChatStreamEvent},
         session::ChatSession,
         store::ChatSessionStore,
         view::AgentView,
     },
-    config::{CONFIG, LlmSettings},
+    config::{CONFIG, DEFAULT_PERSONA_ID, LlmSettings},
 };
 
 /// 永不产出事件的 fake backend；保证测试不会发起任何网络请求。
@@ -34,37 +36,9 @@ impl ChatBackend for SilentBackend {
     }
 }
 
-/// `CONFIG` 是进程级全局状态，测试线程并发修改会互相覆盖已发布的模型快照。
-static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// 在作用域内独占并恢复全局 LLM 配置，避免并行测试互相干扰。
-struct ConfigGuard {
-    _guard: std::sync::MutexGuard<'static, ()>,
-    previous: LlmSettings,
-}
-
-impl ConfigGuard {
-    fn without_model() -> Self {
-        Self::publish(LlmSettings::default())
-    }
-
-    fn publish(settings: LlmSettings) -> Self {
-        let guard = CONFIG_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous = CONFIG.llm_settings().as_ref().clone();
-        CONFIG.publish_llm_settings_for_test(settings);
-        Self {
-            _guard: guard,
-            previous,
-        }
-    }
-}
-
-impl Drop for ConfigGuard {
-    fn drop(&mut self) {
-        CONFIG.publish_llm_settings_for_test(self.previous.clone());
-    }
+/// 未配置任何供应商时的固定夹具。
+fn config_without_model() -> ConfigGuard {
+    ConfigGuard::publish(LlmSettings::default())
 }
 
 fn mount(
@@ -80,8 +54,11 @@ fn mount(
     let (view, cx) = cx.add_window_view(|window, cx| {
         let mut view = AgentView::new(
             CONFIG.llm_settings(),
+            CONFIG.persona_settings(),
+            DEFAULT_PERSONA_ID.to_owned(),
             ChatSession::default(),
             ChatSessionStore::unavailable(),
+            AgentMemoryAccess::default(),
             initial_status,
             window,
             cx,
@@ -117,7 +94,7 @@ fn a_view_without_an_initial_status_starts_with_a_hidden_reply(cx: &mut TestAppC
 
 #[gpui::test]
 fn submitting_without_a_configured_model_shows_a_status_instead_of_a_turn(cx: &mut TestAppContext) {
-    let _config = ConfigGuard::without_model();
+    let _config = config_without_model();
     let (view, cx) = mount(cx, Arc::new(SilentBackend), None);
 
     view.update(cx, |view, cx| {

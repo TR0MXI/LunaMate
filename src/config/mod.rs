@@ -6,6 +6,7 @@
 mod appearance;
 mod document;
 mod llm;
+mod persona;
 mod types;
 
 #[cfg(test)]
@@ -32,8 +33,20 @@ use document::{
     set_item_value, validate_relative_path, write_appearance, write_config_file,
     write_logging_settings, write_window_position,
 };
-pub(crate) use llm::{LLM_PROVIDERS, LlmModelConfig, LlmProvider, LlmSettings, SharedLlmSettings};
+pub(crate) use llm::{
+    DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REASONING_BUDGET, DEFAULT_TEMPERATURE, DEFAULT_TOP_P,
+    LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
+    MAX_OUTPUT_TOKENS_MAX, MAX_OUTPUT_TOKENS_MIN, REASONING_BUDGET_MAX, REASONING_BUDGET_MIN,
+    REASONING_EFFORT_LEVELS, ReasoningEffort, SharedLlmSettings, TEMPERATURE_MAX, TEMPERATURE_MIN,
+    TOP_P_MAX, TOP_P_MIN,
+};
 use llm::{parse_llm_settings, write_llm_settings};
+pub(crate) use persona::{
+    CONTEXT_KIB_MAX, CONTEXT_KIB_MIN, CONTEXT_MESSAGES_MAX, CONTEXT_MESSAGES_MIN,
+    DEFAULT_CONTEXT_KIB, DEFAULT_CONTEXT_MESSAGES, DEFAULT_PERSONA_ID, MAX_PERSONAS, PersonaConfig,
+    PersonaContextLimits, PersonaSettings, SharedPersonaSettings,
+};
+use persona::{parse_persona_settings, write_persona_settings};
 use types::{
     CUSTOM_FRAME_RATE_KEY, CUSTOM_FRAME_RATE_NAME, FOLLOW_DISPLAY_FRAME_RATE_NAME,
     UNLIMITED_FRAME_RATE_NAME,
@@ -88,6 +101,7 @@ struct LoadedConfig {
     snapshot: ConfigSnapshot,
     window_positions: WindowPositions,
     llm: LlmSettings,
+    persona: PersonaSettings,
 }
 
 impl Default for LoadedConfig {
@@ -105,6 +119,7 @@ impl Default for LoadedConfig {
             snapshot: ConfigSnapshot::default(),
             window_positions: WindowPositions::default(),
             llm: LlmSettings::default(),
+            persona: PersonaSettings::default(),
         }
     }
 }
@@ -128,7 +143,9 @@ pub(crate) struct LunaConfig {
     snapshot: ArcSwap<ConfigSnapshot>,
     window_positions: Mutex<WindowPositions>,
     llm: ArcSwap<LlmSettings>,
+    persona: ArcSwap<PersonaSettings>,
     llm_request_revision: AtomicU64,
+    persona_request_revision: AtomicU64,
     model_request_revision: AtomicU64,
     frame_rate_request_revision: AtomicU64,
     model_window_size_request_revision: AtomicU64,
@@ -178,7 +195,9 @@ impl LunaConfig {
             snapshot: ArcSwap::from_pointee(loaded.snapshot),
             window_positions: Mutex::new(loaded.window_positions),
             llm: ArcSwap::from_pointee(loaded.llm),
+            persona: ArcSwap::from_pointee(loaded.persona),
             llm_request_revision: AtomicU64::new(0),
+            persona_request_revision: AtomicU64::new(0),
             model_request_revision: AtomicU64::new(0),
             frame_rate_request_revision: AtomicU64::new(0),
             model_window_size_request_revision: AtomicU64::new(0),
@@ -299,9 +318,14 @@ impl LunaConfig {
         self.appearance.load_full()
     }
 
-    /// 返回一次性发布的语言模型与系统提示词快照。
+    /// 返回一次性发布的供应商目录快照。
     pub(crate) fn llm_settings(&self) -> SharedLlmSettings {
         self.llm.load_full()
+    }
+
+    /// 返回一次性发布的人格目录与当前人格快照。
+    pub(crate) fn persona_settings(&self) -> SharedPersonaSettings {
+        self.persona.load_full()
     }
 
     /// 只替换进程内已发布的 LLM 快照，不触碰配置文件。
@@ -310,6 +334,12 @@ impl LunaConfig {
     #[cfg(test)]
     pub(crate) fn publish_llm_settings_for_test(&self, settings: LlmSettings) {
         self.llm.store(Arc::new(settings));
+    }
+
+    /// 只替换进程内已发布的人格快照，不触碰配置文件。
+    #[cfg(test)]
+    pub(crate) fn publish_persona_settings_for_test(&self, settings: PersonaSettings) {
+        self.persona.store(Arc::new(settings));
     }
 
     /// 返回指定窗口最近一次观察到的位置。
@@ -745,6 +775,36 @@ impl LunaConfig {
             return Ok(None);
         }
         self.llm.store(settings.clone());
+        Ok(Some(settings))
+    }
+
+    /// 为一份由人格设置编辑器提交的草稿分配单调 revision。
+    pub(crate) fn reserve_persona_settings_revision(&self) -> u64 {
+        self.reserve_request_revision(&self.persona_request_revision)
+    }
+
+    /// 仅当该草稿仍是最新请求时才写入并发布；旧后台任务会被无害丢弃。
+    ///
+    /// # Errors
+    ///
+    /// 人格字段不合法，或配置文件无法持久化时返回错误。
+    pub(crate) fn set_persona_settings_at_revision(
+        &self,
+        settings: PersonaSettings,
+        revision: u64,
+    ) -> Result<Option<SharedPersonaSettings>, ConfigWriteError> {
+        let settings = Arc::new(settings.normalized()?);
+        let _guard = self.write_lock.lock();
+        if self.persona_request_revision.load(Ordering::Relaxed) != revision {
+            return Ok(None);
+        }
+        self.edit_document_locked(|document| write_persona_settings(document, &settings))?;
+        // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
+        let _revision_guard = self.revision_lock.lock();
+        if self.persona_request_revision.load(Ordering::Relaxed) != revision {
+            return Ok(None);
+        }
+        self.persona.store(settings.clone());
         Ok(Some(settings))
     }
 

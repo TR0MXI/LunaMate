@@ -5,7 +5,7 @@ use std::{collections::VecDeque, error::Error, fmt};
 use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
-use super::media::ImageAttachment;
+use super::{media::ImageAttachment, memory::ContextUsage};
 
 const SNAPSHOT_VERSION: u32 = 1;
 const MAX_SESSION_IMAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -153,6 +153,25 @@ impl ChatSession {
     /// 返回用于界面展示的全部有界消息。
     pub(super) fn messages(&self) -> &VecDeque<ChatMessage> {
         &self.messages
+    }
+
+    /// 返回当前短期上下文占用与生效上限，供人格设置界面展示。
+    pub(super) fn usage(&self) -> ContextUsage {
+        ContextUsage {
+            messages: self.messages.len(),
+            max_messages: self.limits.max_messages,
+            bytes: self.total_bytes,
+            max_bytes: self.limits.max_bytes,
+        }
+    }
+
+    /// 清空短期上下文；调用方必须已经取消并中断活动请求。
+    pub(super) fn clear(&mut self) {
+        self.interrupt_active_response();
+        self.messages.clear();
+        self.total_bytes = 0;
+        self.total_image_bytes = 0;
+        self.active_response = None;
     }
 
     /// 返回当前活动响应 ID。
@@ -363,16 +382,20 @@ impl ChatSession {
             {
                 return Err(ChatError::InvalidSnapshot);
             }
-            if user.content.len() > limits.max_bytes || assistant.content.len() > limits.max_bytes {
-                return Err(ChatError::MessageTooLarge);
-            }
-            if user
+            // 上下文上限属于人格配置，用户调小后旧快照仍必须可用：结构损坏是错误，
+            // 单纯装不下的历史轮次直接丢弃，等价于窗口向前滚动。
+            let image_bytes = user.image.as_ref().map_or(0, ImageAttachment::byte_len);
+            let fits = user
                 .content
                 .len()
                 .checked_add(assistant.content.len())
-                .is_none_or(|turn_bytes| turn_bytes > limits.max_bytes)
-            {
-                return Err(ChatError::MessageTooLarge);
+                .is_some_and(|turn_bytes| turn_bytes <= limits.max_bytes)
+                && session
+                    .total_image_bytes
+                    .checked_add(image_bytes)
+                    .is_some_and(|total| total <= MAX_SESSION_IMAGE_BYTES);
+            if !fits {
+                continue;
             }
 
             let turn_id = allocate(&mut session.next_turn_id);
@@ -386,12 +409,7 @@ impl ChatSession {
                 .total_bytes
                 .saturating_add(user.content.len())
                 .saturating_add(assistant.content.len());
-            session.total_image_bytes = session
-                .total_image_bytes
-                .saturating_add(user.image.as_ref().map_or(0, ImageAttachment::byte_len));
-            if session.total_image_bytes > MAX_SESSION_IMAGE_BYTES {
-                return Err(ChatError::MessageTooLarge);
-            }
+            session.total_image_bytes = session.total_image_bytes.saturating_add(image_bytes);
             session.messages.push_back(ChatMessage {
                 id: user_id,
                 turn_id,

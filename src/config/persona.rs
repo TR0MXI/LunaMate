@@ -1,0 +1,432 @@
+//! 定义人格配置、上下文限制与旧版全局系统提示词的一次性迁移。
+//!
+//! 人格是记忆的归属单位：人格 ID 同时作为会话文档键和 `agent_memory.agent_id`，
+//! 因此列表必须始终至少保留一条，删除最后一条人格会让已有记忆失去可管理的入口。
+
+use std::{collections::HashSet, sync::Arc};
+
+use rust_i18n::t;
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
+
+use super::{
+    ConfigWriteError, ensure_table_like, llm::MAX_ID_BYTES, llm::MAX_SYSTEM_PROMPT_BYTES,
+    llm::parse_legacy_system_prompt, remove_key, set_item_value,
+};
+
+pub(crate) const MAX_PERSONAS: usize = 32;
+const MAX_NAME_BYTES: usize = 128;
+
+/// 首次迁移生成的默认人格 ID；已存在同名条目时不会重复创建。
+pub(crate) const DEFAULT_PERSONA_ID: &str = "default";
+
+/// 上下文条数与字节上限的可接受区间。下界保证至少能容纳一轮完整对话。
+pub(crate) const CONTEXT_MESSAGES_MIN: u32 = 2;
+pub(crate) const CONTEXT_MESSAGES_MAX: u32 = 512;
+pub(crate) const CONTEXT_KIB_MIN: u32 = 1;
+pub(crate) const CONTEXT_KIB_MAX: u32 = 1_024;
+
+/// 未显式设置时实际生效的上下文上限，同时用于设置界面预填。
+pub(crate) const DEFAULT_CONTEXT_MESSAGES: u32 = 64;
+pub(crate) const DEFAULT_CONTEXT_KIB: u32 = 64;
+
+/// 单个人格的短期上下文上限；`None` 表示沿用默认值。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PersonaContextLimits {
+    pub(crate) max_messages: Option<u32>,
+    pub(crate) max_kib: Option<u32>,
+}
+
+impl PersonaContextLimits {
+    /// 返回实际生效的消息条数上限。
+    pub(crate) fn effective_messages(self) -> u32 {
+        self.max_messages.unwrap_or(DEFAULT_CONTEXT_MESSAGES)
+    }
+
+    /// 返回实际生效的上下文字节上限。
+    pub(crate) fn effective_bytes(self) -> usize {
+        let kib = self.max_kib.unwrap_or(DEFAULT_CONTEXT_KIB);
+        usize::try_from(kib)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(1024)
+    }
+
+    fn normalize(&mut self) -> Result<(), ConfigWriteError> {
+        check_range(
+            self.max_messages,
+            CONTEXT_MESSAGES_MIN,
+            CONTEXT_MESSAGES_MAX,
+            t!("persona.context_messages").as_ref(),
+        )?;
+        check_range(
+            self.max_kib,
+            CONTEXT_KIB_MIN,
+            CONTEXT_KIB_MAX,
+            t!("persona.context_size").as_ref(),
+        )
+    }
+}
+
+fn check_range(
+    value: Option<u32>,
+    min: u32,
+    max: u32,
+    field: &str,
+) -> Result<(), ConfigWriteError> {
+    match value {
+        Some(value) if !(min..=max).contains(&value) => Err(invalid(
+            t!(
+                "llm.error.out_of_range",
+                field = field,
+                min = min,
+                max = max
+            )
+            .to_string(),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// 一个可切换的人格；`model` 为空时回退到全局默认供应商。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PersonaConfig {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) system_prompt: String,
+    pub(crate) model: Option<String>,
+    pub(crate) context: PersonaContextLimits,
+}
+
+impl PersonaConfig {
+    /// 使用默认上下文限制创建一个未绑定供应商的人格。
+    pub(crate) fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            system_prompt: String::new(),
+            model: None,
+            context: PersonaContextLimits::default(),
+        }
+    }
+
+    fn normalize(&mut self) -> Result<(), ConfigWriteError> {
+        self.id = normalized_id(&self.id)?;
+        self.name = normalized_required(&self.name, t!("persona.name").as_ref(), MAX_NAME_BYTES)?;
+        if self.system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
+            return Err(invalid(
+                t!(
+                    "llm.error.system_prompt_too_long",
+                    max = MAX_SYSTEM_PROMPT_BYTES
+                )
+                .to_string(),
+            ));
+        }
+        self.model = self
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_owned);
+        if let Some(model) = &self.model
+            && model.len() > MAX_ID_BYTES
+        {
+            return Err(invalid(
+                t!(
+                    "llm.error.too_long",
+                    field = t!("persona.provider"),
+                    max = MAX_ID_BYTES
+                )
+                .to_string(),
+            ));
+        }
+        self.context.normalize()
+    }
+}
+
+/// 一次性发布的人格目录与当前人格。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PersonaSettings {
+    pub(crate) personas: Vec<PersonaConfig>,
+    pub(crate) selected: Option<String>,
+}
+
+impl Default for PersonaSettings {
+    fn default() -> Self {
+        Self {
+            personas: vec![PersonaConfig::new(
+                DEFAULT_PERSONA_ID,
+                t!("persona.default_name").to_string(),
+            )],
+            selected: Some(DEFAULT_PERSONA_ID.to_owned()),
+        }
+    }
+}
+
+impl PersonaSettings {
+    /// 返回当前人格；选择缺失时回退到第一条，因此列表非空即总能返回。
+    pub(crate) fn active(&self) -> Option<&PersonaConfig> {
+        self.selected
+            .as_deref()
+            .and_then(|selected| self.personas.iter().find(|persona| persona.id == selected))
+            .or_else(|| self.personas.first())
+    }
+
+    /// 规范化并校验准备发布的完整人格配置。
+    pub(crate) fn normalized(mut self) -> Result<Self, ConfigWriteError> {
+        if self.personas.is_empty() {
+            return Err(invalid(t!("persona.error.empty").to_string()));
+        }
+        if self.personas.len() > MAX_PERSONAS {
+            return Err(invalid(
+                t!("persona.error.max_personas", max = MAX_PERSONAS).to_string(),
+            ));
+        }
+
+        let mut ids = HashSet::with_capacity(self.personas.len());
+        for persona in &mut self.personas {
+            persona.normalize()?;
+            if !ids.insert(persona.id.clone()) {
+                return Err(invalid(
+                    t!("persona.error.duplicate_id", id = &persona.id).to_string(),
+                ));
+            }
+        }
+
+        self.selected = self
+            .selected
+            .as_deref()
+            .map(str::trim)
+            .filter(|selected| !selected.is_empty())
+            .map(str::to_owned);
+        if let Some(selected) = &self.selected
+            && !ids.contains(selected)
+        {
+            return Err(invalid(
+                t!("persona.error.missing_selected", id = selected).to_string(),
+            ));
+        }
+        Ok(self)
+    }
+}
+
+/// 为跨线程任务共享当前人格配置提供清晰的所有权类型。
+pub(crate) type SharedPersonaSettings = Arc<PersonaSettings>;
+
+fn normalized_id(id: &str) -> Result<String, ConfigWriteError> {
+    let id = normalized_required(id, t!("persona.id").as_ref(), MAX_ID_BYTES)?;
+    // ID 会直接进入数据库文档键与 agent_memory.agent_id，必须限制为安全字符集。
+    if !id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(invalid(t!("llm.error.id_characters").to_string()));
+    }
+    Ok(id)
+}
+
+fn normalized_required(
+    value: &str,
+    field: &str,
+    max_bytes: usize,
+) -> Result<String, ConfigWriteError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(invalid(t!("llm.error.required", field = field).to_string()));
+    }
+    if value.len() > max_bytes {
+        return Err(invalid(
+            t!("llm.error.too_long", field = field, max = max_bytes).to_string(),
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn invalid(message: impl Into<String>) -> ConfigWriteError {
+    ConfigWriteError::InvalidValue(message.into())
+}
+
+pub(super) fn parse_persona_settings(
+    document: &DocumentMut,
+    warnings: &mut Vec<String>,
+) -> PersonaSettings {
+    let Some(persona) = document.get("persona") else {
+        return migrated_settings(document);
+    };
+
+    let mut settings = PersonaSettings {
+        personas: Vec::new(),
+        selected: None,
+    };
+    if let Some(selected) = persona.get("selected") {
+        match selected.as_str() {
+            Some(selected) => settings.selected = Some(selected.to_owned()),
+            None => warnings.push("persona.selected 必须是字符串，已忽略".to_owned()),
+        }
+    }
+    match persona.get("list") {
+        None => {}
+        Some(list) => match list.as_array_of_tables() {
+            Some(list) => {
+                let mut ids = HashSet::with_capacity(list.len());
+                for (index, table) in list.iter().enumerate() {
+                    // 逐条跳过无效人格，避免一处手写错误丢弃其余人格与其绑定的记忆入口。
+                    let mut config = match parse_persona(table) {
+                        Ok(config) => config,
+                        Err(error) => {
+                            warnings.push(format!("persona.list[{index}] 已忽略：{error}"));
+                            continue;
+                        }
+                    };
+                    if let Err(error) = config.normalize() {
+                        warnings.push(format!("persona.list[{index}] 已忽略：{error}"));
+                        continue;
+                    }
+                    if !ids.insert(config.id.clone()) {
+                        warnings.push(format!(
+                            "persona.list[{index}] 已忽略：{}",
+                            t!("persona.error.duplicate_id", id = &config.id)
+                        ));
+                        continue;
+                    }
+                    if settings.personas.len() == MAX_PERSONAS {
+                        warnings
+                            .push(t!("persona.error.max_personas", max = MAX_PERSONAS).to_string());
+                        break;
+                    }
+                    settings.personas.push(config);
+                }
+            }
+            None => warnings.push("persona.list 必须是 TOML 表数组，已忽略".to_owned()),
+        },
+    }
+
+    if settings.personas.is_empty() {
+        warnings.push(t!("persona.error.empty").to_string());
+        return migrated_settings(document);
+    }
+    settings.selected = settings
+        .selected
+        .map(|selected| selected.trim().to_owned())
+        .filter(|selected| !selected.is_empty());
+    if let Some(selected) = settings.selected.as_deref()
+        && !settings
+            .personas
+            .iter()
+            .any(|persona| persona.id == selected)
+    {
+        warnings.push(format!(
+            "persona.selected 指向不存在的人格 {selected}，已忽略"
+        ));
+        settings.selected = None;
+    }
+    settings
+}
+
+/// 配置中还没有人格时，把旧版全局系统提示词收敛为唯一的默认人格。
+fn migrated_settings(document: &DocumentMut) -> PersonaSettings {
+    let mut settings = PersonaSettings::default();
+    let prompt = parse_legacy_system_prompt(document);
+    if let Some(persona) = settings.personas.first_mut() {
+        persona.system_prompt = prompt;
+    }
+    settings
+}
+
+fn parse_persona(table: &Table) -> Result<PersonaConfig, ConfigWriteError> {
+    let required = |key: &str| {
+        table
+            .get(key)
+            .and_then(Item::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| ConfigWriteError::InvalidValue(format!("{key} 必须是字符串")))
+    };
+    let integer = |key: &'static str| -> Result<Option<u32>, ConfigWriteError> {
+        match table.get(key) {
+            None => Ok(None),
+            Some(item) => item
+                .as_integer()
+                .and_then(|value| u32::try_from(value).ok())
+                .map(Some)
+                .ok_or_else(|| ConfigWriteError::InvalidValue(format!("{key} 必须是非负整数"))),
+        }
+    };
+
+    Ok(PersonaConfig {
+        id: required("id")?,
+        name: required("name")?,
+        system_prompt: table
+            .get("system_prompt")
+            .and_then(Item::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        model: table.get("model").and_then(Item::as_str).map(str::to_owned),
+        context: PersonaContextLimits {
+            max_messages: integer("max_context_messages")?,
+            max_kib: integer("max_context_kib")?,
+        },
+    })
+}
+
+pub(super) fn write_persona_settings(document: &mut DocumentMut, settings: &PersonaSettings) {
+    ensure_table_like(&mut document["persona"]);
+    if let Some(mut key) = document.as_table_mut().key_mut("persona") {
+        key.fmt();
+    }
+    match &settings.selected {
+        Some(selected) => set_item_value(
+            &mut document["persona"]["selected"],
+            Value::from(selected.clone()),
+        ),
+        None => remove_key(document, "persona", "selected"),
+    }
+
+    let existing = document
+        .get("persona")
+        .and_then(|persona| persona.get("list"))
+        .and_then(Item::as_array_of_tables)
+        .map(|list| list.iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut list = ArrayOfTables::new();
+    for persona in &settings.personas {
+        let mut table = existing
+            .iter()
+            .find(|table| table.get("id").and_then(Item::as_str) == Some(&persona.id))
+            .cloned()
+            .unwrap_or_else(Table::new);
+        set_item_value(&mut table["id"], Value::from(persona.id.clone()));
+        set_item_value(&mut table["name"], Value::from(persona.name.clone()));
+        set_item_value(
+            &mut table["system_prompt"],
+            Value::from(persona.system_prompt.clone()),
+        );
+        write_optional(&mut table, "model", persona.model.clone().map(Value::from));
+        write_optional(
+            &mut table,
+            "max_context_messages",
+            persona
+                .context
+                .max_messages
+                .map(|value| Value::from(i64::from(value))),
+        );
+        write_optional(
+            &mut table,
+            "max_context_kib",
+            persona
+                .context
+                .max_kib
+                .map(|value| Value::from(i64::from(value))),
+        );
+        list.push(table);
+    }
+    document["persona"]["list"] = Item::ArrayOfTables(list);
+    // 提示词已迁移到人格条目；保留旧键会让同一份配置出现两个互相矛盾的来源。
+    remove_key(document, "llm", "system_prompt");
+}
+
+fn write_optional(table: &mut Table, key: &str, value: Option<Value>) {
+    match value {
+        Some(value) => set_item_value(&mut table[key], value),
+        None => {
+            table.remove(key);
+        }
+    }
+}

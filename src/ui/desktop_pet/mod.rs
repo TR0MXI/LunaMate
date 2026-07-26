@@ -296,6 +296,11 @@ impl DesktopPetView {
                         chat.refresh_settings(cx);
                     });
                 }
+                SettingsEvent::PersonaContextCleared(persona) => {
+                    this.chat.update(cx, |chat, cx| {
+                        chat.clear_persona_context(persona, cx);
+                    });
+                }
                 SettingsEvent::WindowPositionsReset => {
                     this.position_controller.request_reset();
                     cx.notify();

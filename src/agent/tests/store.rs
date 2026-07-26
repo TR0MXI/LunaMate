@@ -1,9 +1,15 @@
+//! 验证按人格隔离的会话存储：恢复、revision 串行化与不可信文档处理。
+
 use super::super::{
-    session::ChatSession,
-    store::{ChatSessionStore, ChatStoreError, MAX_SESSION_BYTES},
+    session::{ChatLimits, ChatSession},
+    store::{ChatSessionStore, ChatStoreError, MAX_SESSION_BYTES, delete_persona_session},
 };
-use crate::database::Database;
+use crate::{config::DEFAULT_PERSONA_ID, database::Database};
 use std::future::Future;
+
+/// 测试统一使用默认人格；文档键必须与 `ChatSessionStore` 内部拼接结果一致。
+const PERSONA: &str = DEFAULT_PERSONA_ID;
+const SESSION_KEY: &str = "chat-session/default";
 
 fn run_async<F: Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -17,7 +23,7 @@ fn run_async<F: Future>(future: F) -> F::Output {
 fn missing_session_returns_default() {
     run_async(async {
         let database = Database::open_memory().await.expect("内存数据库应可打开");
-        let (session, store) = ChatSessionStore::load(database)
+        let (session, store) = ChatSessionStore::load(database, PERSONA, ChatLimits::default())
             .await
             .expect("缺失会话应降级为空会话");
 
@@ -43,9 +49,10 @@ fn session_round_trip_uses_database() {
             .await
             .expect("会话应保存到数据库");
 
-        let (restored, restored_store) = ChatSessionStore::load(database)
-            .await
-            .expect("数据库会话应可恢复");
+        let (restored, restored_store) =
+            ChatSessionStore::load(database, PERSONA, ChatLimits::default())
+                .await
+                .expect("数据库会话应可恢复");
         let persisted = restored.snapshot(0);
         assert_eq!(restored.messages().len(), 2);
         assert_eq!(persisted.messages[0].content(), "你好");
@@ -80,9 +87,10 @@ fn lower_or_equal_revisions_do_not_overwrite_latest_snapshot() {
             .expect("重复 revision 应被无害丢弃");
 
         assert_eq!(store.latest_revision(), 4);
-        let (restored, restored_store) = ChatSessionStore::load(database)
-            .await
-            .expect("数据库会话应可恢复");
+        let (restored, restored_store) =
+            ChatSessionStore::load(database, PERSONA, ChatLimits::default())
+                .await
+                .expect("数据库会话应可恢复");
         assert_eq!(restored.messages()[1].content(), "answer");
         assert_eq!(restored_store.latest_revision(), 0);
     });
@@ -120,7 +128,7 @@ fn persisted_revision_does_not_block_writes_after_restart() {
             .await
             .expect("当前进程应可保存最大 revision");
 
-        let (_, restarted_store) = ChatSessionStore::load(database)
+        let (_, restarted_store) = ChatSessionStore::load(database, PERSONA, ChatLimits::default())
             .await
             .expect("数据库会话应可重新加载");
         restarted_store
@@ -136,11 +144,11 @@ fn corrupt_database_session_returns_error() {
     run_async(async {
         let database = Database::open_memory().await.expect("内存数据库应可打开");
         database
-            .write_document("agent", "chat-session", 1, b"not valid json")
+            .write_document("agent", SESSION_KEY, 1, b"not valid json")
             .await
             .expect("损坏数据库测试文档应可写入");
 
-        let result = ChatSessionStore::load(database).await;
+        let result = ChatSessionStore::load(database, PERSONA, ChatLimits::default()).await;
         assert!(matches!(result, Err(ChatStoreError::Format(_))));
     });
 }
@@ -150,17 +158,17 @@ fn unsupported_database_document_is_not_replaced_during_restore() {
     run_async(async {
         let database = Database::open_memory().await.expect("内存数据库应可打开");
         database
-            .write_document("agent", "chat-session", 2, b"future format")
+            .write_document("agent", SESSION_KEY, 2, b"future format")
             .await
             .expect("未来格式测试文档应可写入");
 
-        let result = ChatSessionStore::load(database.clone()).await;
+        let result = ChatSessionStore::load(database.clone(), PERSONA, ChatLimits::default()).await;
         assert!(matches!(
             result,
             Err(ChatStoreError::UnsupportedDocumentVersion(2))
         ));
         let document = database
-            .read_document("agent", "chat-session")
+            .read_document("agent", SESSION_KEY)
             .await
             .expect("未来格式文档应可重新读取")
             .expect("恢复失败不得删除未来格式文档");
@@ -175,11 +183,11 @@ fn oversized_session_returns_error() {
         let database = Database::open_memory().await.expect("内存数据库应可打开");
         let oversized = vec![b' '; MAX_SESSION_BYTES + 1];
         database
-            .write_document("agent", "chat-session", 1, &oversized)
+            .write_document("agent", SESSION_KEY, 1, &oversized)
             .await
             .expect("超限会话测试文档应可写入数据库");
 
-        let result = ChatSessionStore::load(database).await;
+        let result = ChatSessionStore::load(database, PERSONA, ChatLimits::default()).await;
         assert!(matches!(result, Err(ChatStoreError::TooLarge)));
     });
 }
@@ -203,7 +211,7 @@ fn availability_reflects_whether_a_database_was_opened() {
         assert!(ChatSessionStore::empty(database.clone()).is_available());
         assert!(!ChatSessionStore::unavailable().is_available());
 
-        let (_, store) = ChatSessionStore::load(database)
+        let (_, store) = ChatSessionStore::load(database, PERSONA, ChatLimits::default())
             .await
             .expect("空数据库应可加载");
         assert!(store.is_available());
@@ -233,4 +241,91 @@ fn store_errors_describe_the_failure_without_including_session_text() {
     );
     assert!(format.to_string().starts_with("聊天会话无法解析"));
     assert!(std::error::Error::source(&format).is_some());
+}
+
+#[test]
+fn deleting_a_persona_session_removes_only_that_personas_document() {
+    run_async(async {
+        let database = Database::open_memory().await.expect("内存数据库应可打开");
+        let mut session = ChatSession::default();
+        let started = session.start_turn("记住我").expect("测试轮次应可开始");
+        session
+            .append_response(started.response_id, "好")
+            .expect("测试回复应可写入");
+        assert!(session.finish_response(started.response_id));
+
+        for persona in ["default", "other"] {
+            let (_, store) =
+                ChatSessionStore::load(database.clone(), persona, ChatLimits::default())
+                    .await
+                    .expect("空数据库应可加载");
+            store
+                .save(session.snapshot(1))
+                .await
+                .expect("会话应保存到数据库");
+        }
+
+        delete_persona_session(&database, "default")
+            .await
+            .expect("删除人格会话应成功");
+
+        let (cleared, _) =
+            ChatSessionStore::load(database.clone(), "default", ChatLimits::default())
+                .await
+                .expect("删除后应降级为空会话");
+        assert_eq!(cleared.messages().len(), 0);
+        // 记忆按人格隔离，删除一个人格不得影响其他人格的上下文。
+        let (kept, _) = ChatSessionStore::load(database, "other", ChatLimits::default())
+            .await
+            .expect("另一人格的会话应仍可恢复");
+        assert_eq!(kept.messages().len(), 2);
+    });
+}
+
+#[test]
+fn lowering_the_context_limit_drops_history_instead_of_failing_to_load() {
+    run_async(async {
+        let database = Database::open_memory().await.expect("内存数据库应可打开");
+        let mut session = ChatSession::default();
+        for index in 0..3 {
+            let started = session
+                .start_turn(format!("问题 {index}"))
+                .expect("测试轮次应可开始");
+            session
+                .append_response(started.response_id, "一个比较长的回答内容")
+                .expect("测试回复应可写入");
+            assert!(session.finish_response(started.response_id));
+        }
+        let store = ChatSessionStore::empty(database.clone());
+        store
+            .save(session.snapshot(1))
+            .await
+            .expect("会话应保存到数据库");
+
+        // 用户调小上限后旧快照仍必须可用：只丢弃装不下的历史轮次。
+        let (restored, _) = ChatSessionStore::load(
+            database,
+            PERSONA,
+            ChatLimits {
+                max_messages: 2,
+                max_bytes: 64,
+            },
+        )
+        .await
+        .expect("调小上限后仍应成功恢复");
+        assert_eq!(restored.messages().len(), 2);
+        assert_eq!(restored.messages()[0].content(), "问题 2");
+    });
+}
+
+#[test]
+fn stored_context_usage_reports_zero_for_a_persona_without_history() {
+    run_async(async {
+        let database = Database::open_memory().await.expect("内存数据库应可打开");
+        let usage = super::super::store::persona_context_usage(&database, "fresh")
+            .await
+            .expect("没有记录时应返回零占用");
+
+        assert_eq!(usage, (0, 0));
+    });
 }

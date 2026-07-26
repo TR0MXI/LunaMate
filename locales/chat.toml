@@ -311,3 +311,9 @@ _version = 2
 "zh-TW" = "聊天工作階段快照結構無效"
 "en" = "The chat session snapshot is invalid"
 "ja" = "会話スナップショットの構造が無効です"
+
+[chat.persona_switching]
+"zh-CN" = "正在切换人格上下文，请稍候"
+"zh-TW" = "正在切換人格上下文，請稍候"
+"en" = "Switching persona context, please wait"
+"ja" = "ペルソナのコンテキストを切り替えています"

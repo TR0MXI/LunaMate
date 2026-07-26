@@ -20,6 +20,7 @@ const DATABASE_NAME: &str = "main";
 const STORAGE_TABLE: &str = "app_storage";
 const MAX_SCOPE_BYTES: usize = 64;
 const MAX_KEY_BYTES: usize = 256;
+const MAX_AGENT_ID_BYTES: usize = 64;
 pub(super) const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 
 /// 从常规文档存储恢复的版本化二进制内容。
@@ -174,6 +175,47 @@ impl Database {
                 source: Box::new(source),
             })
     }
+
+    /// 删除一份存储文档；文档不存在时同样视为成功。
+    ///
+    /// # Errors
+    ///
+    /// 键不合法或数据库提交失败时返回错误。
+    pub(crate) async fn delete_document(
+        &self,
+        scope: &str,
+        key: &str,
+    ) -> Result<(), DatabaseError> {
+        let record = document_record(scope, key)?;
+        self.client
+            .query("DELETE $record;")
+            .bind(("record", record))
+            .await
+            .and_then(|response| response.check())
+            .map(|_| ())
+            .map_err(|source| DatabaseError::Engine {
+                operation: "删除存储文档",
+                source: Box::new(source),
+            })
+    }
+}
+
+/// 校验绑定到记忆记录上的 Agent 标识；它来自配置且会参与查询过滤。
+pub(super) fn validate_agent_id(agent_id: &str) -> Result<(), DatabaseError> {
+    if agent_id.is_empty() || agent_id.len() > MAX_AGENT_ID_BYTES {
+        return Err(DatabaseError::InvalidDocumentKey(
+            "Agent 标识必须为 1 到 64 个 ASCII 字节",
+        ));
+    }
+    if !agent_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(DatabaseError::InvalidDocumentKey(
+            "Agent 标识只能包含 ASCII 字母、数字、下划线或连字符",
+        ));
+    }
+    Ok(())
 }
 
 fn embedded_config() -> Config {

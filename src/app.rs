@@ -40,45 +40,61 @@ const FINAL_AGENT_SAVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 type FinalAgentSave = Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>;
 
-const APP_ASSETS: &[(&str, &[u8])] = &[
-    ("icons/bot.svg", include_bytes!("../assets/icons/bot.svg")),
-    (
-        "icons/check.svg",
-        include_bytes!("../assets/icons/check.svg"),
-    ),
-    (
-        "icons/eye-off.svg",
-        include_bytes!("../assets/icons/eye-off.svg"),
-    ),
-    (
-        "icons/image-plus.svg",
-        include_bytes!("../assets/icons/image-plus.svg"),
-    ),
-    (
-        "icons/message-circle.svg",
-        include_bytes!("../assets/icons/message-circle.svg"),
-    ),
-    ("icons/move.svg", include_bytes!("../assets/icons/move.svg")),
-    ("icons/play.svg", include_bytes!("../assets/icons/play.svg")),
-    ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
-    (
-        "icons/refresh-cw.svg",
-        include_bytes!("../assets/icons/refresh-cw.svg"),
-    ),
-    (
-        "icons/settings.svg",
-        include_bytes!("../assets/icons/settings.svg"),
-    ),
-    ("icons/send.svg", include_bytes!("../assets/icons/send.svg")),
-    (
-        "icons/square.svg",
-        include_bytes!("../assets/icons/square.svg"),
-    ),
-    (
-        "icons/trash-2.svg",
-        include_bytes!("../assets/icons/trash-2.svg"),
-    ),
-    ("icons/x.svg", include_bytes!("../assets/icons/x.svg")),
+/// 把资源路径与编译期内容绑定在一处，避免新增图标时漏改其中一侧。
+macro_rules! app_assets {
+    ($($path:literal),+ $(,)?) => {
+        &[$((
+            concat!("icons/", $path),
+            include_bytes!(concat!("../assets/icons/", $path)) as &[u8],
+        )),+]
+    };
+}
+
+const APP_ASSETS: &[(&str, &[u8])] = app_assets![
+    "bot.svg",
+    "check.svg",
+    "chevron-down.svg",
+    "chevron-right.svg",
+    "eye-off.svg",
+    "image-plus.svg",
+    "message-circle.svg",
+    "move.svg",
+    "play.svg",
+    "plus.svg",
+    "refresh-cw.svg",
+    "send.svg",
+    "settings.svg",
+    "square.svg",
+    "trash-2.svg",
+    "triangle-alert.svg",
+    "user-round.svg",
+    "x.svg",
+    "providers/aihubmix.svg",
+    "providers/aliyun.svg",
+    "providers/anthropic.svg",
+    "providers/baidu.svg",
+    "providers/bedrock-api-key.svg",
+    "providers/bigmodel.svg",
+    "providers/cohere.svg",
+    "providers/deepseek.svg",
+    "providers/fireworks.svg",
+    "providers/gemini.svg",
+    "providers/github-models.svg",
+    "providers/groq.svg",
+    "providers/mimo.svg",
+    "providers/minimax.svg",
+    "providers/moonshot.svg",
+    "providers/nebius.svg",
+    "providers/ollama.svg",
+    "providers/ollama-cloud.svg",
+    "providers/openai.svg",
+    "providers/openai-responses.svg",
+    "providers/opencode-go.svg",
+    "providers/openrouter.svg",
+    "providers/together.svg",
+    "providers/vertex.svg",
+    "providers/xai.svg",
+    "providers/zai.svg",
 ];
 
 /// 向 GPUI 提供编译进可执行文件的应用图标。
@@ -245,6 +261,7 @@ pub(super) fn run() {
     };
     let database = async_runtime.block_on(Database::open_default());
     let agent = async_runtime.block_on(Agent::load(database));
+    let agent_memory = agent.memory_access();
     let async_handle = async_runtime.handle().clone();
     let final_agent_save: FinalAgentSave = Arc::new(Mutex::new(None));
     let final_agent_save_for_app = final_agent_save.clone();
@@ -298,7 +315,9 @@ pub(super) fn run() {
                         window_height,
                         window.scale_factor(),
                     );
-                    let config = cx.new(|cx| SettingsView::new(model_catalog, config_status, cx));
+                    let config = cx.new(|cx| {
+                        SettingsView::new(model_catalog, agent_memory, config_status, cx)
+                    });
                     let system_tray = create_system_tray(&async_handle);
                     let config_for_quit = config.downgrade();
                     let agent_view = agent.mount(window, cx);

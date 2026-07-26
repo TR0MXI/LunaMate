@@ -1,4 +1,4 @@
-//! 渲染 Agent Provider 列表、连接表单、系统提示词与保存反馈。
+//! 渲染供应商列表、连接表单、高级参数折叠项与保存反馈。
 
 use gpui::{AnyElement, Context, IntoElement, Render, Window, div, prelude::*, px, svg};
 use gpui_component::{
@@ -8,15 +8,25 @@ use gpui_component::{
 };
 use rust_i18n::t;
 
-use crate::agent::palette::AgentPalette;
+use crate::{
+    agent::palette::AgentPalette,
+    config::{MAX_OUTPUT_TOKENS_MAX, TEMPERATURE_MAX, TOP_P_MAX},
+};
 
-use super::{AgentSettingsView, provider_display_name};
+use super::{
+    components::{
+        collapsible_header, form_field, optional_field, page_header, section_label, status_toast,
+    },
+    provider::AgentSettingsView,
+    provider_display_name, provider_icon,
+};
 
 impl AgentSettingsView {
-    fn render_model_list(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_provider_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = AgentPalette::from_app(cx);
-        let editing_index = self.editing_index;
-        let active_id = self.draft.selected_model.clone();
+        let editing_index = self.editing_index();
+        let draft = self.draft();
+        let active_id = draft.selected_model.clone();
         div()
             .w(px(260.0))
             .h_full()
@@ -54,7 +64,7 @@ impl AgentSettingsView {
                                     .py(px(2.0))
                                     .text_xs()
                                     .text_color(palette.muted_foreground)
-                                    .child(self.draft.models.len().to_string()),
+                                    .child(draft.models.len().to_string()),
                             ),
                     )
                     .child(
@@ -95,7 +105,7 @@ impl AgentSettingsView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .when(self.draft.models.is_empty(), |this| {
+                    .when(draft.models.is_empty(), |this| {
                         this.child(
                             div()
                                 .flex_1()
@@ -126,7 +136,7 @@ impl AgentSettingsView {
                                 .child(t!("llm.none").to_string()),
                         )
                     })
-                    .children(self.draft.models.iter().enumerate().map(|(index, model)| {
+                    .children(draft.models.iter().enumerate().map(|(index, model)| {
                         let editing = editing_index == Some(index);
                         let active = active_id.as_deref() == Some(model.id.as_str());
                         let model_name = if model.model.trim().is_empty() {
@@ -175,13 +185,14 @@ impl AgentSettingsView {
                                                 palette.muted
                                             })
                                             .child(
-                                                svg().path("icons/bot.svg").size_4().text_color(
-                                                    if editing {
+                                                svg()
+                                                    .path(provider_icon(model.provider))
+                                                    .size_4()
+                                                    .text_color(if editing {
                                                         palette.primary_foreground
                                                     } else {
-                                                        palette.muted_foreground
-                                                    },
-                                                ),
+                                                        palette.foreground
+                                                    }),
                                             ),
                                     )
                                     .child(
@@ -235,9 +246,14 @@ impl AgentSettingsView {
 
     fn render_editor(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = AgentPalette::from_app(cx);
-        let has_model = self.editing_index.is_some();
-        let model_fields_disabled = !has_model || self.is_saving;
-        let editor_title = self.label_input.read(cx).value().trim().to_owned();
+        let has_model = self.editing_index().is_some();
+        let disabled = !has_model || self.is_saving();
+        let inputs = self.inputs();
+        let editor_title = inputs.label.read(cx).value().trim().to_owned();
+        let provider = self
+            .editing_index()
+            .and_then(|index| self.draft().models.get(index))
+            .map(|model| model.provider);
         div()
             .id("llm-editor-scroll")
             .flex_1()
@@ -290,25 +306,50 @@ impl AgentSettingsView {
                         .border_color(palette.border)
                         .child(
                             div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
                                 .min_w_0()
+                                .when_some(provider, |this, provider| {
+                                    this.child(
+                                        div()
+                                            .size_8()
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .rounded_md()
+                                            .bg(palette.muted)
+                                            .child(
+                                                svg()
+                                                    .path(provider_icon(provider))
+                                                    .size_5()
+                                                    .text_color(palette.foreground),
+                                            ),
+                                    )
+                                })
                                 .child(
                                     div()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .text_base()
-                                        .font_semibold()
-                                        .child(if editor_title.is_empty() {
-                                            t!("llm.new_model").to_string()
-                                        } else {
-                                            editor_title.clone()
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .mt_1()
-                                        .text_xs()
-                                        .text_color(palette.muted_foreground)
-                                        .child(t!("llm.connection").to_string()),
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .overflow_hidden()
+                                                .text_ellipsis()
+                                                .text_base()
+                                                .font_semibold()
+                                                .child(if editor_title.is_empty() {
+                                                    t!("llm.new_model").to_string()
+                                                } else {
+                                                    editor_title.clone()
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .mt_1()
+                                                .text_xs()
+                                                .text_color(palette.muted_foreground)
+                                                .child(t!("llm.connection").to_string()),
+                                        ),
                                 ),
                         )
                         .child(
@@ -346,14 +387,14 @@ impl AgentSettingsView {
                     div().w_full().flex().gap_4().children([
                         form_field(
                             t!("llm.name").to_string(),
-                            Input::new(&self.label_input).disabled(model_fields_disabled),
+                            Input::new(inputs.label).disabled(disabled),
                             palette,
                         ),
                         form_field(
                             t!("llm.provider").to_string(),
-                            Select::new(&self.provider_select)
+                            Select::new(inputs.provider)
                                 .search_placeholder(t!("llm.search_provider").to_string())
-                                .disabled(model_fields_disabled),
+                                .disabled(disabled),
                             palette,
                         ),
                     ]),
@@ -361,32 +402,132 @@ impl AgentSettingsView {
                 .child(div().w_full().flex().gap_4().children([
                     form_field(
                         t!("llm.model_id").to_string(),
-                        Input::new(&self.model_input).disabled(model_fields_disabled),
+                        Input::new(inputs.model).disabled(disabled),
                         palette,
                     ),
                     form_field(
                         t!("llm.endpoint").to_string(),
-                        Input::new(&self.endpoint_input).disabled(model_fields_disabled),
+                        Input::new(inputs.endpoint).disabled(disabled),
                         palette,
                     ),
                 ]))
                 .child(form_field(
                     t!("llm.api_key").to_string(),
-                    Input::new(&self.api_key_input)
+                    Input::new(inputs.api_key)
                         .mask_toggle()
                         .content_type(InputContentType::Password)
-                        .disabled(model_fields_disabled),
+                        .disabled(disabled),
                     palette,
                 ))
+                .child(self.render_advanced(disabled, cx))
             })
-            .child(section_label(t!("llm.system_prompt").to_string(), palette))
-            .child(
-                div().w_full().h(px(180.0)).child(
-                    Input::new(&self.system_prompt_input)
-                        .h_full()
-                        .disabled(self.is_saving),
-                ),
-            )
+            .into_any_element()
+    }
+
+    fn render_advanced(&self, disabled: bool, cx: &mut Context<Self>) -> AnyElement {
+        let palette = AgentPalette::from_app(cx);
+        let expanded = self.advanced_expanded;
+        let inputs = self.inputs();
+        let [max_output_tokens, temperature, top_p] = self.advanced_toggles();
+        let hint = t!("llm.advanced_default_hint").to_string();
+        div()
+            .w_full()
+            .child(collapsible_header(
+                "toggle-llm-advanced",
+                t!("llm.advanced").to_string(),
+                t!("llm.advanced_summary").to_string(),
+                expanded,
+                palette,
+                cx.listener(|this, _, _, cx| this.toggle_advanced(cx)),
+            ))
+            .when(expanded, |this| {
+                this.child(
+                    div()
+                        .w_full()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(palette.border)
+                        .px_4()
+                        .pb_4()
+                        .mt_2()
+                        .child(div().w_full().flex().gap_4().children([
+                            form_field(
+                                t!("llm.reasoning_effort").to_string(),
+                                Select::new(inputs.reasoning).disabled(disabled),
+                                palette,
+                            ),
+                            if self.reasoning_is_budget(cx) {
+                                form_field(
+                                    t!("llm.reasoning_budget").to_string(),
+                                    Input::new(inputs.reasoning_budget).disabled(disabled),
+                                    palette,
+                                )
+                            } else {
+                                form_field(
+                                    t!("llm.reasoning_budget").to_string(),
+                                    div()
+                                        .h(px(32.0))
+                                        .flex()
+                                        .items_center()
+                                        .text_xs()
+                                        .text_color(palette.muted_foreground)
+                                        .child(t!("llm.reasoning_budget_unused").to_string()),
+                                    palette,
+                                )
+                            },
+                        ]))
+                        .child(
+                            div().w_full().flex().gap_4().children([
+                                optional_field(
+                                    "toggle-max-output-tokens",
+                                    t!("llm.max_output_tokens").to_string(),
+                                    hint.clone(),
+                                    max_output_tokens,
+                                    Input::new(inputs.max_output_tokens)
+                                        .disabled(disabled || !max_output_tokens),
+                                    palette,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.toggle_max_output_tokens(cx);
+                                    }),
+                                ),
+                                optional_field(
+                                    "toggle-temperature",
+                                    t!("llm.temperature").to_string(),
+                                    hint.clone(),
+                                    temperature,
+                                    Input::new(inputs.temperature)
+                                        .disabled(disabled || !temperature),
+                                    palette,
+                                    cx.listener(|this, _, _, cx| this.toggle_temperature(cx)),
+                                ),
+                                optional_field(
+                                    "toggle-top-p",
+                                    t!("llm.top_p").to_string(),
+                                    hint,
+                                    top_p,
+                                    Input::new(inputs.top_p).disabled(disabled || !top_p),
+                                    palette,
+                                    cx.listener(|this, _, _, cx| this.toggle_top_p(cx)),
+                                ),
+                            ]),
+                        )
+                        .child(
+                            div()
+                                .pt_3()
+                                .text_xs()
+                                .text_color(palette.muted_foreground)
+                                .child(
+                                    t!(
+                                        "llm.advanced_range_hint",
+                                        tokens = MAX_OUTPUT_TOKENS_MAX,
+                                        temperature = format!("{TEMPERATURE_MAX}"),
+                                        top_p = format!("{TOP_P_MAX}")
+                                    )
+                                    .to_string(),
+                                ),
+                        ),
+                )
+            })
             .into_any_element()
     }
 }
@@ -394,7 +535,8 @@ impl AgentSettingsView {
 impl Render for AgentSettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = AgentPalette::from_app(cx);
-        let status = self.status.clone();
+        let status = self.status().map(str::to_owned);
+        let saving = self.is_saving();
         div()
             .relative()
             .size_full()
@@ -402,122 +544,28 @@ impl Render for AgentSettingsView {
             .flex()
             .flex_col()
             .text_color(palette.foreground)
-            .child(
-                div()
-                    .h(px(54.0))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .border_b_1()
-                    .border_color(palette.border)
-                    .px_5()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_semibold()
-                            .child(t!("settings.conversation_title").to_string()),
-                    )
-                    .child(
-                        div()
-                            .id("save-llm-settings")
-                            .h(px(34.0))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .gap_2()
-                            .rounded_md()
-                            .px_4()
-                            .text_sm()
-                            .font_medium()
-                            .bg(if self.is_saving {
-                                palette.muted
-                            } else {
-                                palette.primary
-                            })
-                            .text_color(if self.is_saving {
-                                palette.muted_foreground
-                            } else {
-                                palette.primary_foreground
-                            })
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(palette.accent))
-                            .on_click(cx.listener(|this, _, _, cx| this.save(cx)))
-                            .child(svg().path("icons/check.svg").size_4().text_color(
-                                if self.is_saving {
-                                    palette.muted_foreground
-                                } else {
-                                    palette.primary_foreground
-                                },
-                            ))
-                            .child(if self.is_saving {
-                                t!("common.saving").to_string()
-                            } else {
-                                t!("common.save").to_string()
-                            }),
-                    ),
-            )
+            .child(page_header(
+                "save-llm-settings",
+                t!("settings.provider_title").to_string(),
+                if saving {
+                    t!("common.saving").to_string()
+                } else {
+                    t!("common.save").to_string()
+                },
+                saving,
+                palette,
+                cx.listener(|this, _, _, cx| this.save(cx)),
+            ))
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(self.render_model_list(cx))
+                    .child(self.render_provider_list(cx))
                     .child(self.render_editor(cx)),
             )
             .when_some(status, |this, status| {
-                this.child(
-                    div()
-                        .absolute()
-                        .top_3()
-                        .left_0()
-                        .right_0()
-                        .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .max_w(px(460.0))
-                                .rounded_lg()
-                                .border_1()
-                                .border_color(palette.border)
-                                .bg(palette.popover)
-                                .px_4()
-                                .py_2()
-                                .text_sm()
-                                .text_color(palette.foreground)
-                                .shadow_lg()
-                                .child(status),
-                        ),
-                )
+                this.child(status_toast(status, palette))
             })
     }
-}
-
-fn section_label(title: String, palette: AgentPalette) -> gpui::Div {
-    div()
-        .pt_6()
-        .pb_2()
-        .text_xs()
-        .font_semibold()
-        .text_color(palette.primary)
-        .child(title)
-}
-
-fn form_field(label: String, control: impl IntoElement, palette: AgentPalette) -> gpui::Div {
-    div()
-        .flex_1()
-        .min_w_0()
-        .min_h(px(78.0))
-        .flex()
-        .flex_col()
-        .gap_2()
-        .pt_3()
-        .child(
-            div()
-                .text_xs()
-                .font_medium()
-                .text_color(palette.muted_foreground)
-                .child(label),
-        )
-        .child(div().w_full().min_w_0().child(control))
 }

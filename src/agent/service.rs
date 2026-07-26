@@ -9,7 +9,8 @@ use genai::{
     adapter::AdapterKind,
     chat::{
         ChatMessage as GenaiMessage, ChatOptions, ChatRequest, ChatStreamEvent as GenaiStreamEvent,
-        ContentPart, MessageContent, Tool, ToolCall, ToolResponse,
+        ContentPart, MessageContent, ReasoningEffort as GenaiReasoningEffort, Tool, ToolCall,
+        ToolResponse,
     },
     resolver::{AuthData, Endpoint},
 };
@@ -18,7 +19,7 @@ use rust_i18n::t;
 use serde_json::json;
 use tokio::time::{Instant, sleep, timeout_at};
 
-use crate::config::{CONFIG, LlmModelConfig, LlmProvider};
+use crate::config::{CONFIG, LlmAdvancedOptions, LlmModelConfig, LlmProvider, ReasoningEffort};
 
 use super::{
     media::{ImageAttachment, capture_primary_screen},
@@ -171,6 +172,7 @@ async fn stream_chat(
         .filter(|revision| CONFIG.agent_screenshot_permission_is_current(*revision));
     let register_screenshot_tool = screenshot_permission_revision.is_some()
         && provider_supports_binary_and_tools(model.provider);
+    let base_options = base_chat_options(&model.advanced);
     let model = ModelIden::new(adapter_kind(model.provider), model.model);
     let mut chat_request = build_request(system_prompt, messages, register_screenshot_tool);
     let mut used_screen_capture = false;
@@ -179,17 +181,15 @@ async fn stream_chat(
             .then_some(screenshot_permission_revision)
             .flatten();
         let capture_tool_handoff = register_screenshot_tool || used_screen_capture;
-        let outcome = match stream_with_retry(
-            &client,
-            model.clone(),
-            chat_request.clone(),
+        let attempt = StreamAttempt {
+            model: model.clone(),
+            request: chat_request.clone(),
+            options: base_options.clone(),
             total_deadline,
-            &mut events,
-            required_permission,
+            screenshot_permission_revision: required_permission,
             capture_tool_handoff,
-        )
-        .await
-        {
+        };
+        let outcome = match stream_with_retry(&client, &attempt, &mut events).await {
             Ok(outcome) => outcome,
             Err(failure) => {
                 let _ = send_terminal_event(
@@ -254,33 +254,34 @@ async fn stream_chat(
     }
 }
 
-async fn stream_with_retry(
-    client: &Client,
+/// 一次流式尝试的全部不变输入。
+///
+/// 重试与截图工具循环都会重复使用同一份配置，集中保存可以避免在多层调用之间
+/// 逐个传递并意外错位。
+struct StreamAttempt {
     model: ModelIden,
     request: ChatRequest,
+    options: Option<ChatOptions>,
     total_deadline: Instant,
-    events: &mut mpsc::Sender<ChatStreamEvent>,
     screenshot_permission_revision: Option<u64>,
     capture_tool_handoff: bool,
+}
+
+async fn stream_with_retry(
+    client: &Client,
+    attempt: &StreamAttempt,
+    events: &mut mpsc::Sender<ChatStreamEvent>,
 ) -> Result<StreamOutcome, AttemptFailure> {
     let mut retry_delays = RETRY_DELAYS.into_iter();
+    let total_deadline = attempt.total_deadline;
     loop {
-        if screenshot_permission_revision
+        if attempt
+            .screenshot_permission_revision
             .is_some_and(|revision| !CONFIG.agent_screenshot_permission_is_current(revision))
         {
             return Err(screenshot_permission_revoked_failure());
         }
-        match stream_once(
-            client,
-            model.clone(),
-            request.clone(),
-            total_deadline,
-            events,
-            screenshot_permission_revision,
-            capture_tool_handoff,
-        )
-        .await
-        {
+        match stream_once(client, attempt, events).await {
             Ok(outcome) => return Ok(outcome),
             Err(failure) if failure.retryable && !failure.response_started => {
                 let Some(delay) = retry_delays.next() else {
@@ -294,6 +295,51 @@ async fn stream_with_retry(
             }
             Err(failure) => return Err(failure),
         }
+    }
+}
+
+/// 把供应商高级参数翻译为 `genai` 请求选项；全部未设置时返回 `None` 以沿用 Provider 默认值。
+pub(super) fn base_chat_options(advanced: &LlmAdvancedOptions) -> Option<ChatOptions> {
+    let LlmAdvancedOptions {
+        reasoning_effort,
+        max_output_tokens,
+        temperature,
+        top_p,
+    } = *advanced;
+    if reasoning_effort.is_none()
+        && max_output_tokens.is_none()
+        && temperature.is_none()
+        && top_p.is_none()
+    {
+        return None;
+    }
+
+    let mut options = ChatOptions::default();
+    if let Some(effort) = reasoning_effort {
+        options = options.with_reasoning_effort(genai_reasoning_effort(effort));
+    }
+    if let Some(tokens) = max_output_tokens {
+        options = options.with_max_tokens(tokens);
+    }
+    if let Some(temperature) = temperature {
+        options = options.with_temperature(temperature);
+    }
+    if let Some(top_p) = top_p {
+        options = options.with_top_p(top_p);
+    }
+    Some(options)
+}
+
+const fn genai_reasoning_effort(effort: ReasoningEffort) -> GenaiReasoningEffort {
+    match effort {
+        ReasoningEffort::Off => GenaiReasoningEffort::None,
+        ReasoningEffort::Minimal => GenaiReasoningEffort::Minimal,
+        ReasoningEffort::Low => GenaiReasoningEffort::Low,
+        ReasoningEffort::Medium => GenaiReasoningEffort::Medium,
+        ReasoningEffort::High => GenaiReasoningEffort::High,
+        ReasoningEffort::XHigh => GenaiReasoningEffort::XHigh,
+        ReasoningEffort::Max => GenaiReasoningEffort::Max,
+        ReasoningEffort::Budget(tokens) => GenaiReasoningEffort::Budget(tokens),
     }
 }
 
@@ -451,24 +497,39 @@ pub(super) fn append_stateless_capture_result(
 
 async fn stream_once(
     client: &Client,
-    model: ModelIden,
-    request: ChatRequest,
-    total_deadline: Instant,
+    attempt: &StreamAttempt,
     events: &mut mpsc::Sender<ChatStreamEvent>,
-    screenshot_permission_revision: Option<u64>,
-    capture_tool_handoff: bool,
 ) -> Result<StreamOutcome, AttemptFailure> {
+    let StreamAttempt {
+        model,
+        request,
+        options: base_options,
+        total_deadline,
+        screenshot_permission_revision,
+        capture_tool_handoff,
+    } = attempt;
+    let (total_deadline, screenshot_permission_revision, capture_tool_handoff) = (
+        *total_deadline,
+        *screenshot_permission_revision,
+        *capture_tool_handoff,
+    );
+    let (model, request) = (model.clone(), request.clone());
     if screenshot_permission_revision
         .is_some_and(|revision| !CONFIG.agent_screenshot_permission_is_current(revision))
     {
         return Err(screenshot_permission_revoked_failure());
     }
-    let options = capture_tool_handoff.then(|| {
-        ChatOptions::default()
-            .with_capture_content(true)
-            .with_capture_reasoning_content(true)
-            .with_capture_tool_calls(true)
-    });
+    let options = match (base_options.clone(), capture_tool_handoff) {
+        (options, false) => options,
+        // 截图 handoff 需要拿回已捕获的正文、思考与工具调用，用户高级参数保持不变。
+        (options, true) => Some(
+            options
+                .unwrap_or_default()
+                .with_capture_content(true)
+                .with_capture_reasoning_content(true)
+                .with_capture_tool_calls(true),
+        ),
+    };
     let first_content_deadline = (Instant::now() + FIRST_CONTENT_TIMEOUT).min(total_deadline);
     let response_result = if let Some(revision) = screenshot_permission_revision {
         tokio::select! {

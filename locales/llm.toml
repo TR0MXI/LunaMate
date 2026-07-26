@@ -239,3 +239,123 @@ _version = 2
 "zh-TW" = "新模型"
 "en" = "New model"
 "ja" = "新しいモデル"
+
+[llm.advanced]
+"zh-CN" = "高级设置"
+"zh-TW" = "進階設定"
+"en" = "Advanced"
+"ja" = "詳細設定"
+
+[llm.advanced_summary]
+"zh-CN" = "思考强度、输出长度与采样参数"
+"zh-TW" = "思考強度、輸出長度與取樣參數"
+"en" = "Reasoning effort, output length, and sampling"
+"ja" = "推論強度、出力長、サンプリング"
+
+[llm.advanced_default_hint]
+"zh-CN" = "未启用，沿用 Provider 默认值"
+"zh-TW" = "未啟用，沿用 Provider 預設值"
+"en" = "Disabled; the provider default is used"
+"ja" = "無効。Provider の既定値を使用します"
+
+[llm.advanced_range_hint]
+"zh-CN" = "输出长度上限 ≤ %{tokens}，temperature ≤ %{temperature}，top_p ≤ %{top_p}。关闭开关的参数不会随请求发送。"
+"zh-TW" = "輸出長度上限 ≤ %{tokens}，temperature ≤ %{temperature}，top_p ≤ %{top_p}。關閉開關的參數不會隨請求傳送。"
+"en" = "Max output tokens ≤ %{tokens}, temperature ≤ %{temperature}, top_p ≤ %{top_p}. Disabled parameters are not sent with the request."
+"ja" = "最大出力トークン ≤ %{tokens}、temperature ≤ %{temperature}、top_p ≤ %{top_p}。無効な項目はリクエストに含まれません。"
+
+[llm.reasoning_effort]
+"zh-CN" = "思考强度"
+"zh-TW" = "思考強度"
+"en" = "Reasoning effort"
+"ja" = "推論強度"
+
+[llm.reasoning_auto]
+"zh-CN" = "自动（Provider 默认）"
+"zh-TW" = "自動（Provider 預設）"
+"en" = "Automatic (provider default)"
+"ja" = "自動（Provider の既定）"
+
+[llm.reasoning_off]
+"zh-CN" = "关闭思考"
+"zh-TW" = "關閉思考"
+"en" = "Disable reasoning"
+"ja" = "推論を無効化"
+
+[llm.reasoning_minimal]
+"zh-CN" = "极低（兼容旧模型）"
+"zh-TW" = "極低（相容舊模型）"
+"en" = "Minimal (legacy models)"
+"ja" = "最小（旧モデル互換）"
+
+[llm.reasoning_low]
+"zh-CN" = "低"
+"zh-TW" = "低"
+"en" = "Low"
+"ja" = "低"
+
+[llm.reasoning_medium]
+"zh-CN" = "中"
+"zh-TW" = "中"
+"en" = "Medium"
+"ja" = "中"
+
+[llm.reasoning_high]
+"zh-CN" = "高"
+"zh-TW" = "高"
+"en" = "High"
+"ja" = "高"
+
+[llm.reasoning_xhigh]
+"zh-CN" = "很高"
+"zh-TW" = "很高"
+"en" = "Extra high"
+"ja" = "非常に高い"
+
+[llm.reasoning_max]
+"zh-CN" = "最高"
+"zh-TW" = "最高"
+"en" = "Maximum"
+"ja" = "最大"
+
+[llm.reasoning_budget_option]
+"zh-CN" = "自定义思考预算"
+"zh-TW" = "自訂思考預算"
+"en" = "Custom thinking budget"
+"ja" = "カスタム思考予算"
+
+[llm.reasoning_budget]
+"zh-CN" = "思考预算 token"
+"zh-TW" = "思考預算 token"
+"en" = "Thinking budget tokens"
+"ja" = "思考予算トークン"
+
+[llm.reasoning_budget_unused]
+"zh-CN" = "仅在选择自定义思考预算时可填"
+"zh-TW" = "僅在選擇自訂思考預算時可填"
+"en" = "Available only for a custom thinking budget"
+"ja" = "カスタム思考予算を選んだ場合のみ入力できます"
+
+[llm.max_output_tokens]
+"zh-CN" = "输出长度上限"
+"zh-TW" = "輸出長度上限"
+"en" = "Max output tokens"
+"ja" = "最大出力トークン"
+
+[llm.temperature]
+"zh-CN" = "temperature"
+"zh-TW" = "temperature"
+"en" = "temperature"
+"ja" = "temperature"
+
+[llm.top_p]
+"zh-CN" = "top_p"
+"zh-TW" = "top_p"
+"en" = "top_p"
+"ja" = "top_p"
+
+[llm.error.out_of_range]
+"zh-CN" = "%{field}必须在 %{min} 到 %{max} 之间"
+"zh-TW" = "%{field}必須在 %{min} 到 %{max} 之間"
+"en" = "%{field} must be between %{min} and %{max}"
+"ja" = "%{field} は %{min} から %{max} の範囲で指定してください"

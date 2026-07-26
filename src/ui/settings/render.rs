@@ -19,9 +19,14 @@ impl SettingsView {
                 ConfigSection::Model,
             ),
             (
-                "section-conversation",
-                t!("settings.conversation").to_string(),
-                ConfigSection::Conversation,
+                "section-provider",
+                t!("settings.provider").to_string(),
+                ConfigSection::Provider,
+            ),
+            (
+                "section-persona",
+                t!("settings.persona").to_string(),
+                ConfigSection::Persona,
             ),
             (
                 "section-tool",
@@ -95,25 +100,16 @@ impl Render for SettingsView {
                     .flex_col()
                     .child(match self.section {
                         ConfigSection::Model => self.render_model_page(cx),
-                        ConfigSection::Conversation => self
+                        ConfigSection::Provider => self
                             .agent_settings_view
                             .clone()
-                            .map(|view| {
-                                AnyView::from(view)
-                                    .cached(StyleRefinement::default().size_full())
-                                    .into_any_element()
-                            })
-                            .unwrap_or_else(|| {
-                                div()
-                                    .size_full()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .text_sm()
-                                    .text_color(palette.muted_foreground)
-                                    .child(t!("settings.not_initialized").to_string())
-                                    .into_any_element()
-                            }),
+                            .map(embedded_page)
+                            .unwrap_or_else(|| uninitialized_page(palette)),
+                        ConfigSection::Persona => self
+                            .persona_settings_view
+                            .clone()
+                            .map(embedded_page)
+                            .unwrap_or_else(|| uninitialized_page(palette)),
                         ConfigSection::Tool => self.render_tool_page(cx),
                         ConfigSection::System => self.render_system_page(cx),
                         ConfigSection::Debug => self.render_debug_page(cx),
@@ -145,4 +141,24 @@ impl Render for SettingsView {
                 )
             })
     }
+}
+
+/// 把一个独立设置编辑器实体嵌入主体区域，并缓存其渲染结果。
+fn embedded_page<V: Render>(view: gpui::Entity<V>) -> AnyElement {
+    AnyView::from(view)
+        .cached(StyleRefinement::default().size_full())
+        .into_any_element()
+}
+
+/// 设置窗口尚未激活时不持有输入组件，此时给出可诊断的占位提示。
+fn uninitialized_page(palette: UiPalette) -> AnyElement {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_sm()
+        .text_color(palette.muted_foreground)
+        .child(t!("settings.not_initialized").to_string())
+        .into_any_element()
 }

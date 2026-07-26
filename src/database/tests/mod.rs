@@ -2,6 +2,7 @@
 
 mod atomic_file;
 mod engine;
+mod memory;
 mod storage;
 
 use std::future::Future;

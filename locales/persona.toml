@@ -1,0 +1,301 @@
+_version = 2
+
+[persona.personas]
+"zh-CN" = "人格"
+"zh-TW" = "人格"
+"en" = "Personas"
+"ja" = "ペルソナ"
+
+[persona.add_persona]
+"zh-CN" = "添加人格"
+"zh-TW" = "新增人格"
+"en" = "Add persona"
+"ja" = "ペルソナを追加"
+
+[persona.new_persona]
+"zh-CN" = "新人格"
+"zh-TW" = "新人格"
+"en" = "New persona"
+"ja" = "新しいペルソナ"
+
+[persona.default_name]
+"zh-CN" = "默认人格"
+"zh-TW" = "預設人格"
+"en" = "Default persona"
+"ja" = "既定のペルソナ"
+
+[persona.delete_persona]
+"zh-CN" = "删除人格"
+"zh-TW" = "刪除人格"
+"en" = "Delete persona"
+"ja" = "ペルソナを削除"
+
+[persona.none]
+"zh-CN" = "未选择人格"
+"zh-TW" = "未選擇人格"
+"en" = "No persona selected"
+"ja" = "ペルソナが選択されていません"
+
+[persona.identity]
+"zh-CN" = "人格身份"
+"zh-TW" = "人格身分"
+"en" = "Identity"
+"ja" = "ペルソナ設定"
+
+[persona.id]
+"zh-CN" = "人格 ID"
+"zh-TW" = "人格 ID"
+"en" = "Persona ID"
+"ja" = "ペルソナ ID"
+
+[persona.name]
+"zh-CN" = "名称"
+"zh-TW" = "名稱"
+"en" = "Name"
+"ja" = "名前"
+
+[persona.name_placeholder]
+"zh-CN" = "人格名称"
+"zh-TW" = "人格名稱"
+"en" = "Persona name"
+"ja" = "ペルソナ名"
+
+[persona.system_prompt_placeholder]
+"zh-CN" = "描述这个人格的身份、语气和边界"
+"zh-TW" = "描述這個人格的身分、語氣和邊界"
+"en" = "Describe this persona's identity, tone, and boundaries"
+"ja" = "このペルソナの人物像、口調、境界を記述します"
+
+[persona.provider]
+"zh-CN" = "绑定供应商"
+"zh-TW" = "綁定供應商"
+"en" = "Bound provider"
+"ja" = "使用するプロバイダー"
+
+[persona.provider_inherit]
+"zh-CN" = "跟随全局默认供应商"
+"zh-TW" = "跟隨全域預設供應商"
+"en" = "Follow the default provider"
+"ja" = "既定のプロバイダーに従う"
+
+[persona.provider_missing]
+"zh-CN" = "绑定的供应商已不存在"
+"zh-TW" = "綁定的供應商已不存在"
+"en" = "The bound provider no longer exists"
+"ja" = "指定したプロバイダーは存在しません"
+
+[persona.advanced]
+"zh-CN" = "高级设置"
+"zh-TW" = "進階設定"
+"en" = "Advanced"
+"ja" = "詳細設定"
+
+[persona.advanced_summary]
+"zh-CN" = "当前上下文的条数与体积上限"
+"zh-TW" = "目前上下文的條數與體積上限"
+"en" = "Message and size limits for the current context"
+"ja" = "現在のコンテキストの件数と容量上限"
+
+[persona.context_messages]
+"zh-CN" = "上下文消息条数上限"
+"zh-TW" = "上下文訊息條數上限"
+"en" = "Max context messages"
+"ja" = "コンテキスト最大件数"
+
+[persona.context_size]
+"zh-CN" = "上下文体积上限 (KiB)"
+"zh-TW" = "上下文體積上限 (KiB)"
+"en" = "Max context size (KiB)"
+"ja" = "コンテキスト最大サイズ (KiB)"
+
+[persona.context_default_hint]
+"zh-CN" = "未启用，使用默认上限"
+"zh-TW" = "未啟用，使用預設上限"
+"en" = "Disabled; the default limit is used"
+"ja" = "無効。既定の上限を使用します"
+
+[persona.context_range_hint]
+"zh-CN" = "消息条数 ≤ %{messages}，体积 ≤ %{size} KiB。调小上限后，超出的历史轮次会在下次加载时被丢弃。"
+"zh-TW" = "訊息條數 ≤ %{messages}，體積 ≤ %{size} KiB。調小上限後，超出的歷史輪次會在下次載入時被丟棄。"
+"en" = "Messages ≤ %{messages}, size ≤ %{size} KiB. Lowering a limit drops the oldest turns that no longer fit on the next load."
+"ja" = "件数 ≤ %{messages}、サイズ ≤ %{size} KiB。上限を下げると、収まらない古い履歴は次回読み込み時に破棄されます。"
+
+[persona.memory]
+"zh-CN" = "记忆"
+"zh-TW" = "記憶"
+"en" = "Memory"
+"ja" = "記憶"
+
+[persona.memory_hint]
+"zh-CN" = "记忆按人格独立存储。删除人格会同时删除它的全部记忆。"
+"zh-TW" = "記憶依人格獨立儲存。刪除人格會同時刪除它的全部記憶。"
+"en" = "Memory is stored per persona. Deleting a persona also deletes all of its memory."
+"ja" = "記憶はペルソナごとに保存されます。ペルソナを削除すると、その記憶もすべて削除されます。"
+
+[persona.memory_refresh]
+"zh-CN" = "刷新"
+"zh-TW" = "重新整理"
+"en" = "Refresh"
+"ja" = "更新"
+
+[persona.memory_context]
+"zh-CN" = "当前上下文"
+"zh-TW" = "目前上下文"
+"en" = "Current context"
+"ja" = "現在のコンテキスト"
+
+[persona.memory_context_bytes]
+"zh-CN" = "已占用 %{used} / %{total}"
+"zh-TW" = "已佔用 %{used} / %{total}"
+"en" = "%{used} of %{total} used"
+"ja" = "%{total} 中 %{used} 使用"
+
+[persona.memory_medium]
+"zh-CN" = "中期记忆"
+"zh-TW" = "中期記憶"
+"en" = "Mid-term memory"
+"ja" = "中期記憶"
+
+[persona.memory_medium_hint]
+"zh-CN" = "由后台模型提取的条目，提取功能待实现"
+"zh-TW" = "由後台模型擷取的條目，擷取功能待實作"
+"en" = "Entries extracted by a background model; extraction is not implemented yet"
+"ja" = "バックグラウンドモデルが抽出する項目。抽出機能は未実装です"
+
+[persona.memory_long]
+"zh-CN" = "长期记忆"
+"zh-TW" = "長期記憶"
+"en" = "Long-term memory"
+"ja" = "長期記憶"
+
+[persona.memory_long_hint]
+"zh-CN" = "供 RAG 检索的条目，检索功能待实现"
+"zh-TW" = "供 RAG 檢索的條目，檢索功能待實作"
+"en" = "Entries for RAG retrieval; retrieval is not implemented yet"
+"ja" = "RAG 検索用の項目。検索機能は未実装です"
+
+[persona.memory_all]
+"zh-CN" = "全部记忆"
+"zh-TW" = "全部記憶"
+"en" = "all memory"
+"ja" = "すべての記憶"
+
+[persona.memory_clear]
+"zh-CN" = "清除"
+"zh-TW" = "清除"
+"en" = "Clear"
+"ja" = "消去"
+
+[persona.memory_clear_all]
+"zh-CN" = "清除全部记忆"
+"zh-TW" = "清除全部記憶"
+"en" = "Clear all memory"
+"ja" = "すべての記憶を消去"
+
+[persona.memory_clearing]
+"zh-CN" = "正在清除记忆"
+"zh-TW" = "正在清除記憶"
+"en" = "Clearing memory"
+"ja" = "記憶を消去しています"
+
+[persona.memory_cleared]
+"zh-CN" = "记忆已清除"
+"zh-TW" = "記憶已清除"
+"en" = "Memory cleared"
+"ja" = "記憶を消去しました"
+
+[persona.memory_clear_failed]
+"zh-CN" = "记忆清除失败：%{error}"
+"zh-TW" = "記憶清除失敗：%{error}"
+"en" = "Could not clear memory: %{error}"
+"ja" = "記憶を消去できませんでした: %{error}"
+
+[persona.memory_unavailable]
+"zh-CN" = "嵌入式数据库不可用，无法统计或清除记忆"
+"zh-TW" = "嵌入式資料庫不可用，無法統計或清除記憶"
+"en" = "The embedded database is unavailable; memory cannot be counted or cleared"
+"ja" = "埋め込みデータベースが利用できないため、記憶の集計と消去はできません"
+
+[persona.confirm_clear_title]
+"zh-CN" = "确认清除记忆"
+"zh-TW" = "確認清除記憶"
+"en" = "Confirm memory removal"
+"ja" = "記憶の消去を確認"
+
+[persona.confirm_clear_message]
+"zh-CN" = "将永久删除人格「%{persona}」的%{scope}，此操作无法撤销。"
+"zh-TW" = "將永久刪除人格「%{persona}」的%{scope}，此操作無法復原。"
+"en" = "This permanently deletes %{scope} for the persona \"%{persona}\" and cannot be undone."
+"ja" = "ペルソナ「%{persona}」の%{scope}を完全に削除します。この操作は取り消せません。"
+
+[persona.confirm_clear]
+"zh-CN" = "确认清除"
+"zh-TW" = "確認清除"
+"en" = "Clear"
+"ja" = "消去する"
+
+[persona.confirm_delete_title]
+"zh-CN" = "确认删除人格"
+"zh-TW" = "確認刪除人格"
+"en" = "Confirm persona removal"
+"ja" = "ペルソナの削除を確認"
+
+[persona.confirm_delete_message]
+"zh-CN" = "将删除人格「%{persona}」及其绑定的全部记忆，此操作无法撤销。"
+"zh-TW" = "將刪除人格「%{persona}」及其綁定的全部記憶，此操作無法復原。"
+"en" = "This deletes the persona \"%{persona}\" together with all of its memory and cannot be undone."
+"ja" = "ペルソナ「%{persona}」とそのすべての記憶を削除します。この操作は取り消せません。"
+
+[persona.confirm_delete]
+"zh-CN" = "确认删除"
+"zh-TW" = "確認刪除"
+"en" = "Delete"
+"ja" = "削除する"
+
+[persona.saving]
+"zh-CN" = "正在保存人格设置"
+"zh-TW" = "正在儲存人格設定"
+"en" = "Saving persona settings"
+"ja" = "ペルソナ設定を保存しています"
+
+[persona.saved]
+"zh-CN" = "人格设置已保存"
+"zh-TW" = "人格設定已儲存"
+"en" = "Persona settings saved"
+"ja" = "ペルソナ設定を保存しました"
+
+[persona.save_replaced]
+"zh-CN" = "保存请求已被更新草稿替代"
+"zh-TW" = "儲存要求已被新的草稿取代"
+"en" = "Save was superseded by a newer draft"
+"ja" = "保存は新しい下書きに置き換えられました"
+
+[persona.save_failed]
+"zh-CN" = "人格设置保存失败：%{error}"
+"zh-TW" = "人格設定儲存失敗：%{error}"
+"en" = "Could not save persona settings: %{error}"
+"ja" = "ペルソナ設定を保存できませんでした: %{error}"
+
+[persona.error.empty]
+"zh-CN" = "至少需要保留一个人格"
+"zh-TW" = "至少需要保留一個人格"
+"en" = "At least one persona must remain"
+"ja" = "ペルソナは少なくとも 1 つ必要です"
+
+[persona.error.max_personas]
+"zh-CN" = "人格数量不能超过 %{max}"
+"zh-TW" = "人格數量不能超過 %{max}"
+"en" = "The number of personas cannot exceed %{max}"
+"ja" = "ペルソナは %{max} 件以内にしてください"
+
+[persona.error.duplicate_id]
+"zh-CN" = "人格 ID 重复：%{id}"
+"zh-TW" = "人格 ID 重複：%{id}"
+"en" = "Duplicate persona ID: %{id}"
+"ja" = "ペルソナ ID が重複しています: %{id}"
+
+[persona.error.missing_selected]
+"zh-CN" = "当前人格不存在：%{id}"
+"zh-TW" = "目前人格不存在：%{id}"
+"en" = "Selected persona does not exist: %{id}"
+"ja" = "選択したペルソナが存在しません: %{id}"

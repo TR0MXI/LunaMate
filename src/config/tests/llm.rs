@@ -3,8 +3,9 @@ use std::collections::HashSet;
 use toml_edit::DocumentMut;
 
 use crate::config::{
-    LLM_PROVIDERS, LlmModelConfig, LlmProvider, LlmSettings, llm::normalize_endpoint,
-    parse_llm_settings, write_llm_settings,
+    LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
+    MAX_OUTPUT_TOKENS_MAX, REASONING_EFFORT_LEVELS, ReasoningEffort, TEMPERATURE_MAX,
+    llm::normalize_endpoint, parse_llm_settings, write_llm_settings,
 };
 
 #[test]
@@ -28,11 +29,11 @@ fn settings_reject_missing_selection_and_duplicate_ids() {
         model: "qwen3:8b".to_owned(),
         endpoint: Some("http://localhost:11434".to_owned()),
         api_key: None,
+        advanced: LlmAdvancedOptions::default(),
     };
     let duplicate = LlmSettings {
         models: vec![model.clone(), model],
         selected_model: Some("local".to_owned()),
-        system_prompt: String::new(),
     };
     assert!(duplicate.normalized().is_err());
 
@@ -53,9 +54,9 @@ fn direct_api_key_is_normalized_and_redacted_in_debug() {
             model: "gpt-5-mini".to_owned(),
             endpoint: None,
             api_key: Some(" 1/key+=value ".to_owned()),
+            advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("cloud".to_owned()),
-        system_prompt: String::new(),
     };
     let normalized = settings
         .normalized()
@@ -239,9 +240,9 @@ fn selected_returns_only_a_model_that_still_exists() {
             model: "qwen3:8b".to_owned(),
             endpoint: None,
             api_key: None,
+            advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("local".to_owned()),
-        system_prompt: String::new(),
     };
 
     assert_eq!(
@@ -266,11 +267,11 @@ fn required_model_fields_are_trimmed_and_bounded() {
         model: " qwen3:8b ".to_owned(),
         endpoint: None,
         api_key: Some("   ".to_owned()),
+        advanced: LlmAdvancedOptions::default(),
     };
     let normalized = LlmSettings {
         models: vec![base.clone()],
         selected_model: Some(" local ".to_owned()),
-        system_prompt: String::new(),
     }
     .normalized()
     .expect("去除空白后的配置应当有效");
@@ -324,7 +325,6 @@ fn required_model_fields_are_trimmed_and_bounded() {
             LlmSettings {
                 models: vec![invalid.clone()],
                 selected_model: None,
-                system_prompt: String::new(),
             }
             .normalized()
             .is_err(),
@@ -342,13 +342,13 @@ fn model_count_and_system_prompt_have_hard_limits() {
         model: "qwen3:8b".to_owned(),
         endpoint: None,
         api_key: None,
+        advanced: LlmAdvancedOptions::default(),
     };
 
     assert!(
         LlmSettings {
             models: (0..64).map(model).collect(),
             selected_model: None,
-            system_prompt: String::new(),
         }
         .normalized()
         .is_ok()
@@ -357,16 +357,68 @@ fn model_count_and_system_prompt_have_hard_limits() {
         LlmSettings {
             models: (0..65).map(model).collect(),
             selected_model: None,
-            system_prompt: String::new(),
         }
         .normalized()
         .is_err()
     );
+}
+
+#[test]
+fn advanced_options_outside_their_range_are_rejected() {
+    let with_advanced = |advanced: LlmAdvancedOptions| LlmSettings {
+        models: vec![LlmModelConfig {
+            id: "local".to_owned(),
+            label: "Local".to_owned(),
+            provider: LlmProvider::Ollama,
+            model: "qwen3:8b".to_owned(),
+            endpoint: None,
+            api_key: None,
+            advanced,
+        }],
+        selected_model: None,
+    };
+
+    for level in REASONING_EFFORT_LEVELS {
+        assert!(
+            with_advanced(LlmAdvancedOptions {
+                reasoning_effort: Some(level),
+                ..LlmAdvancedOptions::default()
+            })
+            .normalized()
+            .is_ok(),
+            "{level:?} 应当是合法档位"
+        );
+    }
     assert!(
-        LlmSettings {
-            system_prompt: "p".repeat(64 * 1024 + 1),
-            ..LlmSettings::default()
-        }
+        with_advanced(LlmAdvancedOptions {
+            max_output_tokens: Some(0),
+            ..LlmAdvancedOptions::default()
+        })
+        .normalized()
+        .is_err()
+    );
+    assert!(
+        with_advanced(LlmAdvancedOptions {
+            max_output_tokens: Some(MAX_OUTPUT_TOKENS_MAX + 1),
+            ..LlmAdvancedOptions::default()
+        })
+        .normalized()
+        .is_err()
+    );
+    assert!(
+        with_advanced(LlmAdvancedOptions {
+            temperature: Some(TEMPERATURE_MAX + 0.1),
+            ..LlmAdvancedOptions::default()
+        })
+        .normalized()
+        .is_err()
+    );
+    // 非有限值来自手写配置，必须在发布前挡住而不是发给 Provider。
+    assert!(
+        with_advanced(LlmAdvancedOptions {
+            top_p: Some(f64::NAN),
+            ..LlmAdvancedOptions::default()
+        })
         .normalized()
         .is_err()
     );
@@ -377,7 +429,6 @@ fn malformed_llm_tables_produce_warnings_instead_of_dropping_the_config() {
     let document = r#"
 [llm]
 selected = 42
-system_prompt = true
 models = "not-an-array"
 "#
     .parse::<DocumentMut>()
@@ -387,16 +438,11 @@ models = "not-an-array"
     let settings = parse_llm_settings(&document, &mut warnings);
 
     assert_eq!(settings, LlmSettings::default());
-    assert_eq!(warnings.len(), 3);
+    assert_eq!(warnings.len(), 2);
     assert!(
         warnings
             .iter()
             .any(|warning| warning.contains("llm.selected"))
-    );
-    assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.contains("llm.system_prompt"))
     );
     assert!(
         warnings
@@ -429,21 +475,56 @@ model = "qwen3:8b"
 }
 
 #[test]
-fn oversized_stored_system_prompt_is_cleared_with_a_warning() {
-    let mut document = DocumentMut::new();
-    write_llm_settings(
-        &mut document,
-        &LlmSettings {
-            system_prompt: "p".repeat(64 * 1024 + 1),
-            ..LlmSettings::default()
-        },
-    );
+fn stored_advanced_options_round_trip_and_only_the_broken_entry_is_dropped() {
+    let mut document = r#"
+[[llm.models]]
+id = "broken"
+label = "Broken"
+provider = "ollama"
+model = "qwen3:8b"
+reasoning_effort = "sideways"
+
+[[llm.models]]
+id = "good"
+label = "Good"
+provider = "openai"
+model = "gpt-5-mini"
+reasoning_effort = "budget"
+reasoning_budget = 1024
+max_output_tokens = 256
+temperature = 1
+top_p = 0.5
+"#
+    .parse::<DocumentMut>()
+    .expect("测试配置应当可以解析");
     let mut warnings = Vec::new();
 
     let settings = parse_llm_settings(&document, &mut warnings);
 
-    assert!(settings.system_prompt.is_empty());
+    assert_eq!(settings.models.len(), 1);
     assert_eq!(warnings.len(), 1);
+    let advanced = settings
+        .model("good")
+        .map(|model| model.advanced)
+        .expect("合法条目必须保留");
+    assert_eq!(
+        advanced,
+        LlmAdvancedOptions {
+            reasoning_effort: Some(ReasoningEffort::Budget(1_024)),
+            max_output_tokens: Some(256),
+            // 手写配置常把 1.0 写成整数 1，解析必须接受两种字面量。
+            temperature: Some(1.0),
+            top_p: Some(0.5),
+        }
+    );
+
+    write_llm_settings(&mut document, &settings);
+    let mut rewritten_warnings = Vec::new();
+    assert_eq!(
+        parse_llm_settings(&document, &mut rewritten_warnings),
+        settings
+    );
+    assert!(rewritten_warnings.is_empty());
 }
 
 #[test]

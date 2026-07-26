@@ -15,7 +15,10 @@ use crate::{
         service::*,
         session::{ChatContextMessage, ChatRole},
     },
-    config::{LLM_PROVIDERS, LlmModelConfig, LlmProvider},
+    config::{
+        LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, REASONING_EFFORT_LEVELS,
+        ReasoningEffort,
+    },
 };
 
 #[test]
@@ -28,6 +31,7 @@ fn request_keeps_system_prompt_separate_from_history() {
             model: "qwen3:8b".to_owned(),
             endpoint: Some("http://localhost:11434/".to_owned()),
             api_key: None,
+            advanced: LlmAdvancedOptions::default(),
         },
         system_prompt: "persona".to_owned(),
         messages: vec![ChatContextMessage {
@@ -242,6 +246,7 @@ fn auth_data_uses_direct_key_and_disables_environment_fallback_when_empty() {
         model: "gpt-5-mini".to_owned(),
         endpoint: None,
         api_key: Some("not-an-environment-name/key".to_owned()),
+        advanced: LlmAdvancedOptions::default(),
     };
 
     assert_eq!(
@@ -764,4 +769,47 @@ async fn total_timeout_keeps_partial_text_and_the_specific_terminal_error() {
     assert!(
         matches!(receiver.next().await, Some(ChatStreamEvent::Failed(message)) if message == t!("chat.error.total_timeout"))
     );
+}
+
+#[test]
+fn unset_advanced_options_send_no_request_overrides() {
+    // 默认配置必须与接入高级参数之前的请求完全一致，避免静默改变已有行为。
+    assert!(base_chat_options(&LlmAdvancedOptions::default()).is_none());
+}
+
+#[test]
+fn advanced_options_map_onto_provider_request_options() {
+    let options = base_chat_options(&LlmAdvancedOptions {
+        reasoning_effort: Some(ReasoningEffort::Budget(4_096)),
+        max_output_tokens: Some(1_024),
+        temperature: Some(0.25),
+        top_p: Some(0.9),
+    })
+    .expect("设置了高级参数时必须构造请求选项");
+
+    assert_eq!(options.max_tokens, Some(1_024));
+    assert_eq!(options.temperature, Some(0.25));
+    assert_eq!(options.top_p, Some(0.9));
+    assert!(matches!(
+        options.reasoning_effort,
+        Some(genai::chat::ReasoningEffort::Budget(4_096))
+    ));
+}
+
+#[test]
+fn every_reasoning_level_maps_to_a_distinct_provider_keyword() {
+    let mut keywords = HashSet::with_capacity(REASONING_EFFORT_LEVELS.len());
+    for level in REASONING_EFFORT_LEVELS {
+        let options = base_chat_options(&LlmAdvancedOptions {
+            reasoning_effort: Some(level),
+            ..LlmAdvancedOptions::default()
+        })
+        .expect("选择了思考强度时必须构造请求选项");
+        let effort = options.reasoning_effort.expect("思考强度必须写入请求选项");
+        let keyword = effort.as_keyword().expect("非预算档位必须有对应关键字");
+        assert!(
+            keywords.insert(keyword),
+            "{level:?} 与其他档位映射到同一关键字 {keyword}"
+        );
+    }
 }

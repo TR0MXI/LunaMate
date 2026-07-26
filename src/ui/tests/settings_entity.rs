@@ -12,6 +12,7 @@ use std::{
 use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
 
 use crate::{
+    agent::AgentMemoryAccess,
     model::{ModelCatalog, ModelPreviewCapabilities},
     ui::settings::SettingsView,
 };
@@ -77,7 +78,9 @@ fn mount(
         gpui_component::init(cx);
         gpui_tokio::init(cx);
     });
-    cx.add_window_view(|_window, cx| SettingsView::new(catalog, status, cx))
+    cx.add_window_view(|_window, cx| {
+        SettingsView::new(catalog, AgentMemoryAccess::default(), status, cx)
+    })
 }
 
 #[gpui::test]

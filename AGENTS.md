@@ -14,15 +14,19 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 
 - UI/窗口、Live2D 运行时与渲染、互动状态、LLM、配置和持久化保持职责边界。Provider
   细节不得进入 UI，Live2D 层不得发起网络请求。
-- 通用 GPUI 视图、主题和窗口布局通过 `src/ui` façade 暴露，Agent 对话与 Provider
+- 通用 GPUI 视图、主题和窗口布局通过 `src/ui` façade 暴露，Agent 对话、供应商与人格
   设置视图通过 `src/agent` façade 暴露；原生窗口适配、underlay surface attachment
   与对应 `unsafe` 收口在 `src/platform`。可持久化外观类型属于配置域，不得依赖 UI。
 - Live2D 运行时、模型目录、能力、交互命令、帧调度与 CPU/GPU 渲染统一通过
   `src/model` façade 暴露；外部模块不得依赖其动画、表情、资源解析、worker 或 renderer
   子模块。
-- 对话能力和 Provider 设置编辑器收口在 `src/agent`；应用与其他 UI 模块只通过
-  `Agent`、`AgentView`、`AgentShutdown`、`AgentSettingsView`、`AgentSettingsDraft`
-  和 `AgentSettingsEvent` 交互，不得构造或依赖内部会话、存储、快照或 Provider 配置类型。
+- 对话能力、供应商与人格设置编辑器和人格记忆收口在 `src/agent`；应用与其他 UI 模块只
+  通过 `Agent`、`AgentView`、`AgentShutdown`、`AgentMemoryAccess`、`PersonaMemory` 与两个
+  设置编辑器的 `*View`、`*Draft`、`*Event` 交互，不得构造或依赖内部会话、存储、快照、
+  记忆记录或 Provider 配置类型。
+- 供应商与人格是两个独立配置域：供应商只描述连接与模型调用参数，人格描述身份、系统
+  提示词、可选的供应商绑定与自己的记忆。人格 ID 同时是会话文档键与 `agent_memory.agent_id`，
+  必须限制为安全字符集，人格列表始终至少保留一条。
 - `src/database` 统一提供嵌入式数据库 façade 和配置文件原子替换；外部模块不得依赖
   SurrealDB 类型，调用方负责转换各自的领域错误。
 - 模块按稳定职责拆分，跨模块使用明确的状态、事件或接口；避免循环依赖、隐藏全局状态
@@ -86,11 +90,14 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 
 ## 配置与 LLM
 
-- 默认在用户配置目录保存 `config.toml`，兼容工作目录中的旧文件；有界 Agent 会话仅保存到
-  工作目录下固定的 `./data/lunamate.db` 嵌入式数据库。配置写入必须原子化，数据库目录和
-  配置文件必须限制本地访问权限。
-- Provider、endpoint、模型和系统提示词来自配置；持久化 LunaMate 稳定 Provider ID，
-  不直接序列化 `AdapterKind`，也不把用户输入当作环境变量名。
+- 默认在用户配置目录保存 `config.toml`，兼容工作目录中的旧文件；每个人格的有界会话仅
+  保存到工作目录下固定的 `./data/lunamate.db` 嵌入式数据库。配置写入必须原子化，数据库
+  目录和配置文件必须限制本地访问权限。
+- Provider、endpoint、模型、模型调用参数和系统提示词来自配置；持久化 LunaMate 稳定
+  Provider ID 与思考强度标识，不直接序列化 `AdapterKind` 或 genai 选项类型，也不把用户
+  输入当作环境变量名。未显式启用的可选请求参数不得发送，必须沿用 Provider 默认值。
+- 记忆按人格隔离为短期上下文、中期条目与长期检索三层；删除人格必须同步删除其全部记忆，
+  清除记忆等不可逆操作必须先经用户二次确认。记忆读写只经 `database` façade。
 - API key、access token 和 endpoint 凭据只从本地配置读取，并在 UI 中默认遮蔽；不得写入
   源码、Git、日志或错误信息。
 - 网络调用必须异步，支持超时、取消和有限退避重试。优先流式响应，按批次刷新 UI；会话

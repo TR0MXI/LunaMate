@@ -5,6 +5,7 @@ use gpui_component::Theme;
 
 #[derive(Clone, Copy)]
 pub(super) struct AgentPalette {
+    pub(super) background: Hsla,
     pub(super) foreground: Hsla,
     pub(super) muted_foreground: Hsla,
     pub(super) border: Hsla,
@@ -23,6 +24,7 @@ impl AgentPalette {
     pub(super) fn from_app(cx: &App) -> Self {
         let theme = Theme::global(cx);
         Self {
+            background: theme.background,
             foreground: theme.foreground,
             muted_foreground: theme.muted_foreground,
             border: theme.border,

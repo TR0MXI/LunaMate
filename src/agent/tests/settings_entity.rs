@@ -1,42 +1,18 @@
-//! 在无头 GPUI TestAppContext 中验证 Provider 设置编辑器的草稿状态流转。
+//! 在无头 GPUI TestAppContext 中验证供应商设置编辑器的草稿状态流转。
 //!
 //! 保存路径会通过全局 `CONFIG` 写入用户配置文件，因此这里只覆盖不触发写入的
 //! 草稿编辑：模型增删、选择切换与窗口状态转移。
 
 use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
 
+use super::ConfigGuard;
 use crate::{
     agent::settings::{AgentSettingsDraft, AgentSettingsView},
-    config::{CONFIG, LlmModelConfig, LlmProvider, LlmSettings},
+    config::{
+        DEFAULT_MAX_OUTPUT_TOKENS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
+        ReasoningEffort,
+    },
 };
-
-/// `CONFIG` 是进程级全局状态，测试线程并发修改会互相覆盖已发布的模型快照。
-static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-struct ConfigGuard {
-    _guard: std::sync::MutexGuard<'static, ()>,
-    previous: LlmSettings,
-}
-
-impl ConfigGuard {
-    fn publish(settings: LlmSettings) -> Self {
-        let guard = CONFIG_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let previous = CONFIG.llm_settings().as_ref().clone();
-        CONFIG.publish_llm_settings_for_test(settings);
-        Self {
-            _guard: guard,
-            previous,
-        }
-    }
-}
-
-impl Drop for ConfigGuard {
-    fn drop(&mut self) {
-        CONFIG.publish_llm_settings_for_test(self.previous.clone());
-    }
-}
 
 fn model(id: &str) -> LlmModelConfig {
     LlmModelConfig {
@@ -46,6 +22,7 @@ fn model(id: &str) -> LlmModelConfig {
         model: "qwen3:8b".to_owned(),
         endpoint: Some("http://localhost:11434/".to_owned()),
         api_key: None,
+        advanced: LlmAdvancedOptions::default(),
     }
 }
 
@@ -75,7 +52,6 @@ fn the_persisted_selection_becomes_the_edited_model(cx: &mut TestAppContext) {
     let _config = ConfigGuard::publish(LlmSettings {
         models: vec![model("a"), model("b"), model("c")],
         selected_model: Some("b".to_owned()),
-        system_prompt: "persona".to_owned(),
     });
     let (view, cx) = mount(cx);
 
@@ -90,7 +66,6 @@ fn a_missing_selection_falls_back_to_the_first_model(cx: &mut TestAppContext) {
     let _config = ConfigGuard::publish(LlmSettings {
         models: vec![model("a"), model("b")],
         selected_model: Some("removed".to_owned()),
-        system_prompt: String::new(),
     });
     let (view, cx) = mount(cx);
 
@@ -104,7 +79,6 @@ fn adding_a_model_selects_it_and_allocates_an_unused_id(cx: &mut TestAppContext)
     let _config = ConfigGuard::publish(LlmSettings {
         models: vec![model("model-1")],
         selected_model: Some("model-1".to_owned()),
-        system_prompt: String::new(),
     });
     let (view, cx) = mount(cx);
 
@@ -127,7 +101,6 @@ fn deleting_a_model_moves_the_selection_to_a_remaining_entry(cx: &mut TestAppCon
     let _config = ConfigGuard::publish(LlmSettings {
         models: vec![model("a"), model("b"), model("c")],
         selected_model: Some("b".to_owned()),
-        system_prompt: String::new(),
     });
     let (view, cx) = mount(cx);
 
@@ -146,7 +119,6 @@ fn deleting_the_last_model_clamps_the_selection_to_the_new_end(cx: &mut TestAppC
     let _config = ConfigGuard::publish(LlmSettings {
         models: vec![model("a"), model("b")],
         selected_model: Some("b".to_owned()),
-        system_prompt: String::new(),
     });
     let (view, cx) = mount(cx);
 
@@ -164,7 +136,6 @@ fn deleting_the_only_model_clears_the_editing_target(cx: &mut TestAppContext) {
     let _config = ConfigGuard::publish(LlmSettings {
         models: vec![model("only")],
         selected_model: Some("only".to_owned()),
-        system_prompt: String::new(),
     });
     let (view, cx) = mount(cx);
 
@@ -186,7 +157,6 @@ fn selecting_an_out_of_range_model_keeps_the_current_target(cx: &mut TestAppCont
     let _config = ConfigGuard::publish(LlmSettings {
         models: vec![model("a"), model("b")],
         selected_model: Some("a".to_owned()),
-        system_prompt: String::new(),
     });
     let (view, cx) = mount(cx);
 
@@ -206,7 +176,6 @@ fn window_state_is_transferable_across_a_settings_window_reopen(cx: &mut TestApp
     let _config = ConfigGuard::publish(LlmSettings {
         models: vec![model("a")],
         selected_model: Some("a".to_owned()),
-        system_prompt: "persona".to_owned(),
     });
     let (view, cx) = mount(cx);
 
@@ -223,5 +192,69 @@ fn window_state_is_transferable_across_a_settings_window_reopen(cx: &mut TestApp
     restored.update(cx, |view, _cx| {
         assert_eq!(view.model_ids_for_test(), ["a", "model-1"]);
         assert_eq!(view.selected_model_for_test(), Some("model-1"));
+    });
+}
+
+#[gpui::test]
+fn advanced_options_survive_a_switch_between_entries(cx: &mut TestAppContext) {
+    let mut with_reasoning = model("a");
+    with_reasoning.advanced = LlmAdvancedOptions {
+        reasoning_effort: Some(ReasoningEffort::High),
+        max_output_tokens: Some(2_048),
+        temperature: Some(0.4),
+        top_p: None,
+    };
+    let _config = ConfigGuard::publish(LlmSettings {
+        models: vec![with_reasoning, model("b")],
+        selected_model: Some("a".to_owned()),
+    });
+    let (view, cx) = mount(cx);
+
+    cx.update_window_entity(&view, |view, window, cx| {
+        // 切到另一条再切回来，表单必须把原值原样写回草稿而不是回落为默认值。
+        view.select_model_for_test(1, window, cx);
+        assert_eq!(
+            view.advanced_options_for_test(1),
+            Some(LlmAdvancedOptions::default())
+        );
+
+        view.select_model_for_test(0, window, cx);
+        view.capture_form_for_test(cx);
+        assert_eq!(
+            view.advanced_options_for_test(0),
+            Some(LlmAdvancedOptions {
+                reasoning_effort: Some(ReasoningEffort::High),
+                max_output_tokens: Some(2_048),
+                temperature: Some(0.4),
+                top_p: None,
+            })
+        );
+    });
+}
+
+#[gpui::test]
+fn disabled_advanced_options_are_not_persisted_even_with_prefilled_values(cx: &mut TestAppContext) {
+    let _config = ConfigGuard::publish(LlmSettings {
+        models: vec![model("a")],
+        selected_model: Some("a".to_owned()),
+    });
+    let (view, cx) = mount(cx);
+
+    cx.update_window_entity(&view, |view, _window, cx| {
+        // 输入框预填了建议值，但开关关闭时不得把它当成用户的选择发送出去。
+        view.set_advanced_enabled_for_test(false, false, false);
+        view.capture_form_for_test(cx);
+        assert_eq!(
+            view.advanced_options_for_test(0),
+            Some(LlmAdvancedOptions::default())
+        );
+
+        view.set_advanced_enabled_for_test(true, false, false);
+        view.capture_form_for_test(cx);
+        assert_eq!(
+            view.advanced_options_for_test(0)
+                .and_then(|advanced| advanced.max_output_tokens),
+            Some(DEFAULT_MAX_OUTPUT_TOKENS)
+        );
     });
 }

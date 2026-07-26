@@ -788,7 +788,7 @@ fn reset_window_positions_clears_memory_and_persisted_tables() {
 }
 
 #[test]
-fn llm_models_and_multiline_prompt_round_trip_with_direct_api_key() {
+fn llm_models_round_trip_with_direct_api_key_and_advanced_options() {
     let directory = TestDirectory::new();
     directory.write(
         r#"# 保留配置注释
@@ -823,11 +823,27 @@ future_option = "keep"
         loaded.selected().map(|model| model.id.as_str()),
         Some("local")
     );
-    assert!(loaded.system_prompt.contains("回答保持简洁"));
+    // 旧版全局提示词在没有 `[persona]` 时迁移为唯一的默认人格。
+    let persona = config.persona_settings();
+    assert_eq!(persona.personas.len(), 1);
+    assert!(
+        persona
+            .active()
+            .expect("默认人格必须存在")
+            .system_prompt
+            .contains("回答保持简洁")
+    );
 
     let mut edited = loaded.as_ref().clone();
     edited.selected_model = Some("cloud".to_owned());
-    edited.system_prompt = "新的系统提示词".to_owned();
+    if let Some(model) = edited.models.first_mut() {
+        model.advanced = LlmAdvancedOptions {
+            reasoning_effort: Some(ReasoningEffort::Budget(2_048)),
+            max_output_tokens: Some(512),
+            temperature: Some(0.5),
+            top_p: None,
+        };
+    }
     let revision = config.reserve_llm_settings_revision();
     config
         .set_llm_settings_at_revision(edited, revision)
@@ -851,12 +867,22 @@ future_option = "keep"
     assert!(saved.contains("api_key = \"test-token+/=\""));
     assert!(!saved.contains("api_key_env"));
     assert!(saved.contains("future_option = \"keep\""));
+    assert!(saved.contains("reasoning_effort = \"budget\""));
+    assert!(saved.contains("reasoning_budget = 2048"));
     let reloaded = LunaConfig::load_from(directory.config_path()).llm_settings();
     assert_eq!(
         reloaded.selected().map(|model| model.id.as_str()),
         Some("cloud")
     );
-    assert_eq!(reloaded.system_prompt, "新的系统提示词");
+    assert_eq!(
+        reloaded.model("local").map(|model| model.advanced),
+        Some(LlmAdvancedOptions {
+            reasoning_effort: Some(ReasoningEffort::Budget(2_048)),
+            max_output_tokens: Some(512),
+            temperature: Some(0.5),
+            top_p: None,
+        })
+    );
     assert_eq!(
         reloaded
             .selected()
@@ -878,9 +904,9 @@ fn inline_llm_table_becomes_a_table_before_models_are_added() {
             model: "qwen3:8b".to_owned(),
             endpoint: Some("http://localhost:11434".to_owned()),
             api_key: None,
+            advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("local".to_owned()),
-        system_prompt: "你好".to_owned(),
     };
     let revision = config.reserve_llm_settings_revision();
     config
@@ -911,9 +937,9 @@ fn stale_llm_write_cannot_replace_newer_selection() {
             model: "qwen3:8b".to_owned(),
             endpoint: Some("http://localhost:11434".to_owned()),
             api_key: None,
+            advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("local".to_owned()),
-        system_prompt: String::new(),
     };
     let cloud = LlmSettings {
         models: vec![LlmModelConfig {
@@ -923,9 +949,9 @@ fn stale_llm_write_cannot_replace_newer_selection() {
             model: "gpt-5-mini".to_owned(),
             endpoint: None,
             api_key: Some("test-token".to_owned()),
+            advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("cloud".to_owned()),
-        system_prompt: String::new(),
     };
     let old_revision = config.reserve_llm_settings_revision();
     let new_revision = config.reserve_llm_settings_revision();

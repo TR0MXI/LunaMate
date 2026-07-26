@@ -6,11 +6,17 @@ _version = 2
 "en" = "Model"
 "ja" = "モデル"
 
-[settings.conversation]
-"zh-CN" = "对话"
-"zh-TW" = "對話"
-"en" = "Conversation"
-"ja" = "会話"
+[settings.provider]
+"zh-CN" = "供应商"
+"zh-TW" = "供應商"
+"en" = "Providers"
+"ja" = "プロバイダー"
+
+[settings.persona]
+"zh-CN" = "人格"
+"zh-TW" = "人格"
+"en" = "Personas"
+"ja" = "ペルソナ"
 
 [settings.model_title]
 "zh-CN" = "模型设置"
@@ -18,14 +24,20 @@ _version = 2
 "en" = "Model Settings"
 "ja" = "モデル設定"
 
-[settings.conversation_title]
-"zh-CN" = "对话设置"
-"zh-TW" = "對話設定"
-"en" = "Conversation Settings"
-"ja" = "会話設定"
+[settings.provider_title]
+"zh-CN" = "供应商设置"
+"zh-TW" = "供應商設定"
+"en" = "Provider Settings"
+"ja" = "プロバイダー設定"
+
+[settings.persona_title]
+"zh-CN" = "人格设置"
+"zh-TW" = "人格設定"
+"en" = "Persona Settings"
+"ja" = "ペルソナ設定"
 
 [settings.not_initialized]
-"zh-CN" = "对话设置尚未初始化"
-"zh-TW" = "對話設定尚未初始化"
-"en" = "Conversation settings are not initialized"
-"ja" = "会話設定が初期化されていません"
+"zh-CN" = "该设置页尚未初始化"
+"zh-TW" = "該設定頁尚未初始化"
+"en" = "This settings page is not initialized"
+"ja" = "この設定ページは初期化されていません"

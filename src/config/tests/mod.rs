@@ -3,4 +3,5 @@
 mod appearance;
 mod config;
 mod llm;
+mod persona;
 mod types;

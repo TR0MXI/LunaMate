@@ -17,7 +17,10 @@ use gpui_component::input::{InputEvent, InputState, MaskPattern};
 use rust_i18n::t;
 
 use crate::{
-    agent::{AgentSettingsDraft, AgentSettingsEvent, AgentSettingsView},
+    agent::{
+        AgentMemoryAccess, AgentSettingsDraft, AgentSettingsEvent, AgentSettingsView,
+        PersonaSettingsDraft, PersonaSettingsEvent, PersonaSettingsView,
+    },
     config::{
         AppLanguage, AppearanceSettings, CONFIG, CUSTOM_FRAME_RATE_MAX, CUSTOM_FRAME_RATE_MIN,
         ConfigWriteError, FrameRate, LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES,
@@ -55,8 +58,10 @@ pub(crate) enum SettingsEvent {
     PreviewExpression(String),
     /// 请求主模型 generation 恢复模型清单中的默认表情。
     ResetExpression,
-    /// Agent Provider 或系统提示词配置已经发布。
+    /// 供应商或人格配置已经发布。
     AgentChanged,
+    /// 指定人格的短期上下文需要由持有会话的视图清除。
+    PersonaContextCleared(String),
     /// 外观设置已经发布，所有窗口应刷新主题和语言。
     AppearanceChanged(AppearanceSettings),
     /// 已清除持久化位置，所有现存窗口应立即返回默认位置。
@@ -66,7 +71,8 @@ pub(crate) enum SettingsEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConfigSection {
     Model,
-    Conversation,
+    Provider,
+    Persona,
     Tool,
     System,
     Debug,
@@ -75,8 +81,11 @@ enum ConfigSection {
 /// 独立设置窗口的主体状态。
 pub(crate) struct SettingsView {
     catalog: ModelCatalog,
+    memory: AgentMemoryAccess,
     agent_settings_view: Option<Entity<AgentSettingsView>>,
     agent_settings_draft: Option<AgentSettingsDraft>,
+    persona_settings_view: Option<Entity<PersonaSettingsView>>,
+    persona_settings_draft: Option<PersonaSettingsDraft>,
     custom_accent_input: Option<Entity<InputState>>,
     custom_background_input: Option<Entity<InputState>>,
     custom_frame_rate_input: Option<Entity<InputState>>,
@@ -102,6 +111,7 @@ pub(crate) struct SettingsView {
     refresh_task: Option<Task<()>>,
     write_tasks: Vec<Task<()>>,
     agent_settings_subscription: Option<Subscription>,
+    persona_settings_subscription: Option<Subscription>,
     custom_frame_rate_subscription: Option<Subscription>,
     custom_frame_rate_input_revision: u64,
     custom_frame_rate_save_task: Option<Task<()>>,
@@ -117,6 +127,7 @@ impl SettingsView {
     /// 使用启动阶段得到的模型目录和配置诊断创建界面。
     pub(crate) fn new(
         catalog: ModelCatalog,
+        memory: AgentMemoryAccess,
         status: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -129,8 +140,11 @@ impl SettingsView {
         .detach();
         let mut view = Self {
             catalog,
+            memory,
             agent_settings_view: None,
             agent_settings_draft: None,
+            persona_settings_view: None,
+            persona_settings_draft: None,
             custom_accent_input: None,
             custom_background_input: None,
             custom_frame_rate_input: None,
@@ -157,6 +171,7 @@ impl SettingsView {
             refresh_task: None,
             write_tasks: Vec::new(),
             agent_settings_subscription: None,
+            persona_settings_subscription: None,
             custom_frame_rate_subscription: None,
             custom_frame_rate_input_revision: 0,
             custom_frame_rate_save_task: None,
@@ -185,6 +200,7 @@ impl SettingsView {
             .take()
             .unwrap_or_else(AgentSettingsDraft::current);
         let agent_settings_view = cx.new(|cx| AgentSettingsView::new(draft, window, cx));
+        self.activate_persona_settings(window, cx);
         self.custom_accent_input = Some(cx.new(|cx| {
             InputState::new(window, cx).default_value(self.appearance.custom.accent.clone())
         }));
@@ -265,14 +281,39 @@ impl SettingsView {
         ];
         self.log_max_size_input = Some(log_max_size_input);
         self.log_keep_files_input = Some(log_keep_files_input);
-        self.agent_settings_subscription = Some(cx.subscribe(
+        // 供应商目录变化会改变人格可绑定的候选项，两个编辑器必须保持同步。
+        let persona_settings_view = self.persona_settings_view.clone();
+        self.agent_settings_subscription = Some(cx.subscribe_in(
             &agent_settings_view,
-            |_, _, _: &AgentSettingsEvent, cx| {
+            window,
+            move |_, _, _: &AgentSettingsEvent, window, cx| {
+                if let Some(persona) = &persona_settings_view {
+                    persona.update(cx, |persona, cx| persona.refresh_providers(window, cx));
+                }
                 cx.emit(SettingsEvent::AgentChanged);
             },
         ));
         self.agent_settings_view = Some(agent_settings_view);
         cx.notify();
+    }
+
+    fn activate_persona_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let draft = self
+            .persona_settings_draft
+            .take()
+            .unwrap_or_else(PersonaSettingsDraft::current);
+        let memory = self.memory.clone();
+        let view = cx.new(|cx| PersonaSettingsView::new(draft, memory, window, cx));
+        self.persona_settings_subscription = Some(cx.subscribe(
+            &view,
+            |_, _, event: &PersonaSettingsEvent, cx| match event {
+                PersonaSettingsEvent::Saved => cx.emit(SettingsEvent::AgentChanged),
+                PersonaSettingsEvent::ClearContext(persona) => {
+                    cx.emit(SettingsEvent::PersonaContextCleared(persona.clone()));
+                }
+            },
+        ));
+        self.persona_settings_view = Some(view);
     }
 
     /// 设置窗口关闭时丢弃绑定到旧窗口的输入状态。
@@ -281,6 +322,12 @@ impl SettingsView {
             let (draft, pending) =
                 agent_settings_view.update(cx, |view, cx| view.take_window_state(cx));
             self.agent_settings_draft = Some(draft);
+            self.write_tasks.extend(pending);
+        }
+        if let Some(persona_settings_view) = self.persona_settings_view.take() {
+            let (draft, pending) =
+                persona_settings_view.update(cx, |view, cx| view.take_window_state(cx));
+            self.persona_settings_draft = Some(draft);
             self.write_tasks.extend(pending);
         }
         self.flush_custom_frame_rate_input(cx);
@@ -292,6 +339,7 @@ impl SettingsView {
         self.log_max_size_input = None;
         self.log_keep_files_input = None;
         self.agent_settings_subscription = None;
+        self.persona_settings_subscription = None;
         self.custom_frame_rate_subscription = None;
         self.logging_input_subscriptions.clear();
         cx.notify();
@@ -306,6 +354,13 @@ impl SettingsView {
             let (draft, pending) =
                 agent_settings_view.update(cx, |view, cx| view.take_window_state(cx));
             self.agent_settings_draft = Some(draft);
+            self.write_tasks.extend(pending);
+        }
+        if let Some(persona_settings_view) = &self.persona_settings_view {
+            let persona_settings_view = persona_settings_view.clone();
+            let (draft, pending) =
+                persona_settings_view.update(cx, |view, cx| view.take_window_state(cx));
+            self.persona_settings_draft = Some(draft);
             self.write_tasks.extend(pending);
         }
         std::mem::take(&mut self.write_tasks)
@@ -357,7 +412,9 @@ impl SettingsView {
     /// 返回设置窗口是否已经创建输入组件。
     #[cfg(test)]
     pub(in crate::ui) fn window_is_active_for_test(&self) -> bool {
-        self.agent_settings_view.is_some() && self.custom_frame_rate_input.is_some()
+        self.agent_settings_view.is_some()
+            && self.persona_settings_view.is_some()
+            && self.custom_frame_rate_input.is_some()
     }
 
     /// 返回后台模型扫描是否仍在进行。
@@ -381,9 +438,10 @@ impl SettingsView {
     ) {
         self.section = match section {
             0 => ConfigSection::Model,
-            1 => ConfigSection::Conversation,
-            2 => ConfigSection::Tool,
-            3 => ConfigSection::System,
+            1 => ConfigSection::Provider,
+            2 => ConfigSection::Persona,
+            3 => ConfigSection::Tool,
+            4 => ConfigSection::System,
             _ => ConfigSection::Debug,
         };
         cx.notify();
@@ -392,7 +450,7 @@ impl SettingsView {
     /// 返回配置分区总数，供测试遍历全部页面。
     #[cfg(test)]
     pub(in crate::ui) const fn section_count_for_test() -> usize {
-        5
+        6
     }
 
     /// 接收主模型 generation 的能力快照，供设置窗口显示可用控制项。

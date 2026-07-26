@@ -4,6 +4,7 @@
 
 mod atomic_file;
 mod engine;
+mod memory;
 mod schema;
 
 #[cfg(test)]
@@ -13,6 +14,7 @@ use std::{error::Error, fmt, io, path::PathBuf};
 
 pub(crate) use atomic_file::{AtomicReplaceOperation, atomic_replace};
 pub(crate) use engine::{Database, StoredDocument};
+pub(crate) use memory::{MemoryTier, MemoryUsage};
 
 /// 描述嵌入式数据库初始化、模式迁移或文档访问失败。
 #[derive(Debug)]

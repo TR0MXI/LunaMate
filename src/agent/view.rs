@@ -23,14 +23,14 @@ use gpui_component::{
 use gpui_tokio::Tokio;
 use rust_i18n::t;
 
-use crate::config::{CONFIG, SharedLlmSettings};
+use crate::config::{CONFIG, LlmModelConfig, SharedLlmSettings, SharedPersonaSettings};
 
 use super::{
-    AgentShutdown,
+    AgentMemoryAccess, AgentShutdown, chat_limits,
     media::{ImageAttachment, load_image},
     palette::AgentPalette,
     service::{ChatBackend, ChatServiceRequest, ChatStreamEvent, GenaiChatBackend},
-    session::{ChatMessage, ChatMessageState, ChatRole, ChatSession, ResponseId},
+    session::{ChatLimits, ChatMessage, ChatMessageState, ChatRole, ChatSession, ResponseId},
     store::ChatSessionStore,
 };
 
@@ -53,6 +53,12 @@ pub(crate) struct AgentView {
     shutdown_revision: Option<u64>,
     last_persist: Instant,
     settings: SharedLlmSettings,
+    persona: SharedPersonaSettings,
+    active_persona: String,
+    active_limits: ChatLimits,
+    memory: AgentMemoryAccess,
+    persona_swap_revision: u64,
+    persona_swap_task: Option<Task<()>>,
     backend: Arc<dyn ChatBackend>,
     input: Entity<InputState>,
     pending_image: Option<PendingImage>,
@@ -196,10 +202,17 @@ impl ReplyLifecycle {
 
 impl AgentView {
     /// 使用当前 LLM 配置创建回复浮层和单行输入框。
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "挂载时一次性交接已恢复的会话、存储、人格与记忆句柄，拆分反而会引入半初始化状态"
+    )]
     pub(super) fn new(
         settings: SharedLlmSettings,
+        persona: SharedPersonaSettings,
+        active_persona: String,
         session: ChatSession,
         store: Arc<ChatSessionStore>,
+        memory: AgentMemoryAccess,
         initial_status: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -230,6 +243,11 @@ impl AgentView {
         .detach();
 
         let reply_visible = initial_status.is_some();
+        let active_limits = persona
+            .personas
+            .iter()
+            .find(|candidate| candidate.id == active_persona)
+            .map_or_else(ChatLimits::default, chat_limits);
         Self {
             session,
             persist_revision: store.latest_revision(),
@@ -237,6 +255,12 @@ impl AgentView {
             store,
             last_persist: Instant::now(),
             settings,
+            persona,
+            active_persona,
+            active_limits,
+            memory,
+            persona_swap_revision: 0,
+            persona_swap_task: None,
             backend: Arc::new(GenaiChatBackend::new()),
             input,
             pending_image: None,
@@ -284,10 +308,140 @@ impl AgentView {
         self.send_message_with_image(text.to_owned(), None, cx)
     }
 
-    /// 从全局配置刷新模型和系统提示词；活动请求继续使用启动时的旧快照。
+    /// 从全局配置刷新供应商与人格；活动请求继续使用启动时的旧快照。
+    ///
+    /// 当前人格或其上下文限制发生变化时，先落盘旧人格的上下文，再异步换入新人格的
+    /// 上下文；换入完成前拒绝新消息，避免两个人格的记忆互相污染。
     pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = CONFIG.llm_settings();
+        self.persona = CONFIG.persona_settings();
+        let Some(active) = self.persona.active() else {
+            cx.notify();
+            return;
+        };
+        let next_persona = active.id.clone();
+        let next_limits = chat_limits(active);
+        if next_persona == self.active_persona && next_limits == self.active_limits {
+            cx.notify();
+            return;
+        }
+        self.swap_persona(next_persona, next_limits, cx);
+    }
+
+    /// 返回当前人格的系统提示词；人格缺失时退化为空提示词。
+    fn active_system_prompt(&self) -> String {
+        self.persona
+            .personas
+            .iter()
+            .find(|persona| persona.id == self.active_persona)
+            .map(|persona| persona.system_prompt.clone())
+            .unwrap_or_default()
+    }
+
+    /// 返回当前人格实际使用的供应商；未绑定时回退到全局默认选择。
+    fn active_model(&self) -> Option<LlmModelConfig> {
+        let bound = self
+            .persona
+            .personas
+            .iter()
+            .find(|persona| persona.id == self.active_persona)
+            .and_then(|persona| persona.model.as_deref());
+        match bound {
+            Some(id) => self
+                .settings
+                .model(id)
+                .or_else(|| self.settings.selected())
+                .cloned(),
+            None => self.settings.selected().cloned(),
+        }
+    }
+
+    fn swap_persona(
+        &mut self,
+        next_persona: String,
+        next_limits: ChatLimits,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_network_request();
+        self.session.interrupt_active_response();
+        self.persist(true, cx);
+
+        self.persona_swap_revision = self.persona_swap_revision.wrapping_add(1).max(1);
+        let revision = self.persona_swap_revision;
+        self.active_persona = next_persona.clone();
+        self.active_limits = next_limits;
+        let Some(database) = self.memory.database() else {
+            // 数据库不可用时无法恢复上下文；换入一个空会话仍然优于继续沿用旧人格的记忆。
+            self.session = ChatSession::new(next_limits).unwrap_or_default();
+            self.persona_swap_task = None;
+            cx.notify();
+            return;
+        };
+
+        let load = Tokio::spawn(cx, async move {
+            ChatSessionStore::load(database, &next_persona, next_limits)
+                .await
+                .map_err(|error| error.to_string())
+        });
+        self.persona_swap_task = Some(cx.spawn(async move |this, cx| {
+            let loaded = load.await;
+            let _ = this.update(cx, |this, cx| {
+                // 换入期间可能又切换了一次人格；只有最新一次请求可以覆盖会话。
+                if this.persona_swap_revision != revision {
+                    return;
+                }
+                this.persona_swap_task = None;
+                match loaded {
+                    Ok(Ok((session, store))) => {
+                        this.session = session;
+                        this.persist_revision = store.latest_revision();
+                        this.shutdown_revision = None;
+                        this.store = store;
+                        this.reply_message_id = None;
+                        this.status = None;
+                    }
+                    Ok(Err(error)) => this.show_status(
+                        t!("chat.persistence_unavailable", error = error).to_string(),
+                        cx,
+                    ),
+                    Err(error) => this.show_status(
+                        t!("chat.task_ended", kind = join_error_kind(&error)).to_string(),
+                        cx,
+                    ),
+                }
+                cx.notify();
+            });
+        }));
         cx.notify();
+    }
+
+    /// 清除指定人格的短期上下文。
+    ///
+    /// 会话文档只有本视图会写入，因此清除也统一在这里执行：当前人格直接清空内存并
+    /// 落盘空快照，其他人格删除对应文档，两条路径都不会与后台写任务竞争。
+    pub(crate) fn clear_persona_context(&mut self, persona_id: &str, cx: &mut Context<Self>) {
+        if persona_id == self.active_persona {
+            self.cancel_network_request();
+            self.session.clear();
+            self.reply_message_id = None;
+            self.status = None;
+            self.persist(true, cx);
+            cx.notify();
+            return;
+        }
+        let Some(database) = self.memory.database() else {
+            return;
+        };
+        let persona_id = persona_id.to_owned();
+        Tokio::spawn(cx, async move {
+            if let Err(error) = super::store::delete_persona_session(&database, &persona_id).await {
+                log::error!(
+                    "{}",
+                    t!("log.chat_close_save_failed", error = error.to_string())
+                );
+            }
+        })
+        .detach();
     }
 
     /// 显示或隐藏底部输入栏；显示时把键盘焦点交给单行输入框。
@@ -434,8 +588,14 @@ impl AgentView {
         if self.shutdown_revision.is_some() {
             return false;
         }
+        // 人格换入期间会话尚未就位，此时发送会把消息写进即将被替换的上下文。
+        if self.persona_swap_task.is_some() {
+            self.show_status(t!("chat.persona_switching").to_string(), cx);
+            return false;
+        }
         self.settings = CONFIG.llm_settings();
-        let Some(model) = self.settings.selected().cloned() else {
+        self.persona = CONFIG.persona_settings();
+        let Some(model) = self.active_model() else {
             self.show_status(t!("chat.configure_model").to_string(), cx);
             return false;
         };
@@ -450,7 +610,7 @@ impl AgentView {
         let response_id = started.response_id;
         let request = ChatServiceRequest {
             model,
-            system_prompt: self.settings.system_prompt.clone(),
+            system_prompt: self.active_system_prompt(),
             messages: started.context,
             screenshot_permission_revision: CONFIG.agent_screenshot_permission_revision(),
         };
@@ -718,6 +878,10 @@ impl AgentView {
     }
 
     fn persist(&mut self, force: bool, cx: &Context<Self>) {
+        // 设置窗口只能看到已发布的占用；无论是否真的写盘都要刷新，否则统计会停在旧值。
+        self.memory
+            .live_context_usage()
+            .publish(&self.active_persona, self.session.usage());
         // 数据库不可用时启动状态已提示过一次，无需为每轮对话重复克隆快照并记录同一条错误。
         if !self.store.is_available() {
             return;
