@@ -43,6 +43,10 @@ use super::{
 };
 
 const FPS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
+/// 合成器钳制窗口尺寸时放弃重试并接受实际 viewport，避免每帧重复请求 resize。
+const MAX_WINDOW_RESIZE_ATTEMPTS: u32 = 8;
+/// 退出时同步等待 GPU worker 的上限；驱动卡死时不应无限阻塞主线程。
+const GPU_SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(in crate::ui) enum ModelLoadState {
     NoModel,
@@ -108,11 +112,20 @@ impl GpuShutdownCompletion {
         self.changed.notify_all();
     }
 
-    fn wait(&self) {
+    /// 阻塞等待 GPU worker 退出；返回是否在超时前完成。
+    fn wait_with_timeout(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
         let mut completed = self.completed.lock();
         while !*completed {
-            self.changed.wait(&mut completed);
+            if self
+                .changed
+                .wait_until(&mut completed, deadline)
+                .timed_out()
+            {
+                return *completed;
+            }
         }
+        true
     }
 }
 
@@ -138,6 +151,7 @@ pub(crate) struct DesktopPetView {
     gpu_shutdown_pending: bool,
     gpu_shutdown_restart_cpu: bool,
     close_after_gpu_shutdown: bool,
+    quitting: bool,
     gpu_shutdown_completion: Option<Arc<GpuShutdownCompletion>>,
     window_mover: WindowMover,
     system_tray: Option<Rc<SystemTray>>,
@@ -148,6 +162,7 @@ pub(crate) struct DesktopPetView {
     chat_overlay_visible: bool,
     position_controller: WindowPositionController,
     pending_model_window_size: Option<ModelWindowSize>,
+    pending_model_window_size_attempts: u32,
     config_window: Option<AnyWindowHandle>,
     tray_menu_window: Option<AnyWindowHandle>,
     selected_model: Option<PathBuf>,
@@ -248,6 +263,7 @@ impl DesktopPetView {
                 }
                 SettingsEvent::ModelWindowSizeChanged(size) => {
                     this.pending_model_window_size = Some(*size);
+                    this.pending_model_window_size_attempts = 0;
                     cx.notify();
                 }
                 SettingsEvent::PreviewMotion(group) => {
@@ -329,6 +345,7 @@ impl DesktopPetView {
             gpu_shutdown_pending: false,
             gpu_shutdown_restart_cpu: false,
             close_after_gpu_shutdown: false,
+            quitting: false,
             gpu_shutdown_completion: None,
             window_mover: WindowMover::new(),
             system_tray,
@@ -339,6 +356,7 @@ impl DesktopPetView {
             chat_overlay_visible,
             position_controller: WindowPositionController::default(),
             pending_model_window_size: None,
+            pending_model_window_size_attempts: 0,
             config_window: None,
             tray_menu_window: None,
             selected_model: None,
@@ -559,6 +577,11 @@ impl DesktopPetView {
             cancellation.cancel();
         }
         self.raster_dimensions = self.cpu_raster_dimensions;
+        // 退出过程中 GPU worker 失败无需重建 CPU generation，且不能再 spawn 前台任务。
+        if self.quitting {
+            self.shutdown_gpu_for_quit();
+            return;
+        }
         if self.gpu_shutdown_pending {
             self.gpu_shutdown_restart_cpu = true;
             return;
@@ -595,9 +618,13 @@ impl DesktopPetView {
     /// 在 GPUI 清空原生窗口前同步确认 GPU surface 已经释放。
     pub(crate) fn shutdown_gpu_for_quit(&mut self) {
         self.gpu_shutdown_restart_cpu = false;
+        // 退出后 GPUI 禁止再向前台执行器投递任务；后续 GPU 事件必须同步收尾。
+        self.quitting = true;
         if self.gpu_shutdown_pending {
-            if let Some(completion) = &self.gpu_shutdown_completion {
-                completion.wait();
+            if let Some(completion) = &self.gpu_shutdown_completion
+                && !completion.wait_with_timeout(GPU_SHUTDOWN_WAIT_TIMEOUT)
+            {
+                log::error!("{}", t!("log.gpu_shutdown_wait_timeout"));
             }
             return;
         }
@@ -632,17 +659,18 @@ impl DesktopPetView {
         let completion = Arc::new(GpuShutdownCompletion::default());
         self.gpu_shutdown_pending = true;
         self.gpu_shutdown_completion = Some(completion.clone());
-        let background = cx.background_executor().clone();
+
+        // 立即提交后台 join：退出时 quit observer 先于前台执行器运行，延迟提交会让
+        // `shutdown_gpu_for_quit` 永远等不到 `complete()`。
+        let join_worker = cx.background_executor().spawn(async move {
+            let worker_panicked = worker.is_some_and(|worker| worker.join().is_err());
+            completion.complete();
+            worker_panicked
+        });
 
         // attachment 留在前台 future 中；后台只等待线程，确保原生 view 晚于 surface 析构。
         cx.spawn(async move |this, cx| {
-            let worker_panicked = background
-                .spawn(async move {
-                    let worker_panicked = worker.is_some_and(|worker| worker.join().is_err());
-                    completion.complete();
-                    worker_panicked
-                })
-                .await;
+            let worker_panicked = join_worker.await;
             drop(underlay);
             if worker_panicked {
                 log::error!("{}", t!("log.gpu_worker_panicked"));
@@ -780,8 +808,10 @@ impl DesktopPetView {
         let Some(window_size) = self.pending_model_window_size.take() else {
             return false;
         };
-        let display_size = cx
-            .primary_display()
+        // 桌宠可能已被拖到副屏；用所在显示器的可用区域约束尺寸，主屏只作为兜底。
+        let display_size = window
+            .display(cx)
+            .or_else(|| cx.primary_display())
             .map(|display| display.visible_bounds().size)
             .unwrap_or_else(|| size(px(1280.0), px(720.0)));
         let [width, height] = desktop_pet_window_size(
@@ -790,9 +820,16 @@ impl DesktopPetView {
             window_size,
         );
         let viewport = window.viewport_size();
-        if (f32::from(viewport.width) - width).abs() < 0.5
-            && (f32::from(viewport.height) - height).abs() < 0.5
-        {
+        let reached_target = (f32::from(viewport.width) - width).abs() < 0.5
+            && (f32::from(viewport.height) - height).abs() < 0.5;
+        // 合成器可能钳制或拒绝请求的尺寸；重试有上限，否则每帧都会重新调用 resize。
+        if reached_target || self.pending_model_window_size_attempts >= MAX_WINDOW_RESIZE_ATTEMPTS {
+            let (width, height) = if reached_target {
+                (width, height)
+            } else {
+                (f32::from(viewport.width), f32::from(viewport.height))
+            };
+            self.pending_model_window_size_attempts = 0;
             self.update_render_dimensions(width, height, window.scale_factor());
             let model_path = self.selected_model.clone();
             self.selected_model = None;
@@ -802,6 +839,7 @@ impl DesktopPetView {
 
         window.resize(size(px(width), px(height)));
         // 后端可能异步应用、取整或钳制尺寸；等待实际 viewport 变化后再重建 generation。
+        self.pending_model_window_size_attempts += 1;
         self.pending_model_window_size = Some(window_size);
         true
     }
@@ -813,16 +851,17 @@ impl DesktopPetView {
         let next_gpu_size = gpu_underlay_size(width, height, window.scale_factor());
         let next_cpu_dimensions =
             raster_dimensions_for_window(width, height, window.scale_factor());
-        let changed = if self.gpu_underlay.is_some() {
+        // 两个尺寸都要更新：GPU 失败回退到 CPU 时会直接采用 cpu_raster_dimensions。
+        let active_path_changed = if self.gpu_underlay.is_some() {
             self.gpu_underlay_size != next_gpu_size
         } else {
             self.cpu_raster_dimensions != next_cpu_dimensions
         };
-        if !changed {
-            return;
-        }
         self.gpu_underlay_size = next_gpu_size;
         self.cpu_raster_dimensions = next_cpu_dimensions;
+        if !active_path_changed {
+            return;
+        }
         self.raster_dimensions = if self.gpu_underlay.is_some() {
             next_gpu_size.physical
         } else {

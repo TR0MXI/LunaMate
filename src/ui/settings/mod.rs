@@ -30,6 +30,7 @@ use crate::{
 use super::{apply, apply_language};
 
 const CUSTOM_FRAME_RATE_SAVE_DELAY: Duration = Duration::from_millis(250);
+const LOGGING_SAVE_DELAY: Duration = Duration::from_millis(250);
 
 pub(crate) use window::SettingsWindowView;
 
@@ -105,6 +106,8 @@ pub(crate) struct SettingsView {
     custom_frame_rate_input_revision: u64,
     custom_frame_rate_save_task: Option<Task<()>>,
     logging_input_subscriptions: Vec<Subscription>,
+    logging_input_revision: u64,
+    logging_save_task: Option<Task<()>>,
     screenshot_permission_revision: u64,
     toast_revision: u64,
     toast_task: Option<Task<()>>,
@@ -158,6 +161,8 @@ impl SettingsView {
             custom_frame_rate_input_revision: 0,
             custom_frame_rate_save_task: None,
             logging_input_subscriptions: Vec::new(),
+            logging_input_revision: 0,
+            logging_save_task: None,
             screenshot_permission_revision: 0,
             toast_revision: 0,
             toast_task: None,
@@ -235,18 +240,26 @@ impl SettingsView {
         self.logging_input_subscriptions = vec![
             cx.subscribe(
                 &log_max_size_input,
-                |this, input, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        this.set_log_max_size_from_input(&input, cx);
+                |this, input, event: &InputEvent, cx| match event {
+                    InputEvent::Change => {
+                        this.schedule_logging_save(&input, Self::set_log_max_size_from_input, cx);
                     }
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                        this.commit_logging_input(&input, Self::set_log_max_size_from_input, cx);
+                    }
+                    InputEvent::Focus => {}
                 },
             ),
             cx.subscribe(
                 &log_keep_files_input,
-                |this, input, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        this.set_log_keep_files_from_input(&input, cx);
+                |this, input, event: &InputEvent, cx| match event {
+                    InputEvent::Change => {
+                        this.schedule_logging_save(&input, Self::set_log_keep_files_from_input, cx);
                     }
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                        this.commit_logging_input(&input, Self::set_log_keep_files_from_input, cx);
+                    }
+                    InputEvent::Focus => {}
                 },
             ),
         ];
@@ -271,6 +284,7 @@ impl SettingsView {
             self.write_tasks.extend(pending);
         }
         self.flush_custom_frame_rate_input(cx);
+        self.flush_logging_inputs(cx);
         self.custom_accent_input = None;
         self.custom_background_input = None;
         self.custom_frame_rate_input = None;
@@ -286,6 +300,7 @@ impl SettingsView {
     /// 取出设置主体和 Agent 编辑器中尚未完成的写入任务。
     pub(crate) fn take_pending_write_tasks(&mut self, cx: &mut Context<Self>) -> Vec<Task<()>> {
         self.flush_custom_frame_rate_input(cx);
+        self.flush_logging_inputs(cx);
         if let Some(agent_settings_view) = &self.agent_settings_view {
             let agent_settings_view = agent_settings_view.clone();
             let (draft, pending) =
@@ -801,6 +816,50 @@ impl SettingsView {
             });
         });
         self.track_write_task(task);
+    }
+
+    /// 输入过程中延迟提交，避免每次按键都触发一次完整配置写盘与日志器重建。
+    fn schedule_logging_save(
+        &mut self,
+        input: &Entity<InputState>,
+        apply: fn(&mut Self, &Entity<InputState>, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) {
+        self.logging_input_revision = self.logging_input_revision.wrapping_add(1);
+        let revision = self.logging_input_revision;
+        let input = input.clone();
+        let background = cx.background_executor().clone();
+        self.logging_save_task = Some(cx.spawn(async move |this, cx| {
+            background.timer(LOGGING_SAVE_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.logging_input_revision == revision {
+                    apply(this, &input, cx);
+                }
+            });
+        }));
+    }
+
+    fn commit_logging_input(
+        &mut self,
+        input: &Entity<InputState>,
+        apply: fn(&mut Self, &Entity<InputState>, &mut Context<Self>),
+        cx: &mut Context<Self>,
+    ) {
+        self.logging_input_revision = self.logging_input_revision.wrapping_add(1);
+        self.logging_save_task = None;
+        apply(self, input, cx);
+    }
+
+    /// 在设置窗口关闭或应用退出前提交尚未到期的日志输入。
+    fn flush_logging_inputs(&mut self, cx: &mut Context<Self>) {
+        self.logging_input_revision = self.logging_input_revision.wrapping_add(1);
+        self.logging_save_task = None;
+        if let Some(input) = self.log_max_size_input.clone() {
+            self.set_log_max_size_from_input(&input, cx);
+        }
+        if let Some(input) = self.log_keep_files_input.clone() {
+            self.set_log_keep_files_from_input(&input, cx);
+        }
     }
 
     fn set_log_max_size_from_input(&mut self, input: &Entity<InputState>, cx: &mut Context<Self>) {

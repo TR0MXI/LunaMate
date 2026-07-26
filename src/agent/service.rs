@@ -1,6 +1,6 @@
 //! 将 Provider 无关的会话快照转换为 `genai` 流，并输出受限批次事件。
 
-use std::{collections::HashSet, future::Future, pin::Pin, time::Duration};
+use std::{collections::HashSet, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
@@ -39,6 +39,9 @@ const MAX_TOOL_CALLS: usize = 4;
 pub(super) const FLUSH_BYTES: usize = 512;
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(1_500)];
 pub(super) const SCREEN_CAPTURE_TOOL: &str = "capture_screen";
+/// 交回截图时给模型的固定指引；两条 handoff 路径必须使用同一措辞。
+const CAPTURE_HANDOFF_PROMPT: &str =
+    "The authorized capture_screen tool produced this screenshot. Inspect it before answering.";
 
 /// 网络任务发送给聊天实体的有界事件。
 pub(super) enum ChatStreamEvent {
@@ -66,7 +69,7 @@ pub(super) trait ChatBackend: Send + Sync {
 
 /// 使用锁定版 `genai` 执行真实 Provider 请求。
 pub(super) struct GenaiChatBackend {
-    client: Mutex<Option<(ClientKey, Client)>>,
+    client: Arc<Mutex<Option<(ClientKey, Client)>>>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -80,26 +83,26 @@ impl GenaiChatBackend {
     /// 创建带连接池复用的 Provider 后端；凭据只保存在进程内缓存中。
     pub(super) fn new() -> Self {
         Self {
-            client: Mutex::new(None),
+            client: Arc::new(Mutex::new(None)),
         }
     }
+}
 
-    fn client_for(&self, model: &LlmModelConfig) -> Client {
-        let key = ClientKey {
-            provider: model.provider,
-            endpoint: model.endpoint.clone(),
-            api_key: model.api_key.clone(),
-        };
-        let mut cached = self.client.lock();
-        if let Some((cached_key, client)) = cached.as_ref()
-            && cached_key == &key
-        {
-            return client.clone();
-        }
-        let client = build_client(model);
-        *cached = Some((key, client.clone()));
-        client
+fn client_for(cache: &Mutex<Option<(ClientKey, Client)>>, model: &LlmModelConfig) -> Client {
+    let key = ClientKey {
+        provider: model.provider,
+        endpoint: model.endpoint.clone(),
+        api_key: model.api_key.clone(),
+    };
+    let mut cached = cache.lock();
+    if let Some((cached_key, client)) = cached.as_ref()
+        && cached_key == &key
+    {
+        return client.clone();
     }
+    let client = build_client(model);
+    *cached = Some((key, client.clone()));
+    client
 }
 
 impl ChatBackend for GenaiChatBackend {
@@ -108,8 +111,12 @@ impl ChatBackend for GenaiChatBackend {
         request: ChatServiceRequest,
         events: mpsc::Sender<ChatStreamEvent>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let client = self.client_for(&request.model);
-        Box::pin(stream_chat(request, events, client))
+        // client 构建包含系统代理与 CA 加载等阻塞 I/O，推迟到 future 内部，避免阻塞 UI 线程。
+        let cache = Arc::clone(&self.client);
+        Box::pin(async move {
+            let client = client_for(&cache, &request.model);
+            stream_chat(request, events, client).await;
+        })
     }
 }
 
@@ -229,14 +236,12 @@ async fn stream_chat(
                     if let Some(image) = continuation.image
                         && let Some(part) = image_content_part(&image)
                     {
-                        chat_request.messages.push(GenaiMessage::user(
-                            MessageContent::from_parts(vec![
-                                ContentPart::from_text(
-                                    "The authorized capture_screen tool produced this screenshot. Inspect it before answering.",
-                                ),
+                        chat_request
+                            .messages
+                            .push(GenaiMessage::user(MessageContent::from_parts(vec![
+                                ContentPart::from_text(CAPTURE_HANDOFF_PROMPT),
                                 part,
-                            ]),
-                        ));
+                            ])));
                     }
                 } else {
                     // genai 0.6.5 的部分适配器会接收签名流却无法在请求中回写；把截图并入原用户轮次可安全重试而不伪造 handoff。
@@ -292,6 +297,7 @@ async fn stream_with_retry(
     }
 }
 
+/// 构建 Provider client；内部会同步加载系统代理与 CA 存储，只能在后台任务中调用。
 fn build_client(model: &LlmModelConfig) -> Client {
     let adapter = adapter_kind(model.provider);
     let auth = auth_data(model);
@@ -420,9 +426,10 @@ pub(super) fn append_stateless_capture_result(
     image: Option<&ImageAttachment>,
 ) {
     let mut parts = vec![ContentPart::from_text(if image.is_some() {
-        "\n\nThe authorized capture_screen tool produced this screenshot. Inspect it before answering."
+        format!("\n\n{CAPTURE_HANDOFF_PROMPT}")
     } else {
         "\n\nThe requested capture_screen tool could not provide a screenshot. Continue without it."
+            .to_owned()
     })];
     if let Some(part) = image.and_then(image_content_part) {
         parts.push(part);

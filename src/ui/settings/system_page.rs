@@ -9,6 +9,7 @@ use rust_i18n::t;
 
 use crate::{
     config::{AppLanguage, FrameRate, LogLevel, ModelWindowSize, ThemePreset},
+    platform::SystemTray,
     ui::UiPalette,
 };
 
@@ -472,8 +473,13 @@ impl SettingsView {
                                     ),
                                 ),
                             )
-                            .child(
-                                setting_row(t!("debug.use_native_tray_menu").to_string(), palette)
+                            // 托盘后端无法在原生与自绘菜单间切换时隐藏该项，避免开关无效果。
+                            .when(SystemTray::supports_menu_style_choice(), |this| {
+                                this.child(
+                                    setting_row(
+                                        t!("debug.use_native_tray_menu").to_string(),
+                                        palette,
+                                    )
                                     .child(
                                         toggle_switch(
                                             "use-native-tray-menu",
@@ -489,7 +495,8 @@ impl SettingsView {
                                             }),
                                         ),
                                     ),
-                            )
+                                )
+                            })
                             .child(system_section_label(
                                 t!("debug.logging").to_string(),
                                 palette,

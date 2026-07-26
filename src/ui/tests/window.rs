@@ -78,3 +78,16 @@ fn gpu_underlay_uses_native_physical_pixels_and_logical_compositor_size() {
         }
     );
 }
+
+#[test]
+fn gpu_underlay_physical_size_stays_an_integer_multiple_of_the_logical_size() {
+    // 桌宠高度为宽度的 16/9，分数结果必须仍能被合成器表示为整数 buffer scale。
+    let width = MIN_WINDOW_WIDTH;
+    let height = width * PHONE_ASPECT_RATIO;
+    for (scale_factor, expected_scale) in [(1.0, 1), (2.0, 2), (3.0, 3)] {
+        let size = gpu_underlay_size(width, height, scale_factor);
+        for axis in 0..2 {
+            assert_eq!(size.physical[axis], size.logical[axis] * expected_scale);
+        }
+    }
+}

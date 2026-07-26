@@ -98,6 +98,41 @@ api_key_env = "OPENAI_API_KEY"
 }
 
 #[test]
+fn one_invalid_model_does_not_discard_the_remaining_models_or_api_keys() {
+    let document = r#"
+[llm]
+selected = "cloud"
+
+[[llm.models]]
+id = "bad id"
+label = "Broken"
+provider = "openai"
+model = "gpt-5-mini"
+api_key = "should-not-matter"
+
+[[llm.models]]
+id = "cloud"
+label = "Cloud"
+provider = "openai"
+model = "gpt-5-mini"
+api_key = "keep-me"
+"#
+    .parse::<DocumentMut>()
+    .expect("语言模型配置应当可以解析");
+    let mut warnings = Vec::new();
+    let settings = parse_llm_settings(&document, &mut warnings);
+
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(settings.models.len(), 1);
+    assert_eq!(
+        settings
+            .selected()
+            .and_then(|model| model.api_key.as_deref()),
+        Some("keep-me")
+    );
+}
+
+#[test]
 fn endpoint_normalization_preserves_base_path() {
     assert_eq!(
         normalize_endpoint(LlmProvider::OpenAi, Some("https://example.com/v1"))

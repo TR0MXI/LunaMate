@@ -498,10 +498,11 @@ impl AgentView {
         }
         Some(match event {
             ChatStreamEvent::Delta(chunk) => {
-                if let Err(error) = self.session.append_response(response_id, &chunk) {
-                    self.session
-                        .fail_response(response_id, t!("chat.reply_too_large").to_string());
-                    self.status = Some(error.to_string());
+                if self.session.append_response(response_id, &chunk).is_err() {
+                    // 回退状态与会话状态必须一致；`reply_display` 会优先展示消息本身。
+                    let failure = t!("chat.reply_too_large").to_string();
+                    self.session.fail_response(response_id, failure.clone());
+                    self.status = Some(failure);
                     (false, true)
                 } else {
                     (true, false)
@@ -687,6 +688,10 @@ impl AgentView {
     }
 
     fn persist(&mut self, force: bool, cx: &Context<Self>) {
+        // 数据库不可用时启动状态已提示过一次，无需为每轮对话重复克隆快照并记录同一条错误。
+        if !self.store.is_available() {
+            return;
+        }
         if !force && self.last_persist.elapsed() < PERSIST_INTERVAL {
             return;
         }

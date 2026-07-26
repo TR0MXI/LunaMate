@@ -24,6 +24,10 @@ pub(super) struct Rasterizer {
     stamps: Vec<u32>,
     transformed_vertices: Vec<[f32; 2]>,
     current_stamp: u32,
+    /// 上一帧实际写入过的颜色区域；只清空这部分即可复用整块缓冲。
+    dirty: Option<PixelBounds>,
+    /// 本帧累积的写入区域，帧末成为下一帧的清空范围。
+    pending_dirty: Option<PixelBounds>,
 }
 
 impl Rasterizer {
@@ -46,6 +50,8 @@ impl Rasterizer {
             stamps: filled_vec(pixel_count, 0_u32, "Drawable 标记缓冲")?,
             transformed_vertices,
             current_stamp: 0,
+            dirty: None,
+            pending_dirty: None,
         })
     }
 
@@ -54,12 +60,39 @@ impl Rasterizer {
         [self.width, self.height]
     }
 
-    /// 清空上一帧颜色，并在大缓冲处理期间响应取消。
+    /// 清空上一帧写入过的颜色区域，并在大缓冲处理期间响应取消。
     pub(super) fn begin_frame(
         &mut self,
         cancellation: &RenderCancellation,
     ) -> Result<(), RenderError> {
-        fill_cancelable(&mut self.pixels, [0.0; 4], cancellation)
+        // 上一帧若因取消提前退出，pending 区域也可能已写入，两者都要清空。
+        let dirty = match (self.dirty, self.pending_dirty.take()) {
+            (Some(dirty), Some(pending)) => Some(dirty.union(pending)),
+            (dirty, pending) => dirty.or(pending),
+        };
+        self.dirty = None;
+        let Some(dirty) = dirty else {
+            return Ok(());
+        };
+        let width = self.width as usize;
+        for y in dirty.min_y..=dirty.max_y {
+            cancellation.checkpoint()?;
+            let row = y as usize * width;
+            self.pixels[row + dirty.min_x as usize..=row + dirty.max_x as usize].fill([0.0; 4]);
+        }
+        Ok(())
+    }
+
+    /// 发布本帧写入范围，供下一帧定向清空。
+    pub(super) fn end_frame(&mut self) {
+        self.dirty = self.pending_dirty.take();
+    }
+
+    fn mark_dirty(&mut self, bounds: PixelBounds) {
+        self.pending_dirty = Some(match self.pending_dirty {
+            Some(existing) => existing.union(bounds),
+            None => bounds,
+        });
     }
 
     /// 光栅化并混合一个可见 Drawable，可选应用预先生成的蒙版。
@@ -107,6 +140,7 @@ impl Rasterizer {
         let Some(bounds) = bounds else {
             return Ok(());
         };
+        self.mark_dirty(bounds);
         for y in bounds.min_y..=bounds.max_y {
             cancellation.checkpoint()?;
             for x in bounds.min_x..=bounds.max_x {
@@ -142,7 +176,7 @@ impl Rasterizer {
         transform: ModelTransform,
         alpha: &mut [f32],
         cancellation: &RenderCancellation,
-    ) -> Result<(), RenderError> {
+    ) -> Result<Option<PixelBounds>, RenderError> {
         let bounds = self.rasterize_layer(
             drawable,
             drawable_index,
@@ -153,7 +187,7 @@ impl Rasterizer {
         )?;
 
         let Some(bounds) = bounds else {
-            return Ok(());
+            return Ok(None);
         };
         for y in bounds.min_y..=bounds.max_y {
             cancellation.checkpoint()?;
@@ -163,6 +197,25 @@ impl Rasterizer {
                     alpha[index] = (alpha[index] + self.layer[index][3]).min(1.0);
                 }
             }
+        }
+        Ok(Some(bounds))
+    }
+
+    /// 只清空蒙版缓冲上一帧写入过的区域。
+    pub(super) fn clear_mask_region(
+        &self,
+        alpha: &mut [f32],
+        dirty: Option<PixelBounds>,
+        cancellation: &RenderCancellation,
+    ) -> Result<(), RenderError> {
+        let Some(dirty) = dirty else {
+            return Ok(());
+        };
+        let width = self.width as usize;
+        for y in dirty.min_y..=dirty.max_y {
+            cancellation.checkpoint()?;
+            let row = y as usize * width;
+            alpha[row + dirty.min_x as usize..=row + dirty.max_x as usize].fill(0.0);
         }
         Ok(())
     }
@@ -298,7 +351,7 @@ impl Rasterizer {
 }
 
 #[derive(Clone, Copy)]
-struct PixelBounds {
+pub(in crate::model) struct PixelBounds {
     min_x: u32,
     min_y: u32,
     max_x: u32,
@@ -306,33 +359,17 @@ struct PixelBounds {
 }
 
 impl PixelBounds {
-    fn from_triangle(points: [[f32; 2]; 3], width: u32, height: u32) -> Option<Self> {
-        let min_x = points
-            .iter()
-            .map(|point| point[0])
-            .fold(f32::INFINITY, f32::min)
-            .floor()
-            .max(0.0) as u32;
-        let min_y = points
-            .iter()
-            .map(|point| point[1])
-            .fold(f32::INFINITY, f32::min)
-            .floor()
-            .max(0.0) as u32;
-        let max_x = points
-            .iter()
-            .map(|point| point[0])
-            .fold(f32::NEG_INFINITY, f32::max)
-            .ceil()
-            .min(width.saturating_sub(1) as f32) as u32;
-        let max_y = points
-            .iter()
-            .map(|point| point[1])
-            .fold(f32::NEG_INFINITY, f32::max)
-            .ceil()
-            .min(height.saturating_sub(1) as f32) as u32;
+    pub(in crate::model) fn from_triangle(
+        points: [[f32; 2]; 3],
+        width: u32,
+        height: u32,
+    ) -> Option<Self> {
+        // 先在浮点域剔除完全落在光栅外的三角形；直接钳制会把它们折叠成边缘 1 像素条带，
+        // 既浪费扫描也会把 (0,0) 并入 Drawable 的包围盒。
+        let [min_x, max_x] = axis_range(points, 0, width)?;
+        let [min_y, max_y] = axis_range(points, 1, height)?;
 
-        (min_x <= max_x && min_y <= max_y).then_some(Self {
+        Some(Self {
             min_x,
             min_y,
             max_x,
@@ -340,7 +377,7 @@ impl PixelBounds {
         })
     }
 
-    fn union(self, other: Self) -> Self {
+    pub(super) fn union(self, other: Self) -> Self {
         Self {
             min_x: self.min_x.min(other.min_x),
             min_y: self.min_y.min(other.min_y),
@@ -348,6 +385,29 @@ impl PixelBounds {
             max_y: self.max_y.max(other.max_y),
         }
     }
+}
+
+/// 返回三角形在某个轴上与光栅相交的整数像素区间。
+fn axis_range(points: [[f32; 2]; 3], axis: usize, extent: u32) -> Option<[u32; 2]> {
+    if extent == 0 {
+        return None;
+    }
+    let last = (extent - 1) as f32;
+    let minimum = points
+        .iter()
+        .map(|point| point[axis])
+        .fold(f32::INFINITY, f32::min)
+        .floor();
+    let maximum = points
+        .iter()
+        .map(|point| point[axis])
+        .fold(f32::NEG_INFINITY, f32::max)
+        .ceil();
+    // 调用方已确保顶点为有限值，因此普通比较不会遇到 NaN。
+    if minimum > last || maximum < 0.0 {
+        return None;
+    }
+    Some([minimum.max(0.0) as u32, maximum.min(last) as u32])
 }
 
 pub(in crate::model) fn sample_texture(texture: &DecodedTexture, uv: [f32; 2]) -> [f32; 4] {

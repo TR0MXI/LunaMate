@@ -159,6 +159,11 @@ impl SystemTray {
         self.inner.set_use_native_menu(enabled);
     }
 
+    /// 是否可以在原生菜单与自绘菜单之间切换；否则设置项不应展示给用户。
+    pub(crate) const fn supports_menu_style_choice() -> bool {
+        imp::SUPPORTS_MENU_STYLE_CHOICE
+    }
+
     /// 返回当前右键是否应由原生菜单处理；不支持自绘的平台恒为 `true`。
     pub(crate) fn uses_native_menu(&self) -> bool {
         self.inner.uses_native_menu()
@@ -231,6 +236,8 @@ mod imp {
     const HIDE_DESKTOP_PET_ID: &str = "lunamate-hide-desktop-pet";
     const SETTINGS_ID: &str = "lunamate-settings";
     const QUIT_ID: &str = "lunamate-quit";
+
+    pub(super) const SUPPORTS_MENU_STYLE_CHOICE: bool = true;
 
     pub(super) struct PlatformTray {
         tray_icon: TrayIcon,
@@ -428,6 +435,9 @@ mod imp {
         tray_icon_rgba,
     };
 
+    /// StatusNotifierItem 的菜单完全由宿主绘制，应用无法接管右键并自绘。
+    pub(super) const SUPPORTS_MENU_STYLE_CHOICE: bool = false;
+
     struct TrayPresentation {
         labels: TrayLabels,
         icon: ksni::Icon,
@@ -612,6 +622,8 @@ mod imp {
     use tokio::runtime::Handle;
 
     use super::{SystemTrayAction, TrayIconStyle, TrayLabels};
+
+    pub(super) const SUPPORTS_MENU_STYLE_CHOICE: bool = false;
 
     pub(super) struct PlatformTray;
 

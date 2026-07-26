@@ -252,6 +252,10 @@ impl GpuSurface {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+        // 与切换呈现模式一致：立即取出本次 configure 的校验错误，避免它被归因到后续帧。
+        if let Some(error) = self.device_error.lock().take() {
+            return Err(format!("配置 Live2D GPU surface 失败：{error}"));
+        }
         Ok(())
     }
 
@@ -399,6 +403,16 @@ impl Drop for GpuSurface {
             timeout: Some(Duration::from_secs(1)),
         });
     }
+}
+
+/// 从配置同步限帧档位与 swapchain 呈现模式。
+fn sync_frame_rate(surface: &mut GpuSurface, pacer: &mut FramePacer) -> Result<(), String> {
+    let frame_rate = CONFIG.frame_rate();
+    pacer.set_target_fps(
+        frame_rate.limit(),
+        frame_rate.allows_frame_rate_degradation(),
+    );
+    surface.set_present_mode_for_frame_rate(frame_rate)
 }
 
 pub(super) fn run(
@@ -604,12 +618,7 @@ pub(super) fn run(
                     PauseWaitResult::Shutdown => break 'worker,
                 }
             }
-            let frame_rate = CONFIG.frame_rate();
-            pacer.set_target_fps(
-                frame_rate.limit(),
-                frame_rate.allows_frame_rate_degradation(),
-            );
-            if let Err(error) = surface.set_present_mode_for_frame_rate(frame_rate) {
+            if let Err(error) = sync_frame_rate(&mut surface, &mut pacer) {
                 let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
                 break 'worker;
             }
@@ -634,12 +643,7 @@ pub(super) fn run(
                     continue;
                 }
             }
-            let frame_rate = CONFIG.frame_rate();
-            pacer.set_target_fps(
-                frame_rate.limit(),
-                frame_rate.allows_frame_rate_degradation(),
-            );
-            if let Err(error) = surface.set_present_mode_for_frame_rate(frame_rate) {
+            if let Err(error) = sync_frame_rate(&mut surface, &mut pacer) {
                 let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
                 break 'worker;
             }

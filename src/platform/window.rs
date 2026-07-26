@@ -493,7 +493,8 @@ fn move_window(_window: &Window, _origin: Point<Pixels>) -> bool {
     false
 }
 
-#[cfg(target_os = "linux")]
+/// 将 GPUI 逻辑坐标换算为原生窗口系统使用的物理像素坐标。
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn window_coordinate(value: Pixels, scale_factor: f32) -> i32 {
     (f32::from(value) * scale_factor)
         .round()
@@ -709,16 +710,13 @@ pub(crate) fn configure_tray_menu_window(window: &Window) -> Result<(), String> 
 }
 
 #[cfg(target_os = "windows")]
-fn move_window(window: &Window, _origin: Point<Pixels>) -> bool {
+fn move_window(window: &Window, origin: Point<Pixels>) -> bool {
     use std::ffi::c_void;
 
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::{
-        Foundation::{HWND, POINT, RECT},
-        Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint},
-        UI::WindowsAndMessaging::{
-            GetWindowRect, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
-        },
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos},
     };
 
     let Ok(handle) = HasWindowHandle::window_handle(window) else {
@@ -728,27 +726,14 @@ fn move_window(window: &Window, _origin: Point<Pixels>) -> bool {
         return false;
     };
     let hwnd = HWND(handle.hwnd.get() as *mut c_void);
-    let mut window_rect = RECT::default();
-    let mut monitor_info = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
+    // 调用方已按 GPUI 的显示器布局算出目标原点；自行居中会把多显示器窗口拉回主屏。
+    let scale_factor = window.scale_factor();
+    let x = window_coordinate(origin.x, scale_factor);
+    let y = window_coordinate(origin.y, scale_factor);
 
-    // SAFETY: `hwnd` 来自当前 UI 线程中仍存活的 GPUI 窗口；输出结构体在调用期间
-    // 独占且具有 Win32 要求的 `cbSize`。最终调用只修改位置，不改变尺寸、Z 序或激活状态。
+    // SAFETY: `hwnd` 来自当前 UI 线程中仍存活的 GPUI 窗口；调用只修改位置，
+    // 不改变尺寸、Z 序或激活状态。
     unsafe {
-        if GetWindowRect(hwnd, &mut window_rect).is_err() {
-            return false;
-        }
-        let monitor = MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
-        if monitor.is_invalid() || !GetMonitorInfoW(monitor, &mut monitor_info).as_bool() {
-            return false;
-        }
-        let width = window_rect.right - window_rect.left;
-        let height = window_rect.bottom - window_rect.top;
-        let work_area = monitor_info.rcWork;
-        let x = work_area.left + (work_area.right - work_area.left - width) / 2;
-        let y = work_area.top + (work_area.bottom - work_area.top - height) / 2;
         SetWindowPos(
             hwnd,
             None,

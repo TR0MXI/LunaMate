@@ -93,8 +93,11 @@ impl AgentShutdown {
         Self { store, snapshot }
     }
 
-    /// 在后台执行最终会话保存。
+    /// 在后台执行最终会话保存；数据库不可用时静默跳过，启动时已提示过一次。
     pub(crate) async fn persist(self) -> Result<(), String> {
+        if !self.store.is_available() {
+            return Ok(());
+        }
         self.store
             .save(self.snapshot)
             .await

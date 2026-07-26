@@ -20,6 +20,9 @@ static SCREEN_CAPTURE_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::con
 const MAX_USER_SOURCE_BYTES: u64 = 20 * 1024 * 1024;
 #[cfg(target_os = "linux")]
 const MAX_CAPTURE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+/// 门户无响应时释放捕获闸门的上限，需大于工具侧的截图超时以免抢先失败。
+#[cfg(target_os = "linux")]
+const PORTAL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 const MAX_SOURCE_EDGE: u32 = 16_384;
 const MAX_SOURCE_PIXELS: u64 = 40_000_000;
 const MAX_OUTPUT_EDGE: u32 = 2_048;
@@ -180,12 +183,17 @@ pub(super) async fn capture_primary_screen() -> Result<ImageAttachment, ImageInp
     let _capture_permit = SCREEN_CAPTURE_GATE
         .try_acquire()
         .map_err(|_| ImageInputError::ScreenCapture)?;
-    let request = ashpd::desktop::screenshot::Screenshot::request()
-        .interactive(false)
-        .modal(true)
-        .send()
-        .await
-        .map_err(|_| ImageInputError::ScreenCapture)?;
+    // 调用方不会中止本任务（需保留临时文件清理），因此在此约束等待，避免 permit 永久占用。
+    let request = tokio::time::timeout(
+        PORTAL_RESPONSE_TIMEOUT,
+        ashpd::desktop::screenshot::Screenshot::request()
+            .interactive(false)
+            .modal(true)
+            .send(),
+    )
+    .await
+    .map_err(|_| ImageInputError::ScreenCapture)?
+    .map_err(|_| ImageInputError::ScreenCapture)?;
     let response = request
         .response()
         .map_err(|_| ImageInputError::ScreenCapture)?;

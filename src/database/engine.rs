@@ -216,14 +216,26 @@ fn validate_key(key: &str) -> Result<(), DatabaseError> {
 }
 
 fn prepare_database_directory(path: &PathBuf) -> Result<(), DatabaseError> {
-    fs::create_dir_all(path).map_err(|source| DatabaseError::CreateDirectory {
-        path: path.clone(),
-        source,
-    })?;
+    // 在 Unix 上由 DirBuilder 直接以 0o700 创建，避免目录先以 umask 权限暴露给同机其他用户。
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .map_err(|source| DatabaseError::CreateDirectory {
+            path: path.clone(),
+            source,
+        })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
 
+        // 目录已存在时 recursive create 不会改动权限，仍需收紧既有数据目录。
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|source| {
             DatabaseError::SetDirectoryPermissions {
                 path: path.clone(),

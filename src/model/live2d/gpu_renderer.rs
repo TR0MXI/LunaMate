@@ -6,7 +6,7 @@ use mocari::render::wgpu::{
     WgpuMeshBuffers, WgpuTexture, WgpuTransform,
 };
 
-use super::super::interaction::RenderedModelFrame;
+use super::super::interaction::{RenderedHitArea, RenderedModelFrame};
 use super::{AnimatedModel, RenderError};
 
 const MASK_TEXTURE_SIZE: u32 = 512;
@@ -126,8 +126,23 @@ impl GpuModelRenderer {
         encoder: &mut wgpu::CommandEncoder,
         surface_view: &wgpu::TextureView,
     ) -> Result<RenderedModelFrame, RenderError> {
-        let (device, queue) = gpu;
         let hit_areas = model.advance_frame(delta, look)?;
+        // update_meshes 之后 belt 处于已写入状态，wgpu 要求提交前必须 finish；
+        // 失败路径同样要收尾，否则 chunk 会一直保持映射。
+        let frame = self.encode_model_passes(model, gpu, encoder, surface_view, hit_areas);
+        self.vertex_upload_belt.finish();
+        frame
+    }
+
+    fn encode_model_passes(
+        &mut self,
+        model: &AnimatedModel,
+        gpu: (&wgpu::Device, &wgpu::Queue),
+        encoder: &mut wgpu::CommandEncoder,
+        surface_view: &wgpu::TextureView,
+        hit_areas: Vec<RenderedHitArea>,
+    ) -> Result<RenderedModelFrame, RenderError> {
+        let (device, queue) = gpu;
         self.update_meshes(device, queue, encoder, model)?;
 
         let model_target = self
@@ -193,7 +208,6 @@ impl GpuModelRenderer {
         }
         // generation 可能在命令录制期间被替换；提交前再次检查，避免发布已过期帧。
         model.cancellation().checkpoint()?;
-        self.vertex_upload_belt.finish();
 
         Ok(RenderedModelFrame::gpu(hit_areas, model.dimensions()))
     }

@@ -75,6 +75,11 @@ impl ChatSessionStore {
         self.latest_revision.load(Ordering::Acquire)
     }
 
+    /// 数据库不可用时无需构造快照或派发写任务。
+    pub(super) fn is_available(&self) -> bool {
+        self.database.is_some()
+    }
+
     /// 仅当 revision 更新时提交快照，避免迟到后台任务覆盖新状态。
     ///
     /// # Errors

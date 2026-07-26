@@ -129,6 +129,71 @@ fn gpu_frame_still_rejects_non_finite_dynamic_values() {
 }
 
 #[test]
+fn reused_buffers_do_not_keep_pixels_from_the_previous_frame() {
+    // 光栅缓冲跨帧复用并只清空脏区域；模型移动后原位置必须完全透明。
+    fn mesh_at(offset_x: f32) -> Moc3DrawableMesh {
+        Moc3DrawableMesh::from_parts(
+            0,
+            0,
+            1.0,
+            0.0,
+            vec![
+                Moc3DrawableVertex::new([offset_x - 0.3, -0.3], [0.0, 0.0]),
+                Moc3DrawableVertex::new([offset_x + 0.3, -0.3], [1.0, 0.0]),
+                Moc3DrawableVertex::new([offset_x, 0.3], [0.5, 1.0]),
+            ],
+            vec![0, 1, 2],
+            Vec::new(),
+        )
+    }
+
+    let cancellation = RenderCancellation::default();
+    let textures = [DecodedTexture::new(1, 1, vec![255; 4])];
+    // 变换按第一帧的包围盒固定，之后模型移出该区域。
+    let layout = vec![mesh_at(-1.0), mesh_at(1.0)];
+    let transform =
+        ModelTransform::fit(&layout, 64, 64, &cancellation).expect("测试网格应能建立变换");
+    let mut renderer = CpuRenderer::new(&layout, &textures, 64, 64, &cancellation)
+        .expect("测试网格应能建立 CPU renderer");
+
+    let left = vec![mesh_at(-1.0), mesh_at(-1.0)];
+    let first = renderer
+        .render(&left, &textures, transform, &cancellation)
+        .expect("首帧应当渲染成功");
+    let left_opaque = opaque_pixels(&first);
+    assert!(left_opaque > 0, "首帧应当绘制出可见像素");
+
+    let right = vec![mesh_at(1.0), mesh_at(1.0)];
+    let second = renderer
+        .render(&right, &textures, transform, &cancellation)
+        .expect("次帧应当渲染成功");
+
+    assert_eq!(opaque_pixels(&second), left_opaque);
+    assert!(
+        !frames_overlap(&first, &second),
+        "移动后的帧不得保留上一帧位置的像素"
+    );
+}
+
+fn opaque_pixels(image: &gpui::RenderImage) -> usize {
+    image
+        .as_bytes(0)
+        .expect("渲染结果应当包含一帧")
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] > 0)
+        .count()
+}
+
+fn frames_overlap(first: &gpui::RenderImage, second: &gpui::RenderImage) -> bool {
+    let first = first.as_bytes(0).expect("渲染结果应当包含一帧");
+    let second = second.as_bytes(0).expect("渲染结果应当包含一帧");
+    first
+        .chunks_exact(4)
+        .zip(second.chunks_exact(4))
+        .any(|(left, right)| left[3] > 0 && right[3] > 0)
+}
+
+#[test]
 fn cancelled_buffer_work_returns_a_distinct_error() {
     let cancellation = RenderCancellation::default();
     let mut pixels = vec![[1.0; 4]; CANCEL_CHECK_PIXELS * 2];

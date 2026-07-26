@@ -35,12 +35,18 @@ pub(crate) fn gpu_underlay_size_for_window(window: &Window) -> GpuUnderlaySize {
 }
 
 /// 将逻辑窗口尺寸换算为 GPU underlay 使用的物理与逻辑像素尺寸。
+///
+/// 物理尺寸由取整后的逻辑尺寸派生，使二者在整数缩放下保持整除关系；否则分数窗口高度会让
+/// Wayland 的 `exact_buffer_scale` 失败并退回 CPU renderer。
 pub(crate) fn gpu_underlay_size(width: f32, height: f32, scale_factor: f32) -> GpuUnderlaySize {
-    let logical = [width.max(1.0) as u32, height.max(1.0) as u32];
+    let logical = [
+        width.max(1.0).round().max(1.0) as u32,
+        height.max(1.0).round().max(1.0) as u32,
+    ];
     let scale_factor = scale_factor.max(1.0);
     let physical = [
-        (width.max(1.0) * scale_factor).round() as u32,
-        (height.max(1.0) * scale_factor).round() as u32,
+        (f64::from(logical[0]) * f64::from(scale_factor)).round() as u32,
+        (f64::from(logical[1]) * f64::from(scale_factor)).round() as u32,
     ];
     GpuUnderlaySize { physical, logical }
 }

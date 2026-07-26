@@ -323,6 +323,8 @@ impl AgentSettingsView {
                 this.set_status(status, cx);
             });
         });
+        // 只保留仍在执行的写任务，避免长期打开设置窗口时无界累积句柄。
+        self.write_tasks.retain(|task| !task.is_ready());
         self.write_tasks.push(task);
     }
 }

@@ -133,6 +133,30 @@ pub(crate) struct LlmModelConfig {
     pub(crate) api_key: Option<String>,
 }
 
+impl LlmModelConfig {
+    /// 就地规范化并校验单个模型条目，不涉及跨条目的唯一性约束。
+    fn normalize(&mut self) -> Result<(), ConfigWriteError> {
+        self.id = normalized_required(&self.id, t!("llm.model_id").as_ref(), MAX_ID_BYTES)?;
+        if !self
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(invalid(t!("llm.error.id_characters").to_string()));
+        }
+        self.label = normalized_required(&self.label, t!("llm.name").as_ref(), MAX_LABEL_BYTES)?;
+        self.model = normalized_required(
+            &self.model,
+            t!("llm.provider_model_id").as_ref(),
+            MAX_MODEL_NAME_BYTES,
+        )?;
+        self.api_key =
+            normalize_optional(&self.api_key, MAX_API_KEY_BYTES, t!("llm.api_key").as_ref())?;
+        self.endpoint = normalize_endpoint(self.provider, self.endpoint.as_deref())?;
+        Ok(())
+    }
+}
+
 impl fmt::Debug for LlmModelConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -181,32 +205,12 @@ impl LlmSettings {
 
         let mut ids = HashSet::with_capacity(self.models.len());
         for model in &mut self.models {
-            model.id = normalized_required(&model.id, t!("llm.model_id").as_ref(), MAX_ID_BYTES)?;
-            if !model
-                .id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-            {
-                return Err(invalid(t!("llm.error.id_characters").to_string()));
-            }
+            model.normalize()?;
             if !ids.insert(model.id.clone()) {
                 return Err(invalid(
                     t!("llm.error.duplicate_id", id = &model.id).to_string(),
                 ));
             }
-            model.label =
-                normalized_required(&model.label, t!("llm.name").as_ref(), MAX_LABEL_BYTES)?;
-            model.model = normalized_required(
-                &model.model,
-                t!("llm.provider_model_id").as_ref(),
-                MAX_MODEL_NAME_BYTES,
-            )?;
-            model.api_key = normalize_optional(
-                &model.api_key,
-                MAX_API_KEY_BYTES,
-                t!("llm.api_key").as_ref(),
-            )?;
-            model.endpoint = normalize_endpoint(model.provider, model.endpoint.as_deref())?;
         }
 
         self.selected_model = normalize_optional(
@@ -356,30 +360,59 @@ pub(super) fn parse_llm_settings(
     if let Some(models) = llm.get("models") {
         match models.as_array_of_tables() {
             Some(models) => {
+                let mut ids = HashSet::with_capacity(models.len());
                 for (index, table) in models.iter().enumerate() {
-                    match parse_llm_model(table) {
-                        Ok(model) => settings.models.push(model),
-                        Err(error) => warnings.push(format!("llm.models[{index}] 已忽略：{error}")),
+                    // 逐条规范化并跳过无效条目，避免一处手写错误丢弃其余模型和已保存的 API key。
+                    let mut model = match parse_llm_model(table) {
+                        Ok(model) => model,
+                        Err(error) => {
+                            warnings.push(format!("llm.models[{index}] 已忽略：{error}"));
+                            continue;
+                        }
+                    };
+                    if let Err(error) = model.normalize() {
+                        warnings.push(format!("llm.models[{index}] 已忽略：{error}"));
+                        continue;
                     }
+                    if !ids.insert(model.id.clone()) {
+                        warnings.push(format!(
+                            "llm.models[{index}] 已忽略：{}",
+                            t!("llm.error.duplicate_id", id = &model.id)
+                        ));
+                        continue;
+                    }
+                    if settings.models.len() == MAX_MODELS {
+                        warnings.push(t!("llm.error.max_models", max = MAX_MODELS).to_string());
+                        break;
+                    }
+                    settings.models.push(model);
                 }
             }
             None => warnings.push("llm.models 必须是 TOML 表数组，已忽略".to_owned()),
         }
     }
 
+    if settings.system_prompt.len() > MAX_SYSTEM_PROMPT_BYTES {
+        warnings.push(
+            t!(
+                "llm.error.system_prompt_too_long",
+                max = MAX_SYSTEM_PROMPT_BYTES
+            )
+            .to_string(),
+        );
+        settings.system_prompt = String::new();
+    }
+    settings.selected_model = settings
+        .selected_model
+        .map(|selected| selected.trim().to_owned())
+        .filter(|selected| !selected.is_empty());
     if let Some(selected) = settings.selected_model.as_deref()
         && !settings.models.iter().any(|model| model.id == selected)
     {
         warnings.push(format!("llm.selected 指向不存在的模型 {selected}，已忽略"));
         settings.selected_model = None;
     }
-    match settings.normalized() {
-        Ok(settings) => settings,
-        Err(error) => {
-            warnings.push(format!("语言模型配置无效，已使用空配置：{error}"));
-            LlmSettings::default()
-        }
-    }
+    settings
 }
 
 fn parse_llm_model(table: &Table) -> Result<LlmModelConfig, ConfigWriteError> {

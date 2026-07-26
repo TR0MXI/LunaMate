@@ -27,6 +27,8 @@ const APPLICATION_LOG_TARGET: &str = env!("CARGO_PKG_NAME");
 struct LoggerRuntime {
     handle: LoggerHandle,
     has_file_writer: bool,
+    /// 最近一次应用到 file writer 的轮转配置；仅等级变化时无需重建 writer。
+    applied_file_settings: Option<LoggingSettings>,
 }
 
 static LOGGER_HANDLE: OnceLock<Mutex<Option<LoggerRuntime>>> = OnceLock::new();
@@ -39,6 +41,7 @@ pub(crate) fn init() {
             LoggerRuntime {
                 handle,
                 has_file_writer: true,
+                applied_file_settings: Some(default_settings),
             },
             None,
         ),
@@ -47,6 +50,7 @@ pub(crate) fn init() {
                 LoggerRuntime {
                     handle,
                     has_file_writer: false,
+                    applied_file_settings: None,
                 },
                 Some(file_error),
             ),
@@ -68,26 +72,40 @@ pub(crate) fn apply_current_settings() -> Result<(), String> {
         .get()
         .ok_or_else(|| "日志器尚未初始化".to_owned())?;
     // 在 writer 锁内读取快照，确保迟到任务不会在较新任务之后重新应用旧配置。
-    let guard = slot.lock();
+    let mut guard = slot.lock();
     let settings = CONFIG
         .logging_settings()
         .as_ref()
         .to_owned()
         .normalized()
         .map_err(|error| format!("日志配置无效：{error}"))?;
-    let runtime = guard.as_ref().ok_or_else(|| "日志器已经关闭".to_owned())?;
+    let runtime = guard.as_mut().ok_or_else(|| "日志器已经关闭".to_owned())?;
 
-    if runtime.has_file_writer {
+    // reset_flw 会重建 writer 并重跑轮转与清理，只在轮转参数真正变化时执行。
+    if runtime.has_file_writer
+        && runtime
+            .applied_file_settings
+            .is_none_or(|applied| !file_writer_settings_match(applied, settings))
+    {
         let builder = file_writer_builder(settings, file_spec());
         runtime
             .handle
             .reset_flw(&builder)
             .map_err(|error| format!("更新日志文件配置失败：{error}"))?;
+        runtime.applied_file_settings = Some(settings);
     }
     runtime
         .handle
         .parse_new_spec(&application_log_spec(settings.level))
         .map_err(|error| format!("更新日志等级失败：{error}"))
+}
+
+/// 比较影响 file writer 的轮转字段；`level` 由日志过滤器单独应用。
+fn file_writer_settings_match(left: LoggingSettings, right: LoggingSettings) -> bool {
+    left.rotation == right.rotation
+        && left.compression == right.compression
+        && left.max_size_mb == right.max_size_mb
+        && left.keep_files == right.keep_files
 }
 
 /// 在应用退出时显式刷新并关闭异步写入线程。

@@ -11,12 +11,37 @@ use super::{ConfigSection, SettingsView, components::sidebar_button};
 
 impl SettingsView {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
+        // `t!` 的 minify_key 要求字面量键，因此在此展开为具体标签。
+        let sections = [
+            (
+                "section-model",
+                t!("settings.model").to_string(),
+                ConfigSection::Model,
+            ),
+            (
+                "section-conversation",
+                t!("settings.conversation").to_string(),
+                ConfigSection::Conversation,
+            ),
+            (
+                "section-tool",
+                t!("settings.tool").to_string(),
+                ConfigSection::Tool,
+            ),
+            (
+                "section-system",
+                t!("settings.system").to_string(),
+                ConfigSection::System,
+            ),
+            (
+                "section-debug",
+                t!("settings.debug").to_string(),
+                ConfigSection::Debug,
+            ),
+        ];
+
         let palette = UiPalette::from_app(cx);
-        let model_active = self.section == ConfigSection::Model;
-        let conversation_active = self.section == ConfigSection::Conversation;
-        let tool_active = self.section == ConfigSection::Tool;
-        let system_active = self.section == ConfigSection::System;
-        let debug_active = self.section == ConfigSection::Debug;
+        let active_section = self.section;
         div()
             .w(px(160.0))
             .h_full()
@@ -26,83 +51,26 @@ impl SettingsView {
             .border_r_1()
             .border_color(palette.border)
             .bg(palette.sidebar)
-            .child(div().flex().flex_col().gap_1().px_2().pt_3().children([
-                sidebar_button(
-                    "section-model",
-                    t!("settings.model").to_string(),
-                    model_active,
-                    palette,
-                    cx.listener(
-                        |this: &mut SettingsView,
-                         _: &gpui::ClickEvent,
-                         _: &mut Window,
-                         cx: &mut Context<SettingsView>| {
-                            this.section = ConfigSection::Model;
-                            cx.notify();
-                        },
-                    ),
-                ),
-                sidebar_button(
-                    "section-conversation",
-                    t!("settings.conversation").to_string(),
-                    conversation_active,
-                    palette,
-                    cx.listener(
-                        |this: &mut SettingsView,
-                         _: &gpui::ClickEvent,
-                         _: &mut Window,
-                         cx: &mut Context<SettingsView>| {
-                            this.section = ConfigSection::Conversation;
-                            cx.notify();
-                        },
-                    ),
-                ),
-                sidebar_button(
-                    "section-tool",
-                    t!("settings.tool").to_string(),
-                    tool_active,
-                    palette,
-                    cx.listener(
-                        |this: &mut SettingsView,
-                         _: &gpui::ClickEvent,
-                         _: &mut Window,
-                         cx: &mut Context<SettingsView>| {
-                            this.section = ConfigSection::Tool;
-                            cx.notify();
-                        },
-                    ),
-                ),
-                sidebar_button(
-                    "section-system",
-                    t!("settings.system").to_string(),
-                    system_active,
-                    palette,
-                    cx.listener(
-                        |this: &mut SettingsView,
-                         _: &gpui::ClickEvent,
-                         _: &mut Window,
-                         cx: &mut Context<SettingsView>| {
-                            this.section = ConfigSection::System;
-                            cx.notify();
-                        },
-                    ),
-                ),
-                sidebar_button(
-                    "section-debug",
-                    t!("settings.debug").to_string(),
-                    debug_active,
-                    palette,
-                    cx.listener(
-                        |this: &mut SettingsView,
-                         _: &gpui::ClickEvent,
-                         _: &mut Window,
-                         cx: &mut Context<SettingsView>| {
-                            this.section = ConfigSection::Debug;
-                            cx.notify();
-                        },
-                    ),
-                ),
-            ]))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_2()
+                    .pt_3()
+                    .children(sections.map(|(id, label, section)| {
+                        sidebar_button(
+                            id,
+                            label,
+                            active_section == section,
+                            palette,
+                            cx.listener(move |this: &mut SettingsView, _, _, cx| {
+                                this.section = section;
+                                cx.notify();
+                            }),
+                        )
+                    })),
+            )
             .into_any_element()
     }
 }

@@ -18,7 +18,7 @@ use image::{Frame, RgbaImage};
 use mocari::moc3::Moc3DrawableMesh;
 use mocari::{assets::DecodedTexture, core::draw_order_from_raw};
 
-use self::rasterizer::Rasterizer;
+use self::rasterizer::{PixelBounds, Rasterizer};
 
 const MODEL_PADDING: f32 = 0.04;
 const MAX_RASTER_PIXELS: usize = 1_280 * 1_280;
@@ -163,6 +163,7 @@ impl CpuRenderer {
                     masks.push(MaskBuffer {
                         sources,
                         alpha: Vec::new(),
+                        dirty: None,
                     });
                     masks.len() - 1
                 }
@@ -185,7 +186,7 @@ impl CpuRenderer {
     }
 
     /// 光栅化当前 Drawable 状态；大缓冲在相邻帧之间复用。
-    pub(super) fn render(
+    pub(in crate::model) fn render(
         &mut self,
         meshes: &[Moc3DrawableMesh],
         textures: &[DecodedTexture],
@@ -218,22 +219,32 @@ impl CpuRenderer {
             }
             if mask.alpha.is_empty() {
                 mask.alpha = filled_vec(self.mask_pixel_count, 0.0_f32, "蒙版缓冲")?;
+                mask.dirty = None;
             } else {
-                fill_cancelable(&mut mask.alpha, 0.0, cancellation)?;
+                // 只清空上一帧写入过的区域，避免每帧对整块蒙版缓冲做 memset。
+                self.rasterizer
+                    .clear_mask_region(&mut mask.alpha, mask.dirty, cancellation)?;
             }
+            let mut dirty = None;
             for &source_index in &mask.sources {
                 cancellation.checkpoint()?;
                 let drawable = &meshes[source_index];
                 let texture = &textures[self.texture_indices[source_index]];
-                self.rasterizer.draw_mask(
+                if let Some(bounds) = self.rasterizer.draw_mask(
                     drawable,
                     source_index,
                     texture,
                     transform,
                     &mut mask.alpha,
                     cancellation,
-                )?;
+                )? {
+                    dirty = Some(match dirty {
+                        Some(existing) => bounds.union(existing),
+                        None => bounds,
+                    });
+                }
             }
+            mask.dirty = dirty;
         }
 
         for &drawable_index in &self.draw_order {
@@ -267,6 +278,7 @@ impl CpuRenderer {
         }
 
         let bgra = self.rasterizer.straight_bgra8(cancellation)?;
+        self.rasterizer.end_frame();
         let [width, height] = self.rasterizer.dimensions();
         let image = RgbaImage::from_raw(width, height, bgra)
             .ok_or_else(|| RenderError::new("无法构造 GPUI 图像缓冲"))?;
@@ -317,6 +329,8 @@ impl CpuRenderer {
 struct MaskBuffer {
     sources: Vec<usize>,
     alpha: Vec<f32>,
+    /// 上一帧写入过的区域；下一帧只需清空这部分。
+    dirty: Option<PixelBounds>,
 }
 
 pub(in crate::model) fn sorted_mask_sources(indices: &[i32]) -> Result<Vec<usize>, RenderError> {

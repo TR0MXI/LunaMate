@@ -70,17 +70,30 @@ pub(super) fn read_config_file(path: &Path) -> (LoadedConfig, Option<String>) {
     }
 }
 
-/// 读取用于精确更新的 TOML；损坏内容会在本次保存时重建。
+/// 读取用于精确更新的 TOML；损坏内容会在备份原文件后于本次保存时重建。
 pub(super) fn document_for_update(path: &Path) -> Result<DocumentMut, ConfigWriteError> {
     match read_config_source(path) {
         Ok(Some(source)) => match source.parse::<DocumentMut>() {
             Ok(document) => Ok(document),
             Err(error) => {
+                // 重建会丢弃全部既有键，其中包含 API key；先留下可人工恢复的副本。
+                let backup = backup_path(path);
+                if let Err(backup_error) = fs::write(&backup, source.as_bytes()) {
+                    log::error!(
+                        "{}",
+                        t!(
+                            "log.config_backup_failed",
+                            path = backup.display(),
+                            error = backup_error
+                        )
+                    );
+                }
                 log::warn!(
                     "{}",
                     t!(
                         "log.config_rebuilt",
                         path = path.display(),
+                        backup = backup.display(),
                         error = error.message()
                     )
                 );
@@ -94,6 +107,12 @@ pub(super) fn document_for_update(path: &Path) -> Result<DocumentMut, ConfigWrit
             source,
         }),
     }
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".corrupt.bak");
+    path.with_file_name(name)
 }
 
 fn read_config_source(path: &Path) -> io::Result<Option<String>> {
