@@ -29,9 +29,20 @@ const MAX_TOTAL_TEXTURE_PIXELS: u64 = 64 * 1024 * 1024;
 pub(in crate::model) fn validate_model_resources(
     path: &Path,
 ) -> Result<ModelResourceResolver, ResourceValidationError> {
-    let file = fs::File::open(path).map_err(|_| {
-        ResourceValidationError::new(format!("无法读取模型清单：{}", path.display()))
-    })?;
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        // Windows 的 CreateFileW 未带 FILE_FLAG_BACKUP_SEMANTICS 时无法为目录返回句柄，
+        // 打开阶段就会失败；此处补一次 stat，避免把类型错误误报成读取失败。
+        Err(_) => {
+            let not_regular_file =
+                fs::metadata(path).is_ok_and(|metadata| !metadata.file_type().is_file());
+            return Err(ResourceValidationError::new(if not_regular_file {
+                format!("模型清单不是普通文件：{}", path.display())
+            } else {
+                format!("无法读取模型清单：{}", path.display())
+            }));
+        }
+    };
     let metadata = file.metadata().map_err(|_| {
         ResourceValidationError::new(format!("无法读取模型清单元数据：{}", path.display()))
     })?;
