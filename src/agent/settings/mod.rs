@@ -142,6 +142,59 @@ impl AgentSettingsView {
         }
     }
 
+    /// 返回当前草稿中的模型 ID 列表，供测试断言增删与选择行为。
+    #[cfg(test)]
+    pub(in crate::agent) fn model_ids_for_test(&self) -> Vec<String> {
+        self.draft
+            .models
+            .iter()
+            .map(|model| model.id.clone())
+            .collect()
+    }
+
+    /// 返回当前正在编辑的模型索引。
+    #[cfg(test)]
+    pub(in crate::agent) fn editing_index_for_test(&self) -> Option<usize> {
+        self.editing_index
+    }
+
+    /// 返回草稿中当前选中的模型 ID。
+    #[cfg(test)]
+    pub(in crate::agent) fn selected_model_for_test(&self) -> Option<&str> {
+        self.draft.selected_model.as_deref()
+    }
+
+    /// 追加一个新模型条目。
+    #[cfg(test)]
+    pub(in crate::agent) fn add_model_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.add_model(window, cx);
+    }
+
+    /// 删除当前编辑中的模型条目。
+    #[cfg(test)]
+    pub(in crate::agent) fn delete_model_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.delete_model(window, cx);
+    }
+
+    /// 切换到指定索引的模型条目。
+    #[cfg(test)]
+    pub(in crate::agent) fn select_model_for_test(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_model(index, window, cx);
+    }
+
     /// 保存窗口草稿并转移尚未结束的写任务，供关闭后重新创建编辑器。
     pub(crate) fn take_window_state(
         &mut self,
@@ -338,6 +391,32 @@ fn set_input(
     cx: &mut Context<AgentSettingsView>,
 ) {
     input.update(cx, |input, cx| input.set_value(value, window, cx));
+}
+
+/// 暴露表单可选字段的空白归一化规则，供测试断言"仅空白等同未设置"。
+#[cfg(test)]
+pub(in crate::agent) fn non_empty_for_test(value: &str) -> Option<String> {
+    non_empty(value)
+}
+
+/// 暴露新模型 ID 分配规则，供测试断言不会与既有条目冲突。
+#[cfg(test)]
+pub(in crate::agent) fn next_model_id_for_test(settings: &LlmSettings) -> String {
+    next_model_id(settings)
+}
+
+/// 暴露展示名到 Provider 的反向映射，供测试断言选择器往返一致。
+#[cfg(test)]
+pub(in crate::agent) fn provider_from_display_name_for_test(name: &str) -> Option<LlmProvider> {
+    provider_from_display_name(name)
+}
+
+/// 暴露 Provider 展示名，供测试断言目录内名称唯一。
+#[cfg(test)]
+pub(in crate::agent) const fn provider_display_name_for_test(
+    provider: LlmProvider,
+) -> &'static str {
+    provider_display_name(provider)
 }
 
 fn non_empty(value: &str) -> Option<String> {

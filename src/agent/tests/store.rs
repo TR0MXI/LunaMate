@@ -194,3 +194,43 @@ fn unavailable_store_reports_save_failure() {
         assert_eq!(store.latest_revision(), 0);
     });
 }
+
+#[test]
+fn availability_reflects_whether_a_database_was_opened() {
+    run_async(async {
+        let database = Database::open_memory().await.expect("内存数据库应可打开");
+
+        assert!(ChatSessionStore::empty(database.clone()).is_available());
+        assert!(!ChatSessionStore::unavailable().is_available());
+
+        let (_, store) = ChatSessionStore::load(database)
+            .await
+            .expect("空数据库应可加载");
+        assert!(store.is_available());
+    });
+}
+
+#[test]
+fn store_errors_describe_the_failure_without_including_session_text() {
+    let too_large = ChatStoreError::TooLarge;
+    assert!(
+        too_large
+            .to_string()
+            .contains(&MAX_SESSION_BYTES.to_string())
+    );
+    assert!(std::error::Error::source(&too_large).is_none());
+
+    let unsupported = ChatStoreError::UnsupportedDocumentVersion(9);
+    assert!(unsupported.to_string().contains('9'));
+    assert!(std::error::Error::source(&unsupported).is_none());
+
+    let unavailable = ChatStoreError::Unavailable;
+    assert!(unavailable.to_string().contains("数据库"));
+    assert!(std::error::Error::source(&unavailable).is_none());
+
+    let format = ChatStoreError::Format(
+        serde_json::from_str::<serde_json::Value>("not json").expect_err("测试需要解析错误"),
+    );
+    assert!(format.to_string().starts_with("聊天会话无法解析"));
+    assert!(std::error::Error::source(&format).is_some());
+}

@@ -90,6 +90,18 @@ impl ExpressionController {
         )
     }
 
+    /// 以显式预算和取消令牌加载表情，供测试验证 generation 取消路径。
+    #[cfg(test)]
+    pub(in crate::model) fn load_manifest_with_resources_for_test(
+        model: &Model3,
+        resolver: &ModelResourceResolver,
+        external: &[ExternalExpressionReference],
+        budget: &mut AuxiliaryResourceBudget,
+        cancellation: &RenderCancellation,
+    ) -> (ExpressionController, ModelLoadDiagnostics) {
+        Self::load_manifest_with_resources(model, resolver, external, budget, cancellation)
+    }
+
     fn load_manifest_with_resources(
         model: &Model3,
         resolver: &ModelResourceResolver,

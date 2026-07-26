@@ -64,6 +64,47 @@ fn tray_menu_uses_compact_fixed_dimensions() {
     assert_eq!(f32::from(bounds.size.height), 112.0);
 }
 
+#[test]
+fn left_tray_places_menu_right_of_icon() {
+    let bounds = place(
+        rect(0.0, 500.0, 24.0, 24.0),
+        rect(0.0, 0.0, 1920.0, 1080.0),
+        rect(24.0, 0.0, 1896.0, 1080.0),
+    );
+
+    assert_eq!(f32::from(bounds.origin.x), 32.0);
+    assert_eq!(f32::from(bounds.origin.y), 456.0);
+}
+
+#[test]
+fn menu_stays_inside_displays_smaller_than_the_menu_itself() {
+    // 可用区域比菜单还小时，夹取上界会低于下界；菜单应贴住左上边距而不是跳到负坐标。
+    let bounds = place(
+        rect(40.0, 40.0, 24.0, 24.0),
+        rect(0.0, 0.0, 160.0, 100.0),
+        rect(0.0, 0.0, 160.0, 100.0),
+    );
+
+    assert_eq!(f32::from(bounds.origin.x), 8.0);
+    assert_eq!(f32::from(bounds.origin.y), 8.0);
+    assert_eq!(f32::from(bounds.size.width), 192.0);
+    assert_eq!(f32::from(bounds.size.height), 112.0);
+}
+
+#[test]
+fn menu_position_accounts_for_secondary_display_origins() {
+    let bounds = place(
+        rect(3820.0, 1042.0, 24.0, 24.0),
+        rect(1920.0, 0.0, 1920.0, 1080.0),
+        rect(1920.0, 0.0, 1920.0, 1040.0),
+    );
+
+    // 图标贴近副屏底边，菜单应当在同一屏内上移且不越过右侧留白。
+    assert_eq!(f32::from(bounds.origin.y), 920.0);
+    assert!(f32::from(bounds.origin.x) >= 1928.0);
+    assert!(f32::from(bounds.origin.x) + 192.0 <= 3832.0);
+}
+
 fn place(icon: Bounds<Pixels>, display: Bounds<Pixels>, visible: Bounds<Pixels>) -> Bounds<Pixels> {
     tray_menu_bounds_for_display(icon, display, visible)
 }

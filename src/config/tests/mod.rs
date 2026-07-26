@@ -3,3 +3,4 @@
 mod appearance;
 mod config;
 mod llm;
+mod types;

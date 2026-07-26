@@ -37,6 +37,20 @@ pub(crate) struct ModelPreviewCapabilities {
 }
 
 impl ModelPreviewCapabilities {
+    /// 构造不依赖真实模型的能力快照，供设置界面状态测试使用。
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        outfits: Vec<String>,
+        motions: Vec<String>,
+        expressions: Vec<String>,
+    ) -> Self {
+        Self {
+            outfits,
+            motions,
+            expressions,
+        }
+    }
+
     /// 返回从模型目录外部表达式发现的服装名称。
     pub(crate) fn outfits(&self) -> &[String] {
         &self.outfits

@@ -38,6 +38,22 @@ pub(crate) struct HitAreaCapability {
 }
 
 impl HitAreaCapability {
+    /// 构造不依赖 `.moc3` 运行时的命中区域，用于验证逐帧包围盒计算。
+    #[cfg(test)]
+    pub(in crate::model) fn new_for_test(
+        id: &str,
+        name: &str,
+        drawable_index: usize,
+        bounds_slot: usize,
+    ) -> Self {
+        Self {
+            id: Arc::from(id),
+            name: Arc::from(name),
+            drawable_index,
+            bounds_slot,
+        }
+    }
+
     /// 返回模型清单中声明的 HitArea ID。
     pub(crate) fn id(&self) -> &Arc<str> {
         &self.id

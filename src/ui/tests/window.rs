@@ -80,6 +80,56 @@ fn gpu_underlay_uses_native_physical_pixels_and_logical_compositor_size() {
 }
 
 #[test]
+fn degenerate_window_sizes_still_produce_a_usable_surface() {
+    // 窗口最小化或合成器上报异常尺寸时，GPU surface 与光栅尺寸都不能退化为零。
+    for (width, height, scale_factor) in [
+        (0.0_f32, 0.0_f32, 1.0_f32),
+        (-100.0, -100.0, 1.0),
+        (0.4, 0.4, 0.0),
+        (1.0, 1.0, -2.0),
+    ] {
+        let size = gpu_underlay_size(width, height, scale_factor);
+        assert!(size.logical.iter().all(|value| *value >= 1));
+        assert!(size.physical.iter().all(|value| *value >= 1));
+
+        let raster = raster_dimensions_for_window(width, height, scale_factor);
+        assert!(
+            raster
+                .iter()
+                .all(|value| (1..=MAX_RASTER_DIMENSION).contains(value))
+        );
+    }
+}
+
+#[test]
+fn raster_dimensions_never_exceed_the_long_edge_cap() {
+    for (width, height, scale_factor) in [
+        (4_096.0_f32, 4_096.0_f32, 3.0_f32),
+        (220.0, 2_000.0, 2.0),
+        (2_000.0, 220.0, 2.0),
+    ] {
+        let [raster_width, raster_height] =
+            raster_dimensions_for_window(width, height, scale_factor);
+        assert!(raster_width.max(raster_height) <= MAX_RASTER_DIMENSION);
+        assert!(raster_width >= 1 && raster_height >= 1);
+    }
+}
+
+#[test]
+fn fixed_window_size_presets_still_fit_small_displays() {
+    // 用户在大屏选择的预设迁移到小屏后不能超出可用区域。
+    let [width, height] = desktop_pet_window_size(400.0, 300.0, ModelWindowSize::ExtraLarge);
+
+    assert!(width <= 400.0 * DISPLAY_MARGIN_FRACTION);
+    assert!(height <= 300.0 * DISPLAY_MARGIN_FRACTION);
+    assert_close(height / width, PHONE_ASPECT_RATIO);
+
+    let min_size = desktop_pet_window_min_size(400.0, 300.0);
+    assert!(f32::from(min_size.width) <= width);
+    assert!(f32::from(min_size.height) <= height);
+}
+
+#[test]
 fn gpu_underlay_physical_size_stays_an_integer_multiple_of_the_logical_size() {
     // 桌宠高度为宽度的 16/9，分数结果必须仍能被合成器表示为整数 buffer scale。
     let width = MIN_WINDOW_WIDTH;

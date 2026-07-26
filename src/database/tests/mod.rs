@@ -1,5 +1,7 @@
 //! 数据库 façade 与内存后端测试。
 
+mod atomic_file;
+mod engine;
 mod storage;
 
 use std::future::Future;

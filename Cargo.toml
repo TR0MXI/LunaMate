@@ -75,6 +75,8 @@ debug = true
 strip = "none"
 
 [dev-dependencies]
+# 仅测试目标需要 GPUI 的无头 TestAppContext；必须与生产依赖解析到同一 Zed commit。
+gpui = { git = "https://github.com/zed-industries/zed", features = ["test-support"] }
 # 内存引擎只在本 crate 的测试目标中启用，常规 build 不会统一该 feature。
 surrealdb = { version = "3.2.3", default-features = false, features = ["kv-mem"] }
 # 仅为无图形会话的 pipeline 单元测试启用同一份 WGPU 29 noop backend。

@@ -304,6 +304,14 @@ impl LunaConfig {
         self.llm.load_full()
     }
 
+    /// 只替换进程内已发布的 LLM 快照，不触碰配置文件。
+    ///
+    /// 视图实体从全局配置读取模型，测试需要在不写入用户配置的前提下准备可用模型。
+    #[cfg(test)]
+    pub(crate) fn publish_llm_settings_for_test(&self, settings: LlmSettings) {
+        self.llm.store(Arc::new(settings));
+    }
+
     /// 返回指定窗口最近一次观察到的位置。
     pub(crate) fn window_position(&self, window: ConfigWindow) -> Option<WindowPosition> {
         self.window_positions.lock().window_position(window)

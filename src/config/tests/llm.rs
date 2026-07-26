@@ -143,3 +143,349 @@ fn endpoint_normalization_preserves_base_path() {
     assert!(normalize_endpoint(LlmProvider::OpenAi, Some("http://example.com/v1")).is_err());
     assert!(normalize_endpoint(LlmProvider::Ollama, Some("http://example.com")).is_err());
 }
+
+#[test]
+fn blank_endpoints_are_treated_as_provider_defaults() {
+    for endpoint in [None, Some(""), Some("   ")] {
+        assert_eq!(
+            normalize_endpoint(LlmProvider::OpenAi, endpoint).expect("空 endpoint 应当合法"),
+            None
+        );
+    }
+}
+
+#[test]
+fn plain_http_is_only_allowed_for_loopback_hosts() {
+    for endpoint in [
+        "http://localhost:11434",
+        "http://LOCALHOST:11434",
+        "http://127.0.0.1:11434",
+        "http://[::1]:11434",
+    ] {
+        assert!(
+            normalize_endpoint(LlmProvider::Ollama, Some(endpoint)).is_ok(),
+            "本地回环 {endpoint} 应当允许明文 HTTP"
+        );
+    }
+
+    for endpoint in [
+        "http://192.168.1.10:11434",
+        "http://example.com",
+        "http://[2001:db8::1]:11434",
+    ] {
+        assert!(
+            normalize_endpoint(LlmProvider::Ollama, Some(endpoint)).is_err(),
+            "非回环 {endpoint} 不应允许明文 HTTP"
+        );
+    }
+}
+
+#[test]
+fn endpoints_carrying_credentials_or_extra_url_parts_are_rejected() {
+    for endpoint in [
+        "https://user@example.com/v1",
+        "https://user:secret@example.com/v1",
+        "https://example.com/v1?key=secret",
+        "https://example.com/v1#fragment",
+        "not-a-url",
+        "file:///etc/hosts",
+    ] {
+        assert!(
+            normalize_endpoint(LlmProvider::OpenAi, Some(endpoint)).is_err(),
+            "{endpoint} 不应作为 Provider endpoint 接受"
+        );
+    }
+}
+
+#[test]
+fn providers_with_fixed_endpoints_reject_overrides() {
+    for provider in [LlmProvider::Zai, LlmProvider::Baidu] {
+        let error = normalize_endpoint(provider, Some("https://example.com/v1"))
+            .expect_err("固定 endpoint 的 Provider 不应接受覆盖");
+        assert!(!error.to_string().is_empty());
+    }
+}
+
+#[test]
+fn oversized_endpoints_are_rejected_before_parsing() {
+    let endpoint = format!("https://example.com/{}", "a".repeat(2_048));
+
+    assert!(normalize_endpoint(LlmProvider::OpenAi, Some(&endpoint)).is_err());
+}
+
+#[test]
+fn trailing_slashes_are_collapsed_into_one_base_path() {
+    assert_eq!(
+        normalize_endpoint(LlmProvider::OpenAi, Some("https://example.com///"))
+            .expect("根路径 endpoint 应当有效")
+            .as_deref(),
+        Some("https://example.com/")
+    );
+    assert_eq!(
+        normalize_endpoint(LlmProvider::OpenAi, Some(" https://example.com/v1//// "))
+            .expect("带空白与多余斜杠的 endpoint 应当有效")
+            .as_deref(),
+        Some("https://example.com/v1/")
+    );
+}
+
+#[test]
+fn selected_returns_only_a_model_that_still_exists() {
+    let mut settings = LlmSettings {
+        models: vec![LlmModelConfig {
+            id: "local".to_owned(),
+            label: "Local".to_owned(),
+            provider: LlmProvider::Ollama,
+            model: "qwen3:8b".to_owned(),
+            endpoint: None,
+            api_key: None,
+        }],
+        selected_model: Some("local".to_owned()),
+        system_prompt: String::new(),
+    };
+
+    assert_eq!(
+        settings.selected().map(|model| model.id.as_str()),
+        Some("local")
+    );
+
+    settings.selected_model = Some("removed".to_owned());
+    assert!(settings.selected().is_none());
+
+    settings.selected_model = None;
+    assert!(settings.selected().is_none());
+    assert!(LlmSettings::default().selected().is_none());
+}
+
+#[test]
+fn required_model_fields_are_trimmed_and_bounded() {
+    let base = LlmModelConfig {
+        id: " local ".to_owned(),
+        label: "  Local  ".to_owned(),
+        provider: LlmProvider::Ollama,
+        model: " qwen3:8b ".to_owned(),
+        endpoint: None,
+        api_key: Some("   ".to_owned()),
+    };
+    let normalized = LlmSettings {
+        models: vec![base.clone()],
+        selected_model: Some(" local ".to_owned()),
+        system_prompt: String::new(),
+    }
+    .normalized()
+    .expect("去除空白后的配置应当有效");
+
+    assert_eq!(normalized.models[0].id, "local");
+    assert_eq!(normalized.models[0].label, "Local");
+    assert_eq!(normalized.models[0].model, "qwen3:8b");
+    // 只含空白的 API key 等同于未设置，不应写入配置文件。
+    assert_eq!(normalized.models[0].api_key, None);
+    assert_eq!(normalized.selected_model.as_deref(), Some("local"));
+
+    for invalid in [
+        LlmModelConfig {
+            id: "  ".to_owned(),
+            ..base.clone()
+        },
+        LlmModelConfig {
+            id: "local model".to_owned(),
+            ..base.clone()
+        },
+        LlmModelConfig {
+            id: "本地".to_owned(),
+            ..base.clone()
+        },
+        LlmModelConfig {
+            label: String::new(),
+            ..base.clone()
+        },
+        LlmModelConfig {
+            model: " ".to_owned(),
+            ..base.clone()
+        },
+        LlmModelConfig {
+            id: "a".repeat(65),
+            ..base.clone()
+        },
+        LlmModelConfig {
+            label: "l".repeat(129),
+            ..base.clone()
+        },
+        LlmModelConfig {
+            model: "m".repeat(257),
+            ..base.clone()
+        },
+        LlmModelConfig {
+            api_key: Some("k".repeat(4 * 1024 + 1)),
+            ..base
+        },
+    ] {
+        assert!(
+            LlmSettings {
+                models: vec![invalid.clone()],
+                selected_model: None,
+                system_prompt: String::new(),
+            }
+            .normalized()
+            .is_err(),
+            "{invalid:?} 应当被拒绝"
+        );
+    }
+}
+
+#[test]
+fn model_count_and_system_prompt_have_hard_limits() {
+    let model = |index: usize| LlmModelConfig {
+        id: format!("model-{index}"),
+        label: format!("Model {index}"),
+        provider: LlmProvider::Ollama,
+        model: "qwen3:8b".to_owned(),
+        endpoint: None,
+        api_key: None,
+    };
+
+    assert!(
+        LlmSettings {
+            models: (0..64).map(model).collect(),
+            selected_model: None,
+            system_prompt: String::new(),
+        }
+        .normalized()
+        .is_ok()
+    );
+    assert!(
+        LlmSettings {
+            models: (0..65).map(model).collect(),
+            selected_model: None,
+            system_prompt: String::new(),
+        }
+        .normalized()
+        .is_err()
+    );
+    assert!(
+        LlmSettings {
+            system_prompt: "p".repeat(64 * 1024 + 1),
+            ..LlmSettings::default()
+        }
+        .normalized()
+        .is_err()
+    );
+}
+
+#[test]
+fn malformed_llm_tables_produce_warnings_instead_of_dropping_the_config() {
+    let document = r#"
+[llm]
+selected = 42
+system_prompt = true
+models = "not-an-array"
+"#
+    .parse::<DocumentMut>()
+    .expect("测试配置应当可以解析");
+    let mut warnings = Vec::new();
+
+    let settings = parse_llm_settings(&document, &mut warnings);
+
+    assert_eq!(settings, LlmSettings::default());
+    assert_eq!(warnings.len(), 3);
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("llm.selected"))
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("llm.system_prompt"))
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("llm.models"))
+    );
+}
+
+#[test]
+fn selection_pointing_at_a_removed_model_is_dropped_with_a_warning() {
+    let document = r#"
+[llm]
+selected = "  removed  "
+
+[[llm.models]]
+id = "local"
+label = "Local"
+provider = "ollama"
+model = "qwen3:8b"
+"#
+    .parse::<DocumentMut>()
+    .expect("测试配置应当可以解析");
+    let mut warnings = Vec::new();
+
+    let settings = parse_llm_settings(&document, &mut warnings);
+
+    assert_eq!(settings.models.len(), 1);
+    assert_eq!(settings.selected_model, None);
+    assert!(warnings.iter().any(|warning| warning.contains("removed")));
+}
+
+#[test]
+fn oversized_stored_system_prompt_is_cleared_with_a_warning() {
+    let mut document = DocumentMut::new();
+    write_llm_settings(
+        &mut document,
+        &LlmSettings {
+            system_prompt: "p".repeat(64 * 1024 + 1),
+            ..LlmSettings::default()
+        },
+    );
+    let mut warnings = Vec::new();
+
+    let settings = parse_llm_settings(&document, &mut warnings);
+
+    assert!(settings.system_prompt.is_empty());
+    assert_eq!(warnings.len(), 1);
+}
+
+#[test]
+fn unknown_provider_ids_only_discard_the_offending_model() {
+    let document = r#"
+[[llm.models]]
+id = "legacy"
+label = "Legacy"
+provider = "not-a-provider"
+model = "legacy-model"
+
+[[llm.models]]
+id = "local"
+label = "Local"
+provider = "ollama"
+model = "qwen3:8b"
+"#
+    .parse::<DocumentMut>()
+    .expect("测试配置应当可以解析");
+    let mut warnings = Vec::new();
+
+    let settings = parse_llm_settings(&document, &mut warnings);
+
+    assert_eq!(settings.models.len(), 1);
+    assert_eq!(settings.models[0].id, "local");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("not-a-provider"))
+    );
+}
+
+#[test]
+fn documents_without_an_llm_table_parse_as_default_settings() {
+    let document = "[system]\nframe_rate = \"60\"\n"
+        .parse::<DocumentMut>()
+        .expect("测试配置应当可以解析");
+    let mut warnings = Vec::new();
+
+    assert_eq!(
+        parse_llm_settings(&document, &mut warnings),
+        LlmSettings::default()
+    );
+    assert!(warnings.is_empty());
+}

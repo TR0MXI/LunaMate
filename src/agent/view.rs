@@ -254,6 +254,36 @@ impl AgentView {
         }
     }
 
+    /// 用 fake backend 替换真实 Provider，使流式生命周期可在测试中确定性验证。
+    #[cfg(test)]
+    pub(super) fn set_backend_for_test(&mut self, backend: Arc<dyn ChatBackend>) {
+        self.backend = backend;
+    }
+
+    /// 返回当前回复浮层实际展示的文本，供测试断言状态与会话内容一致。
+    #[cfg(test)]
+    pub(super) fn reply_text_for_test(&self) -> Option<String> {
+        self.reply_display().map(|display| display.text)
+    }
+
+    /// 返回当前是否仍有可接收流式增量的请求。
+    #[cfg(test)]
+    pub(super) fn is_streaming_for_test(&self) -> bool {
+        self.is_streaming()
+    }
+
+    /// 返回会话中已记录的消息数量。
+    #[cfg(test)]
+    pub(super) fn message_count_for_test(&self) -> usize {
+        self.session.messages().len()
+    }
+
+    /// 直接投递一条用户消息，跳过输入框与焦点管理。
+    #[cfg(test)]
+    pub(super) fn send_message_for_test(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+        self.send_message_with_image(text.to_owned(), None, cx)
+    }
+
     /// 从全局配置刷新模型和系统提示词；活动请求继续使用启动时的旧快照。
     pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
         self.settings = CONFIG.llm_settings();

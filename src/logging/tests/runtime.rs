@@ -87,3 +87,118 @@ fn asynchronous_file_writer_can_be_reconfigured() {
     }
     let _ = fs::remove_dir_all(directory);
 }
+
+#[test]
+fn only_rotation_fields_force_a_file_writer_rebuild() {
+    let base = LoggingSettings::default();
+
+    // 等级由日志过滤器单独应用，不应触发 writer 重建与轮转清理。
+    assert!(file_writer_settings_match(
+        base,
+        LoggingSettings {
+            level: LogLevel::Trace,
+            ..base
+        }
+    ));
+    assert!(file_writer_settings_match(base, base));
+
+    for changed in [
+        LoggingSettings {
+            rotation: !base.rotation,
+            ..base
+        },
+        LoggingSettings {
+            compression: !base.compression,
+            ..base
+        },
+        LoggingSettings {
+            max_size_mb: base.max_size_mb + 1,
+            ..base
+        },
+        LoggingSettings {
+            keep_files: base.keep_files + 1,
+            ..base
+        },
+    ] {
+        assert!(
+            !file_writer_settings_match(base, changed),
+            "{changed:?} 应当触发 file writer 重建"
+        );
+    }
+}
+
+#[test]
+fn cleanup_policy_follows_the_compression_setting() {
+    let compressed = cleanup(LoggingSettings {
+        compression: true,
+        keep_files: 7,
+        ..LoggingSettings::default()
+    });
+    let plain = cleanup(LoggingSettings {
+        compression: false,
+        keep_files: 3,
+        ..LoggingSettings::default()
+    });
+
+    assert!(matches!(compressed, Cleanup::KeepCompressedFiles(7)));
+    assert!(matches!(plain, Cleanup::KeepLogFiles(3)));
+}
+
+#[test]
+fn disabling_rotation_still_produces_a_usable_logger_configuration() {
+    let directory = env::temp_dir().join(format!(
+        "lunamate-logging-no-rotation-test-{}",
+        process::id()
+    ));
+    let _ = fs::remove_dir_all(&directory);
+    let file_spec = || {
+        FileSpec::default()
+            .directory(directory.clone())
+            .basename("lunamate-test")
+    };
+    let settings = LoggingSettings {
+        rotation: false,
+        ..LoggingSettings::default()
+    };
+    {
+        let (_logger, handle) = file_logger(settings, file_spec())
+            .expect("关闭轮转的日志器配置应当有效")
+            .build()
+            .expect("关闭轮转的日志器应当可以构建");
+
+        handle
+            .reset_flw(&file_writer_builder(settings, file_spec()))
+            .expect("关闭轮转后仍应允许重置 writer");
+        handle.shutdown();
+    }
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn application_log_spec_silences_third_party_targets() {
+    let spec = application_log_spec(LogLevel::Debug);
+
+    assert!(spec.starts_with("off,"));
+    assert!(spec.ends_with("=debug"));
+    assert!(spec.contains(env!("CARGO_PKG_NAME")));
+}
+
+#[test]
+fn log_files_are_written_under_the_working_directory() {
+    let spec = format!("{:?}", file_spec());
+
+    assert!(spec.contains("logs"));
+    assert!(spec.contains("lunamate"));
+}
+
+#[test]
+fn settings_cannot_be_applied_before_the_logger_is_initialized() {
+    // 本 crate 的测试从不调用 init()，因此该分支始终可观测。
+    assert_eq!(apply_current_settings(), Err("日志器尚未初始化".to_owned()));
+}
+
+#[test]
+fn shutting_down_an_uninitialized_logger_is_a_no_op() {
+    shutdown();
+    shutdown();
+}

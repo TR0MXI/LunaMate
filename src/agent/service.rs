@@ -321,6 +321,12 @@ fn build_client(model: &LlmModelConfig) -> Client {
     builder.build()
 }
 
+/// 暴露 Provider 到 genai adapter 的映射，供测试校验目录完整性与唯一性。
+#[cfg(test)]
+pub(super) const fn adapter_kind_for_test(provider: LlmProvider) -> AdapterKind {
+    adapter_kind(provider)
+}
+
 const fn adapter_kind(provider: LlmProvider) -> AdapterKind {
     match provider {
         LlmProvider::OpenAi => AdapterKind::OpenAI,

@@ -35,6 +35,8 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 - GPUI 相关 Git 依赖必须兼容并解析到同一 Zed commit，依赖图中只保留一套 GPUI 类型。
   Live2D 代码只使用 `gpui_wgpu::wgpu`，underlay GPU 资源不得传入 GPUI renderer；
   不要用个人 fork 或另一版 GPUI 绕过类型冲突。
+- GPUI 的 `test-support` feature 只作为 dev-dependency 启用，用于无头 `TestAppContext`；
+  它必须与生产 `gpui` 解析到同一 commit，且不得被生产代码路径依赖。
 - `vendor/mocari` 是第三方源码边界；保留 MIT `LICENSE`、原始 manifest 和
   `LUNAMATE.md`，本地修改限于必要的兼容或安全修复，并同步记录差异。升级相关依赖时
   检查 `[patch.crates-io]` 是否可以移除。
@@ -108,6 +110,8 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
   `name/mod.rs` 目录结构，集中测试目录除外。
 - 单元测试集中在所属顶级模块的 `tests/mod.rs`，并通过 `tests/xxx.rs` 对应被测子模块；
   生产文件不保留内联 `mod tests`，也不为测试把内部实现扩大到顶级 façade 之外。
+- 为测试新增的构造器和访问器使用 `#[cfg(test)]` 并保持模块内可见性，命名以 `_for_test`
+  结尾；不得因此放宽生产可见性或改变生产行为。
 - `unsafe` 仅用于必要的平台或 GPU 互操作，范围保持最小；每个块紧邻 `// SAFETY:`，用
   中文说明可验证的安全前置条件。清理失效注释、注释掉的代码和无跟踪项的模糊 `TODO`。
 - 遵守 `clippy::unwrap_used = "deny"`。使用 `?` 或显式分支处理失败；`expect()` 仅用于
@@ -130,4 +134,9 @@ cargo test --locked
 - 目标平台系统依赖导致命令失败时，记录准确原因，不得删除 feature、测试或错误处理来掩盖问题。
 - 涉及窗口、透明度、缩放、鼠标命中或 GPU 渲染的变更，必须在真实目标桌面环境验证。
 - 实时状态测试覆盖取消、超时、迟到或乱序结果、大 frame delta、模型缺失和窗口关闭。
+- GPUI 视图测试使用无头 `TestAppContext`，且必须保持确定性：不得依赖 `gpui_tokio` 等
+  测试线程之外的唤醒，否则测试调度器会判定为非确定性。跨 runtime 的流式行为改在
+  Provider 服务层用 fake backend 覆盖。
+- 依赖真实 Live2D 模型或桌面截屏授权的用例标注 `#[ignore]` 并写明原因；仓库不分发模型，
+  由使用者自备模型后手动运行。
 - 修改依赖策略、平台支持、目录约定或关键架构时同步更新本文件；具体计划写入 `TODO.md`。

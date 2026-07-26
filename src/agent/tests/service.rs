@@ -1,7 +1,8 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use futures::{StreamExt as _, channel::mpsc, stream};
 use genai::{
+    adapter::AdapterKind,
     chat::{ChatStreamEvent as GenaiStreamEvent, MessageContent, StreamEnd, ToolCall},
     resolver::AuthData,
 };
@@ -14,7 +15,7 @@ use crate::{
         service::*,
         session::{ChatContextMessage, ChatRole},
     },
-    config::{LlmModelConfig, LlmProvider},
+    config::{LLM_PROVIDERS, LlmModelConfig, LlmProvider},
 };
 
 #[test]
@@ -62,6 +63,126 @@ fn screenshot_tool_is_registered_only_when_permission_is_enabled() {
 fn cohere_adapter_is_rejected_for_binary_and_tool_requests() {
     assert!(!provider_supports_binary_and_tools(LlmProvider::Cohere));
     assert!(provider_supports_binary_and_tools(LlmProvider::OpenAi));
+    // Cohere 是唯一被排除的 Provider；其余目录项都必须支持图片与工具。
+    for provider in LLM_PROVIDERS {
+        assert_eq!(
+            provider_supports_binary_and_tools(provider),
+            provider != LlmProvider::Cohere,
+            "{provider:?} 的图片与工具支持判定与目录不一致"
+        );
+    }
+}
+
+#[test]
+fn every_stable_provider_maps_to_a_distinct_genai_adapter() {
+    let mut adapters = HashSet::with_capacity(LLM_PROVIDERS.len());
+
+    for provider in LLM_PROVIDERS {
+        assert!(
+            adapters.insert(adapter_kind_for_test(provider)),
+            "{provider:?} 与其他 Provider 共用同一个 genai adapter"
+        );
+    }
+
+    // 持久化的是 LunaMate 稳定 ID，映射本身必须覆盖整个目录且逐项固定。
+    assert_eq!(adapters.len(), LLM_PROVIDERS.len());
+    assert_eq!(
+        adapter_kind_for_test(LlmProvider::Ollama),
+        AdapterKind::Ollama
+    );
+    assert_eq!(
+        adapter_kind_for_test(LlmProvider::OpenAi),
+        AdapterKind::OpenAI
+    );
+    assert_eq!(
+        adapter_kind_for_test(LlmProvider::GithubModels),
+        AdapterKind::GithubCopilot
+    );
+}
+
+#[test]
+fn history_without_pixels_degrades_to_a_text_placeholder() {
+    // 快照恢复的历史消息只保留元数据；请求构建不能因此丢失该轮次的文本。
+    let restored: crate::agent::media::ImageAttachment =
+        serde_json::from_str(r#"{"name":"old.jpg","width":8,"height":8}"#)
+            .expect("历史图片快照应当可以反序列化");
+    let request = build_request(
+        String::new(),
+        vec![ChatContextMessage {
+            role: ChatRole::User,
+            content: "what is this".to_owned(),
+            image: Some(restored),
+        }],
+        false,
+    );
+
+    assert_eq!(request.messages.len(), 1);
+    assert!(request.messages[0].content.binaries().is_empty());
+    assert!(
+        request.messages[0].content.first_text().is_some_and(
+            |text| text.contains("what is this") && text.contains("no longer available")
+        )
+    );
+}
+
+#[test]
+fn assistant_history_and_blank_system_prompts_are_preserved_verbatim() {
+    let request = build_request(
+        "   \n  ".to_owned(),
+        vec![
+            ChatContextMessage {
+                role: ChatRole::User,
+                content: "hi".to_owned(),
+                image: None,
+            },
+            ChatContextMessage {
+                role: ChatRole::Assistant,
+                content: "hello".to_owned(),
+                image: None,
+            },
+        ],
+        false,
+    );
+
+    // 只含空白的系统提示词等同于未设置，不应发送空 system 消息。
+    assert_eq!(request.system, None);
+    assert_eq!(request.messages.len(), 2);
+    assert_eq!(request.messages[1].content.first_text(), Some("hello"));
+}
+
+#[test]
+fn failed_capture_handoff_tells_the_model_to_continue_without_the_image() {
+    let mut request = build_request(
+        String::new(),
+        vec![ChatContextMessage {
+            role: ChatRole::User,
+            content: "inspect my screen".to_owned(),
+            image: None,
+        }],
+        true,
+    );
+
+    append_stateless_capture_result(&mut request, None);
+
+    assert_eq!(request.messages.len(), 1);
+    assert!(request.messages[0].content.binaries().is_empty());
+    assert!(
+        request.messages[0]
+            .content
+            .texts()
+            .iter()
+            .any(|text| text.contains("could not provide a screenshot"))
+    );
+}
+
+#[test]
+fn capture_handoff_creates_a_user_turn_when_the_request_has_no_messages() {
+    let mut request = build_request(String::new(), Vec::new(), true);
+
+    append_stateless_capture_result(&mut request, None);
+
+    assert_eq!(request.messages.len(), 1);
+    assert!(!request.messages[0].content.texts().is_empty());
 }
 
 #[test]
@@ -296,6 +417,185 @@ async fn streamed_thought_signature_is_preserved_for_tool_handoff() {
         calls[0].thought_signatures.as_deref(),
         Some(["signed-reasoning".to_owned()].as_slice())
     );
+}
+
+#[tokio::test]
+async fn start_event_alone_does_not_start_the_response() {
+    let stream = stream::iter(vec![
+        Ok(GenaiStreamEvent::Start),
+        Ok(GenaiStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "hello".to_owned(),
+        })),
+        Ok(GenaiStreamEvent::End(genai::chat::StreamEnd::default())),
+    ]);
+    let (mut sender, mut receiver) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let outcome = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect("含 Start 事件的正常流应当完成");
+
+    assert!(matches!(outcome, StreamOutcome::Complete));
+    assert!(matches!(receiver.next().await, Some(ChatStreamEvent::Delta(text)) if text == "hello"));
+}
+
+#[tokio::test]
+async fn oversized_visible_content_is_rejected_after_flushing_what_was_sent() {
+    let stream = stream::iter(vec![
+        Ok(GenaiStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "prefix".to_owned(),
+        })),
+        Ok(GenaiStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "x".repeat(64 * 1024 + 1),
+        })),
+    ]);
+    let (mut sender, mut receiver) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let failure = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect_err("可见正文必须受字节上限约束");
+
+    assert_eq!(
+        failure.message,
+        t!("chat.error.invalid_response").to_string()
+    );
+    assert!(failure.response_started);
+    assert!(
+        matches!(receiver.next().await, Some(ChatStreamEvent::Delta(text)) if text == "prefix")
+    );
+}
+
+#[tokio::test]
+async fn too_many_streamed_tool_calls_are_rejected() {
+    let events = (0..5)
+        .map(|index| {
+            Ok(GenaiStreamEvent::ToolCallChunk(genai::chat::ToolChunk {
+                tool_call: ToolCall {
+                    call_id: format!("call-{index}"),
+                    fn_name: SCREEN_CAPTURE_TOOL.to_owned(),
+                    fn_arguments: serde_json::json!({}),
+                    thought_signatures: None,
+                },
+            }))
+        })
+        .collect::<Vec<_>>();
+    let (mut sender, _) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let failure = consume_stream(
+        stream::iter(events),
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect_err("超过工具调用上限必须失败");
+
+    assert_eq!(
+        failure.message,
+        t!("chat.error.invalid_response").to_string()
+    );
+    assert!(!failure.retryable);
+}
+
+#[tokio::test]
+async fn oversized_captured_reasoning_in_the_terminal_event_is_rejected() {
+    let stream = stream::iter(vec![Ok(GenaiStreamEvent::End(StreamEnd {
+        captured_reasoning_content: Some("r".repeat(MAX_HANDOFF_CONTENT_BYTES + 1)),
+        ..StreamEnd::default()
+    }))]);
+    let (mut sender, _) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let failure = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect_err("终止事件中的隐藏内容必须受上限约束");
+
+    assert_eq!(
+        failure.message,
+        t!("chat.error.invalid_response").to_string()
+    );
+}
+
+#[tokio::test]
+async fn terminal_event_with_too_many_tool_calls_is_rejected() {
+    let calls = (0..5)
+        .map(|index| ToolCall {
+            call_id: format!("call-{index}"),
+            fn_name: SCREEN_CAPTURE_TOOL.to_owned(),
+            fn_arguments: serde_json::json!({}),
+            thought_signatures: None,
+        })
+        .collect::<Vec<_>>();
+    let stream = stream::iter(vec![Ok(GenaiStreamEvent::End(StreamEnd {
+        captured_content: Some(MessageContent::from_tool_calls(calls)),
+        ..StreamEnd::default()
+    }))]);
+    let (mut sender, _) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let failure = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect_err("终止事件中的工具调用数量必须受限");
+
+    assert_eq!(
+        failure.message,
+        t!("chat.error.invalid_response").to_string()
+    );
+}
+
+#[tokio::test]
+async fn closed_receiver_stops_the_stream_without_reporting_a_failure() {
+    let stream = stream::iter(vec![
+        Ok(GenaiStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "x".repeat(FLUSH_BYTES),
+        })),
+        Ok(GenaiStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "more".to_owned(),
+        })),
+    ]);
+    let (mut sender, receiver) = mpsc::channel(1);
+    // 聊天视图关闭后接收端消失，网络任务应当安静收尾而不是构造错误提示。
+    drop(receiver);
+    let now = Instant::now();
+
+    let outcome = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect("接收端关闭不应视为 Provider 失败");
+
+    assert!(matches!(outcome, StreamOutcome::Complete));
 }
 
 #[tokio::test]

@@ -1,6 +1,10 @@
 use crate::model::{
-    capabilities::{ModelDiagnosticCategory, ModelLoadDiagnostics, ModelResourceResolver},
+    capabilities::{
+        AuxiliaryResourceBudget, ModelDiagnosticCategory, ModelLoadDiagnostics,
+        ModelResourceResolver,
+    },
     expression::{ExpressionController, MAX_EXPRESSION_COUNT},
+    live2d::RenderCancellation,
 };
 
 use std::{
@@ -175,6 +179,119 @@ fn resetting_outfit_without_default_expression_clears_active_players() {
     assert_eq!(controller.manager.active_expression_count(), 1);
     assert!(controller.reset_to_default());
     assert!(controller.manager.is_empty());
+}
+
+#[test]
+fn unknown_expression_names_are_rejected_without_touching_the_manager() {
+    let directory = TestDirectory::new();
+    write_expression(&directory.path().join("smile.exp3.json"), 1.0);
+    let model = parse_model(r#"[{"Name":"Smile","File":"smile.exp3.json"}]"#);
+    let (mut controller, diagnostics) =
+        ExpressionController::load_manifest(&model, &directory.resolver());
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(controller.available_names(), vec!["Smile"]);
+    assert!(controller.available_outfits().is_empty());
+    assert!(!controller.play("Absent"));
+    assert!(controller.manager.is_empty());
+    assert!(controller.play("Smile"));
+    assert_eq!(controller.manager.active_expression_count(), 1);
+}
+
+#[test]
+fn manifest_default_expression_is_restored_after_previewing_an_outfit() {
+    let directory = TestDirectory::new();
+    write_expression(&directory.path().join("default.exp3.json"), 1.0);
+    write_expression(&directory.path().join("侦探.exp3.json"), 2.0);
+    let model = parse_model(r#"[{"Name":"Default","File":"default.exp3.json"}]"#);
+    let resolver = directory.resolver();
+    let external = resolver.discover_external_expressions();
+
+    let (mut controller, diagnostics) =
+        ExpressionController::load_manifest_with_external(&model, &resolver, &external);
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(controller.loaded_expression_count(), 2);
+    assert_eq!(controller.available_outfits(), vec!["侦探"]);
+    // 清单声明了 Default，加载后应当立即处于默认表情。
+    assert_eq!(controller.manager.active_expression_count(), 1);
+    assert!(controller.play("侦探"));
+    assert!(controller.reset_to_default());
+    assert_eq!(controller.manager.active_expression_count(), 1);
+    assert_eq!(controller.first_parameter_value("Default"), Some(1.0));
+}
+
+#[test]
+fn idle_is_used_as_the_default_when_no_default_expression_is_declared() {
+    let directory = TestDirectory::new();
+    write_expression(&directory.path().join("idle.exp3.json"), 0.5);
+    let model = parse_model(r#"[{"Name":"Idle","File":"idle.exp3.json"}]"#);
+
+    let (controller, diagnostics) =
+        ExpressionController::load_manifest(&model, &directory.resolver());
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(controller.manager.active_expression_count(), 1);
+}
+
+#[test]
+fn external_expressions_duplicating_a_manifest_reference_are_not_loaded_twice() {
+    let directory = TestDirectory::new();
+    write_expression(&directory.path().join("smile.exp3.json"), 1.0);
+    let model = parse_model(r#"[{"Name":"Smile","File":"smile.exp3.json"}]"#);
+    let resolver = directory.resolver();
+    let external = resolver.discover_external_expressions();
+
+    let (controller, diagnostics) =
+        ExpressionController::load_manifest_with_external(&model, &resolver, &external);
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(controller.loaded_expression_count(), 1);
+    assert!(controller.available_outfits().is_empty());
+}
+
+#[test]
+fn external_expressions_reusing_a_manifest_name_keep_the_manifest_declaration() {
+    let directory = TestDirectory::new();
+    write_expression(&directory.path().join("declared.exp3.json"), 1.0);
+    write_expression(&directory.path().join("Smile.exp3.json"), 2.0);
+    let model = parse_model(r#"[{"Name":"Smile","File":"declared.exp3.json"}]"#);
+    let resolver = directory.resolver();
+    let external = resolver.discover_external_expressions();
+
+    let (controller, diagnostics) =
+        ExpressionController::load_manifest_with_external(&model, &resolver, &external);
+
+    assert_eq!(controller.loaded_expression_count(), 1);
+    assert_eq!(controller.first_parameter_value("Smile"), Some(1.0));
+    assert!(controller.available_outfits().is_empty());
+    assert_eq!(
+        category_count(&diagnostics, ModelDiagnosticCategory::DuplicateName),
+        1
+    );
+}
+
+#[test]
+fn cancellation_before_loading_skips_every_expression_declaration() {
+    let directory = TestDirectory::new();
+    write_expression(&directory.path().join("smile.exp3.json"), 1.0);
+    let model = parse_model(r#"[{"Name":"Smile","File":"smile.exp3.json"}]"#);
+    let cancellation = RenderCancellation::default();
+    cancellation.cancel();
+    let mut budget = AuxiliaryResourceBudget::default();
+
+    let (controller, diagnostics) = ExpressionController::load_manifest_with_resources_for_test(
+        &model,
+        &directory.resolver(),
+        &[],
+        &mut budget,
+        &cancellation,
+    );
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(controller.loaded_expression_count(), 0);
+    assert!(controller.available_names().is_empty());
+    assert!(!controller.needs_continuous_frames());
 }
 
 #[test]

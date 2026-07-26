@@ -342,6 +342,59 @@ impl SettingsView {
         self.track_write_task(task);
     }
 
+    /// 返回当前 toast 状态文本，供测试断言扫描与失败提示。
+    #[cfg(test)]
+    pub(in crate::ui) fn status_for_test(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
+    /// 返回已发现的模型家族与服装总数。
+    #[cfg(test)]
+    pub(in crate::ui) fn catalog_counts_for_test(&self) -> (usize, usize) {
+        self.catalog.counts()
+    }
+
+    /// 返回设置窗口是否已经创建输入组件。
+    #[cfg(test)]
+    pub(in crate::ui) fn window_is_active_for_test(&self) -> bool {
+        self.agent_settings_view.is_some() && self.custom_frame_rate_input.is_some()
+    }
+
+    /// 返回后台模型扫描是否仍在进行。
+    #[cfg(test)]
+    pub(in crate::ui) fn is_refreshing_for_test(&self) -> bool {
+        self.is_refreshing
+    }
+
+    /// 返回当前主模型 generation 上报的可预览能力。
+    #[cfg(test)]
+    pub(in crate::ui) fn preview_capabilities_for_test(&self) -> &ModelPreviewCapabilities {
+        &self.preview_capabilities
+    }
+
+    /// 切换到指定配置分区，使对应页面在下一帧参与渲染。
+    #[cfg(test)]
+    pub(in crate::ui) fn select_section_for_test(
+        &mut self,
+        section: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.section = match section {
+            0 => ConfigSection::Model,
+            1 => ConfigSection::Conversation,
+            2 => ConfigSection::Tool,
+            3 => ConfigSection::System,
+            _ => ConfigSection::Debug,
+        };
+        cx.notify();
+    }
+
+    /// 返回配置分区总数，供测试遍历全部页面。
+    #[cfg(test)]
+    pub(in crate::ui) const fn section_count_for_test() -> usize {
+        5
+    }
+
     /// 接收主模型 generation 的能力快照，供设置窗口显示可用控制项。
     pub(crate) fn set_preview_capabilities(
         &mut self,

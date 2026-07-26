@@ -1,6 +1,7 @@
 //! 集中验证模型子系统的资源、调度、交互与渲染实现。
 
 mod animation;
+mod capabilities;
 mod capabilities_diagnostics;
 mod capabilities_resources;
 mod catalog;

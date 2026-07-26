@@ -260,6 +260,100 @@ fn looping_idle_and_started_interaction_request_continuous_frames() {
 }
 
 #[test]
+fn available_groups_only_report_groups_with_usable_clips() {
+    let directory = TestDirectory::new();
+    write_motion(&directory.path().join("idle.motion3.json"), 1.0);
+    write_motion(&directory.path().join("zero.motion3.json"), 0.0);
+    let model = parse_model(
+        r#"{
+                "Idle":[{"File":"idle.motion3.json"}],
+                "Tap":[{"File":"idle.motion3.json"}],
+                "Broken":[{"File":"zero.motion3.json"}],
+                "Empty":[]
+            }"#,
+    );
+
+    let (controller, _diagnostics) =
+        AnimationController::load_manifest(&model, &directory.resolver());
+
+    // 名称按 BTreeMap 顺序返回，只暴露真正可播放的动作组。
+    assert_eq!(controller.available_groups(), ["Idle", "Tap"]);
+}
+
+#[test]
+fn cancellation_before_loading_skips_every_motion_declaration() {
+    let directory = TestDirectory::new();
+    write_motion(&directory.path().join("idle.motion3.json"), 1.0);
+    let model = parse_model(
+        r#"{
+                "Idle":[{"File":"idle.motion3.json"}],
+                "Tap":[{"File":"idle.motion3.json"}]
+            }"#,
+    );
+    let cancellation = RenderCancellation::default();
+    cancellation.cancel();
+    let mut budget = AuxiliaryResourceBudget::default();
+
+    let (mut controller, diagnostics) = AnimationController::load_manifest_with_resources(
+        &model,
+        &directory.resolver(),
+        &mut budget,
+        &cancellation,
+    );
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(controller.loaded_motion_count("Idle"), Some(0));
+    assert!(controller.available_groups().is_empty());
+    assert!(!controller.needs_continuous_frames());
+    assert_eq!(
+        controller.play_interaction("Idle"),
+        MotionPlayResult::InvalidMotion
+    );
+}
+
+#[test]
+fn motions_outside_the_model_directory_are_rejected_before_reading() {
+    let directory = TestDirectory::new();
+    let outside = directory.path().join("outside.motion3.json");
+    write_motion(&outside, 1.0);
+    let nested = directory.path().join("runtime");
+    fs::create_dir_all(&nested).expect("测试子目录应当可以创建");
+    let resolver = ModelResourceResolver::for_manifest(&nested.join("model.model3.json"))
+        .expect("测试模型目录应当可以解析");
+    let model = parse_model(
+        r#"{"Tap":[
+                {"File":"../outside.motion3.json"},
+                {"File":"/etc/hostname"}
+            ]}"#,
+    );
+
+    let (controller, diagnostics) = AnimationController::load_manifest(&model, &resolver);
+
+    assert_eq!(controller.loaded_motion_count("Tap"), Some(0));
+    assert_eq!(
+        category_count(&diagnostics, ModelDiagnosticCategory::InvalidReference),
+        2
+    );
+}
+
+#[test]
+fn directories_declared_as_motions_are_reported_without_panicking() {
+    let directory = TestDirectory::new();
+    fs::create_dir_all(directory.path().join("group.motion3.json"))
+        .expect("同名测试目录应当可以创建");
+    let model = parse_model(r#"{"Tap":[{"File":"group.motion3.json"}]}"#);
+
+    let (controller, diagnostics) =
+        AnimationController::load_manifest(&model, &directory.resolver());
+
+    assert_eq!(controller.loaded_motion_count("Tap"), Some(0));
+    assert_eq!(
+        category_count(&diagnostics, ModelDiagnosticCategory::NotFile),
+        1
+    );
+}
+
+#[test]
 #[ignore = "需要本地授权的 Hiyori 模型；提交最小 fixture 后应移除此标记"]
 fn interaction_motion_plays_once_and_restores_idle_when_local_model_is_available() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
