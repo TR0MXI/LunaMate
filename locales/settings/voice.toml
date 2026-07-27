@@ -36,19 +36,7 @@ _version = 2
 "en" = "Automatic"
 "ja" = "自動"
 
-[voice.mode_mixed]
-"zh-CN" = "混合"
-"zh-TW" = "混合"
-"en" = "Hybrid"
-"ja" = "ハイブリッド"
-
 [voice.mode_push_to_talk]
-"zh-CN" = "按住说话"
-"zh-TW" = "按住說話"
-"en" = "Push to talk"
-"ja" = "押して話す"
-
-[voice.push_to_talk]
 "zh-CN" = "按住说话"
 "zh-TW" = "按住說話"
 "en" = "Push to talk"

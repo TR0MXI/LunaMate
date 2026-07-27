@@ -59,7 +59,34 @@ fn missing_config_uses_complete_defaults() {
     );
     assert_eq!(config.appearance().as_ref(), &AppearanceSettings::default());
     assert_eq!(config.selected_model(), None);
+    assert_eq!(config.shortcut_settings().configured_count(), 0);
     assert!(config.startup_warning().is_none());
+}
+
+#[test]
+fn shortcut_settings_publish_and_round_trip() {
+    let directory = TestDirectory::new();
+    let config = LunaConfig::load_from(directory.config_path());
+    let mut settings = ShortcutSettings::default();
+    settings.assign(
+        ShortcutAction::ToggleSettings,
+        Some(KeyboardShortcut::from_id("Control+Shift+KeyS").expect("测试快捷键应当有效")),
+    );
+
+    let revision = config.reserve_shortcut_settings_revision();
+    let published = config
+        .set_shortcut_settings_at_revision(settings.clone(), revision)
+        .expect("快捷键配置应当可以持久化")
+        .expect("最新快捷键配置应当发布");
+
+    assert_eq!(published.as_ref(), &settings);
+    assert_eq!(config.shortcut_settings().as_ref(), &settings);
+    assert_eq!(
+        LunaConfig::load_from(directory.config_path())
+            .shortcut_settings()
+            .as_ref(),
+        &settings
+    );
 }
 
 #[test]

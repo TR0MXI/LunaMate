@@ -7,6 +7,7 @@ mod appearance;
 mod document;
 mod llm;
 mod persona;
+mod shortcut;
 mod types;
 mod voice;
 
@@ -47,6 +48,8 @@ pub(crate) use persona::{
     PersonaContextLimits, PersonaSettings, SharedPersonaSettings,
 };
 use persona::{parse_persona_settings, write_persona_settings};
+pub(crate) use shortcut::{KeyboardShortcut, ShortcutAction, ShortcutSettings};
+use shortcut::{parse_shortcut_settings, write_shortcut_settings};
 use types::{
     CUSTOM_FRAME_RATE_KEY, CUSTOM_FRAME_RATE_NAME, FOLLOW_DISPLAY_FRAME_RATE_NAME,
     UNLIMITED_FRAME_RATE_NAME,
@@ -105,6 +108,7 @@ struct LoadedConfig {
     window_positions: WindowPositions,
     llm: LlmSettings,
     persona: PersonaSettings,
+    shortcuts: ShortcutSettings,
     voice: VoiceSettings,
 }
 
@@ -125,6 +129,7 @@ impl Default for LoadedConfig {
             window_positions: WindowPositions::default(),
             llm: LlmSettings::default(),
             persona: PersonaSettings::default(),
+            shortcuts: ShortcutSettings::default(),
             voice: VoiceSettings::default(),
         }
     }
@@ -151,9 +156,11 @@ pub(crate) struct LunaConfig {
     window_positions: Mutex<WindowPositions>,
     llm: ArcSwap<LlmSettings>,
     persona: ArcSwap<PersonaSettings>,
+    shortcuts: ArcSwap<ShortcutSettings>,
     voice: ArcSwap<VoiceSettings>,
     llm_request_revision: AtomicU64,
     persona_request_revision: AtomicU64,
+    shortcut_request_revision: AtomicU64,
     voice_request_revision: AtomicU64,
     model_request_revision: AtomicU64,
     frame_rate_request_revision: AtomicU64,
@@ -203,9 +210,11 @@ impl LunaConfig {
             window_positions: Mutex::new(loaded.window_positions),
             llm: ArcSwap::from_pointee(loaded.llm),
             persona: ArcSwap::from_pointee(loaded.persona),
+            shortcuts: ArcSwap::from_pointee(loaded.shortcuts),
             voice: ArcSwap::from_pointee(loaded.voice),
             llm_request_revision: AtomicU64::new(0),
             persona_request_revision: AtomicU64::new(0),
+            shortcut_request_revision: AtomicU64::new(0),
             voice_request_revision: AtomicU64::new(0),
             model_request_revision: AtomicU64::new(0),
             frame_rate_request_revision: AtomicU64::new(0),
@@ -238,11 +247,12 @@ impl LunaConfig {
             log::warn!("启动配置包含无效或不可读取项，相关字段已回退安全默认值");
         }
         log::info!(
-            "配置已加载：warning={}, providers={}, personas={}, model_selected={}, voice_mode={}",
+            "配置已加载：warning={}, providers={}, personas={}, model_selected={}, shortcuts={}, voice_mode={}",
             self.startup_warning.is_some(),
             self.llm.load().models.len(),
             self.persona.load().personas.len(),
             self.snapshot.load().selected_model.is_some(),
+            self.shortcuts.load().configured_count(),
             self.voice.load().mode.id()
         );
     }
@@ -356,6 +366,11 @@ impl LunaConfig {
     /// 返回一次性发布的人格目录与当前人格快照。
     pub(crate) fn persona_settings(&self) -> SharedPersonaSettings {
         self.persona.load_full()
+    }
+
+    /// 返回四个应用动作的一次性快捷键配置快照。
+    pub(crate) fn shortcut_settings(&self) -> Arc<ShortcutSettings> {
+        self.shortcuts.load_full()
     }
 
     /// 返回一次性发布的本地语音配置快照。
@@ -907,6 +922,39 @@ impl LunaConfig {
         })();
         log_config_update(
             "agent.personas",
+            revision,
+            result.as_ref().map(|applied| applied.is_some()),
+        );
+        result
+    }
+
+    /// 为一份完整快捷键配置分配单调 revision。
+    pub(crate) fn reserve_shortcut_settings_revision(&self) -> u64 {
+        self.reserve_request_revision(&self.shortcut_request_revision)
+    }
+
+    /// 校验、持久化并一次性发布仍为最新请求的快捷键配置。
+    pub(crate) fn set_shortcut_settings_at_revision(
+        &self,
+        settings: ShortcutSettings,
+        revision: u64,
+    ) -> Result<Option<Arc<ShortcutSettings>>, ConfigWriteError> {
+        let result = (|| {
+            let settings = Arc::new(settings.normalized()?);
+            let _guard = self.write_lock.lock();
+            if !revision_is_current(&self.shortcut_request_revision, revision) {
+                return Ok(None);
+            }
+            self.edit_document_locked(|document| write_shortcut_settings(document, &settings))?;
+            let _revision_guard = self.revision_lock.lock();
+            if !revision_is_current(&self.shortcut_request_revision, revision) {
+                return Ok(None);
+            }
+            self.shortcuts.store(settings.clone());
+            Ok(Some(settings))
+        })();
+        log_config_update(
+            "shortcuts",
             revision,
             result.as_ref().map(|applied| applied.is_some()),
         );

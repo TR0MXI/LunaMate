@@ -3,19 +3,21 @@
 mod components;
 mod model_page;
 mod render;
+mod shortcut_page;
 mod system_page;
 mod tool_page;
 mod voice_page;
 mod window;
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use gpui::{
-    AppContext, Context, Entity, EventEmitter, PathPromptOptions, Subscription, Task, Window,
+    AppContext, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, KeybindingKeystroke,
+    PathPromptOptions, Subscription, Task, Window,
 };
 use gpui_component::input::{InputEvent, InputState, MaskPattern};
 use rust_i18n::t;
@@ -29,9 +31,10 @@ use crate::{
         AppLanguage, AppearanceSettings, CONFIG, CUSTOM_FRAME_RATE_MAX, CUSTOM_FRAME_RATE_MIN,
         ConfigWriteError, FrameRate, LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES,
         LOGGING_MIN_FILE_SIZE_MB, LOGGING_MIN_KEEP_FILES, LoggingSettings, ModelWindowSize,
-        ThemePreset, VoiceMode, VoiceSettings,
+        ShortcutAction, ShortcutSettings, ThemePreset, VoiceMode, VoiceSettings,
     },
     model::{ModelCatalog, ModelPreviewCapabilities, ensure_model_directory},
+    shortcut::{ShortcutRuntimeBinding, shortcut_from_keybinding},
 };
 
 use super::{apply, apply_language};
@@ -74,6 +77,10 @@ pub(crate) enum SettingsEvent {
     AppearanceChanged(AppearanceSettings),
     /// 本地语音配置已经持久化并发布。
     VoiceChanged(VoiceSettings),
+    /// 全局快捷键配置已经持久化并发布。
+    ShortcutsChanged(ShortcutSettings),
+    /// 快捷键录入开始或结束，运行时应暂时释放或恢复系统注册。
+    ShortcutRecordingChanged(bool),
     /// 已清除持久化位置，所有现存窗口应立即返回默认位置。
     WindowPositionsReset,
 }
@@ -104,6 +111,7 @@ enum ConfigSection {
     Provider,
     Persona,
     Voice,
+    Shortcut,
     Tool,
     System,
     Debug,
@@ -134,6 +142,7 @@ pub(crate) struct SettingsView {
     log_keep_files_input: Option<Entity<InputState>>,
     voice_whisper_model_input: Option<Entity<InputState>>,
     voice_vad_model_input: Option<Entity<InputState>>,
+    shortcut_focus: Option<FocusHandle>,
     preview_capabilities: ModelPreviewCapabilities,
     active_outfit: Option<String>,
     section: ConfigSection,
@@ -150,6 +159,10 @@ pub(crate) struct SettingsView {
     logging: LoggingSettings,
     appearance: AppearanceSettings,
     voice: VoiceSettings,
+    shortcuts: ShortcutSettings,
+    shortcut_recording: Option<ShortcutAction>,
+    shortcut_runtime_errors: Vec<String>,
+    shortcut_runtime_bindings: HashMap<ShortcutAction, String>,
     is_refreshing: bool,
     revision: u64,
     model_revision: u64,
@@ -164,12 +177,14 @@ pub(crate) struct SettingsView {
     custom_frame_rate_save_task: Option<Task<()>>,
     logging_input_subscriptions: Vec<Subscription>,
     voice_input_subscriptions: Vec<Subscription>,
+    shortcut_focus_subscription: Option<Subscription>,
     logging_input_revision: u64,
     logging_save_task: Option<Task<()>>,
     screenshot_permission_revision: u64,
     toast_revision: u64,
     toast_task: Option<Task<()>>,
     voice_save_revision: u64,
+    shortcut_save_revision: u64,
     voice_picker_revision: u64,
     voice_picker_task: Option<Task<()>>,
 }
@@ -203,6 +218,7 @@ impl SettingsView {
             log_keep_files_input: None,
             voice_whisper_model_input: None,
             voice_vad_model_input: None,
+            shortcut_focus: None,
             preview_capabilities: ModelPreviewCapabilities::default(),
             active_outfit: None,
             section: ConfigSection::Model,
@@ -220,6 +236,10 @@ impl SettingsView {
             logging: *CONFIG.logging_settings(),
             appearance: CONFIG.appearance().as_ref().clone(),
             voice: CONFIG.voice_settings().as_ref().clone(),
+            shortcuts: CONFIG.shortcut_settings().as_ref().clone(),
+            shortcut_recording: None,
+            shortcut_runtime_errors: Vec::new(),
+            shortcut_runtime_bindings: HashMap::new(),
             is_refreshing: false,
             revision: 0,
             model_revision: 0,
@@ -234,12 +254,14 @@ impl SettingsView {
             custom_frame_rate_save_task: None,
             logging_input_subscriptions: Vec::new(),
             voice_input_subscriptions: Vec::new(),
+            shortcut_focus_subscription: None,
             logging_input_revision: 0,
             logging_save_task: None,
             screenshot_permission_revision: 0,
             toast_revision: 0,
             toast_task: None,
             voice_save_revision: 0,
+            shortcut_save_revision: 0,
             voice_picker_revision: 0,
             voice_picker_task: None,
         };
@@ -256,6 +278,12 @@ impl SettingsView {
             CONFIG.agent_screenshot_permission_retry_required();
         apply_language(self.appearance.language);
         apply(&self.appearance, Some(window), cx);
+        let shortcut_focus = cx.focus_handle();
+        self.shortcut_focus_subscription =
+            Some(cx.on_blur(&shortcut_focus, window, |this, _, cx| {
+                this.stop_shortcut_recording(cx)
+            }));
+        self.shortcut_focus = Some(shortcut_focus);
         let draft = self
             .agent_settings_draft
             .take()
@@ -424,6 +452,7 @@ impl SettingsView {
 
     /// 设置窗口关闭时丢弃绑定到旧窗口的输入状态。
     pub(crate) fn deactivate_window(&mut self, cx: &mut Context<Self>) {
+        self.stop_shortcut_recording(cx);
         if let Some(agent_settings_view) = self.agent_settings_view.take() {
             let (draft, pending) =
                 agent_settings_view.update(cx, |view, cx| view.take_window_state(cx));
@@ -464,6 +493,8 @@ impl SettingsView {
         self.voice_input_subscriptions.clear();
         self.voice_whisper_model_input = None;
         self.voice_vad_model_input = None;
+        self.shortcut_focus = None;
+        self.shortcut_focus_subscription = None;
         self.voice_picker_revision = self.voice_picker_revision.wrapping_add(1).max(1);
         self.voice_picker_task = None;
         self.agent_settings_subscription = None;
@@ -508,6 +539,156 @@ impl SettingsView {
     fn track_write_task(&mut self, task: Task<()>) {
         self.write_tasks.retain(|task| !task.is_ready());
         self.write_tasks.push(task);
+    }
+
+    fn set_section(&mut self, section: ConfigSection, cx: &mut Context<Self>) {
+        if self.section == section {
+            return;
+        }
+        if self.section == ConfigSection::Shortcut {
+            self.stop_shortcut_recording(cx);
+        }
+        self.section = section;
+        cx.notify();
+    }
+
+    fn begin_shortcut_recording(
+        &mut self,
+        action: ShortcutAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let starting = self.shortcut_recording.is_none();
+        self.shortcut_recording = Some(action);
+        if let Some(focus) = &self.shortcut_focus {
+            focus.focus(window, cx);
+        }
+        if starting {
+            cx.emit(SettingsEvent::ShortcutRecordingChanged(true));
+        }
+        cx.notify();
+    }
+
+    fn stop_shortcut_recording(&mut self, cx: &mut Context<Self>) {
+        if self.shortcut_recording.take().is_some() {
+            cx.emit(SettingsEvent::ShortcutRecordingChanged(false));
+            cx.notify();
+        }
+    }
+
+    fn handle_shortcut_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        let Some(action) = self.shortcut_recording else {
+            return;
+        };
+        if event.is_held {
+            return;
+        }
+        if event.keystroke.key.eq_ignore_ascii_case("escape") {
+            self.commit_shortcut(action, None, cx);
+            return;
+        }
+        let keystroke = KeybindingKeystroke::new_with_mapper(
+            event.keystroke.clone(),
+            false,
+            cx.keyboard_mapper().as_ref(),
+        );
+        match shortcut_from_keybinding(&keystroke) {
+            Ok(Some(shortcut)) => self.commit_shortcut(action, Some(shortcut), cx),
+            Ok(None) => {}
+            Err(error) => self.set_status(error, cx),
+        }
+    }
+
+    fn commit_shortcut(
+        &mut self,
+        action: ShortcutAction,
+        shortcut: Option<crate::config::KeyboardShortcut>,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_shortcut_recording(cx);
+        let mut settings = self.shortcuts.clone();
+        settings.assign(action, shortcut);
+        if settings == self.shortcuts {
+            return;
+        }
+        self.shortcuts = settings.clone();
+        self.shortcut_save_revision = self.shortcut_save_revision.wrapping_add(1).max(1);
+        let ui_revision = self.shortcut_save_revision;
+        let config_revision = CONFIG.reserve_shortcut_settings_revision();
+        let background = cx.background_executor().clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = background
+                .spawn(async move {
+                    CONFIG.set_shortcut_settings_at_revision(settings, config_revision)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(Some(settings)) = &result {
+                    let current = CONFIG.shortcut_settings();
+                    if current.as_ref() == settings.as_ref() {
+                        cx.emit(SettingsEvent::ShortcutsChanged(current.as_ref().clone()));
+                    }
+                }
+                if this.shortcut_save_revision != ui_revision {
+                    return;
+                }
+                match result {
+                    Ok(Some(settings)) => {
+                        this.shortcuts = settings.as_ref().clone();
+                        this.set_status(t!("shortcut.saved").to_string(), cx);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        this.shortcuts = CONFIG.shortcut_settings().as_ref().clone();
+                        this.set_status(
+                            t!("shortcut.save_failed", error = error.to_string()).to_string(),
+                            cx,
+                        );
+                    }
+                }
+            });
+        });
+        self.track_write_task(task);
+        cx.notify();
+    }
+
+    /// 把系统注册失败反馈到仍可复用的设置实体。
+    pub(crate) fn report_shortcut_runtime_errors(
+        &mut self,
+        errors: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.shortcut_runtime_errors = errors;
+        let message = (!self.shortcut_runtime_errors.is_empty()).then(|| {
+            t!(
+                "shortcut.registration_failed",
+                error = self
+                    .shortcut_runtime_errors
+                    .join(t!("common.status_separator").as_ref())
+            )
+            .to_string()
+        });
+        if let Some(message) = message {
+            self.set_status(message, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    /// 显示 Wayland 合成器实际确认的触发方式，而不是 preferred trigger。
+    pub(crate) fn report_shortcut_runtime_bindings(
+        &mut self,
+        bindings: Vec<ShortcutRuntimeBinding>,
+        cx: &mut Context<Self>,
+    ) {
+        self.shortcut_runtime_bindings.clear();
+        self.shortcut_runtime_bindings.extend(
+            bindings
+                .into_iter()
+                .filter(|binding| !binding.trigger_description().is_empty())
+                .map(|binding| (binding.action(), binding.trigger_description().to_owned())),
+        );
+        cx.notify();
     }
 
     fn persist_setting(
@@ -562,6 +743,7 @@ impl SettingsView {
             && self.custom_frame_rate_input.is_some()
             && self.voice_whisper_model_input.is_some()
             && self.voice_vad_model_input.is_some()
+            && self.shortcut_focus.is_some()
     }
 
     /// 返回后台模型扫描是否仍在进行。
@@ -583,22 +765,23 @@ impl SettingsView {
         section: usize,
         cx: &mut Context<Self>,
     ) {
-        self.section = match section {
+        let section = match section {
             0 => ConfigSection::Model,
             1 => ConfigSection::Provider,
             2 => ConfigSection::Persona,
             3 => ConfigSection::Voice,
-            4 => ConfigSection::Tool,
-            5 => ConfigSection::System,
+            4 => ConfigSection::Shortcut,
+            5 => ConfigSection::Tool,
+            6 => ConfigSection::System,
             _ => ConfigSection::Debug,
         };
-        cx.notify();
+        self.set_section(section, cx);
     }
 
     /// 返回配置分区总数，供测试遍历全部页面。
     #[cfg(test)]
     pub(in crate::ui) const fn section_count_for_test() -> usize {
-        7
+        8
     }
 
     /// 接收主模型 generation 的能力快照，供设置窗口显示可用控制项。

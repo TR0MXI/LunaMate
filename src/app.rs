@@ -25,9 +25,7 @@ use crate::{
     config::{CONFIG, ConfigWindow},
     database::Database,
     model::ModelCatalog,
-    platform::{
-        SystemTray, SystemTrayAction, configure_desktop_pet_window, set_desktop_pet_window_visible,
-    },
+    platform::{APPLICATION_ID, SystemTray, SystemTrayAction, configure_desktop_pet_window},
     ui::{
         DesktopPetView, SettingsView, apply, apply_language, desktop_pet_window_min_size,
         desktop_pet_window_size, raster_dimensions_for_window, restored_window_bounds,
@@ -60,6 +58,7 @@ const APP_ASSETS: &[(&str, &[u8])] = app_assets![
     "eye-off.svg",
     "folder-open.svg",
     "image-plus.svg",
+    "keyboard.svg",
     "message-circle.svg",
     "mic.svg",
     "move.svg",
@@ -187,33 +186,28 @@ fn create_system_tray(
 
 fn listen_for_system_tray_actions(
     model_view: &Entity<DesktopPetView>,
-    tray: Rc<SystemTray>,
     actions: Receiver<SystemTrayAction>,
     cx: &mut App,
 ) {
     let model_for_tray = model_view.downgrade();
 
     cx.spawn(async move |cx| {
-        let mut desktop_pet_hidden = false;
         while let Ok(action) = actions.recv().await {
             match action {
                 SystemTrayAction::ToggleDesktopPet => {
-                    let next_hidden = !desktop_pet_hidden;
                     match model_for_tray.update_in(cx, |model, window, cx| {
-                        set_desktop_pet_window_visible(window, !next_hidden)?;
-                        model.set_desktop_pet_visible(!next_hidden, window, cx);
-                        Ok::<(), String>(())
+                        model.toggle_desktop_pet_visibility(window, cx)
                     }) {
-                        Ok(Ok(())) => {
-                            desktop_pet_hidden = next_hidden;
-                            tray.set_desktop_pet_hidden(next_hidden);
+                        Ok(Ok(visible)) => {
                             log::info!(
                                 "托盘操作已完成：action=toggle_desktop_pet, visible={}",
-                                !next_hidden
+                                visible
                             );
                         }
                         Ok(Err(error)) => {
-                            tray.set_desktop_pet_hidden(desktop_pet_hidden);
+                            let _ = model_for_tray.update(cx, |model, _| {
+                                model.sync_desktop_pet_visibility_to_tray();
+                            });
                             log::warn!("{}", t!("log.tray_visibility_failed", error = error));
                         }
                         Err(_) => break,
@@ -331,7 +325,7 @@ pub(super) fn run() {
                     is_resizable: false,
                     is_minimizable: false,
                     is_movable: true,
-                    app_id: Some("lunamate".to_owned()),
+                    app_id: Some(APPLICATION_ID.to_owned()),
                     ..Default::default()
                 },
                 move |window, cx| {
@@ -400,6 +394,7 @@ pub(super) fn run() {
                             None,
                             raster_dimensions,
                             system_tray.as_ref().map(|(tray, _)| Rc::clone(tray)),
+                            &async_handle,
                             window,
                             cx,
                         )
@@ -432,8 +427,8 @@ pub(super) fn run() {
                         async {}
                     })
                     .detach();
-                    if let Some((tray, actions)) = system_tray {
-                        listen_for_system_tray_actions(&model_view, tray, actions, cx);
+                    if let Some((_, actions)) = system_tray {
+                        listen_for_system_tray_actions(&model_view, actions, cx);
                     }
                     // Root 默认铺满主题背景，需覆盖为透明色才能保留交换链的 Alpha。
                     cx.new(|cx| {

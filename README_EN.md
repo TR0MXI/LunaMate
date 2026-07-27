@@ -18,7 +18,7 @@ The project is under active development and currently includes:
   Silero VAD, and whisper.cpp.
 - An Agent screenshot tool that is disabled by default and requires explicit permission in Tool
   Settings.
-- Settings for models, appearance, windows, languages, LLM connections, and tools.
+- Settings for models, appearance, windows, languages, global shortcuts, LLM connections, and tools.
 
 ## Build
 
@@ -58,10 +58,18 @@ contains a `.model3.json` manifest under `models/`, then select it in the settin
 Voice input is disabled by default. Select a whisper.cpp GGML Whisper model and a compatible
 Silero VAD GGML model on the Voice settings page before enabling it.
 
-Automatic mode continuously listens and submits an utterance after VAD detects its endpoint.
-Push-to-talk mode records only while the main-window microphone button is held. Hybrid mode keeps
-automatic VAD active, but pressing the same button takes over the current candidate or active
-recording; releasing it submits the recording and then restores automatic listening.
+Automatic mode continuously listens and submits an utterance after VAD detects its endpoint. It
+also lets the global Voice Input shortcut take over the current candidate or active recording;
+releasing the shortcut submits the recording and restores automatic listening. Push-to-talk mode
+records only while that shortcut is held.
+
+The Shortcuts settings page configures Voice Input, Hide/Show Desktop Pet, Open/Close Settings,
+and Open/Close Chat. A binding may use one main key plus any combination of `Ctrl`, `Alt`, `Shift`,
+and `Super`; press `Esc` while recording to clear it. Windows, macOS, and Linux X11 register through
+`global-hotkey`. Native Wayland uses the XDG GlobalShortcuts portal and treats only the compositor-
+confirmed subset as active. Linux packages must install
+`assets/linux/io.github.tr0mxi.lunamate.desktop` into an applications directory so the host portal
+can identify LunaMate and restore approved bindings.
 
 Every regular build includes the portable GPU backend for its platform without requiring a Cargo
 feature: Metal on macOS and Vulkan on Windows and Linux. Vulkan reaches NVIDIA, AMD, and Intel

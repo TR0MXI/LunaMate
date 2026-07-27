@@ -176,14 +176,18 @@ impl SystemTray {
 
     /// 将自定义菜单项重新汇入与原生菜单相同的有界动作队列。
     pub(crate) fn request_action(&self, action: SystemTrayAction) {
-        dispatch_action(&self.actions, action);
+        let _ = dispatch_action(&self.actions, action);
     }
 }
 
-fn dispatch_action(actions: &Sender<SystemTrayAction>, action: SystemTrayAction) {
+fn dispatch_action(actions: &Sender<SystemTrayAction>, action: SystemTrayAction) -> bool {
     match actions.try_send(action) {
-        Ok(()) | Err(TrySendError::Closed(_)) => {}
-        Err(TrySendError::Full(_)) => log::warn!("{}", t!("log.tray_action_queue_full")),
+        Ok(()) => true,
+        Err(TrySendError::Closed(_)) => false,
+        Err(TrySendError::Full(_)) => {
+            log::warn!("{}", t!("log.tray_action_queue_full"));
+            false
+        }
     }
 }
 
@@ -445,17 +449,13 @@ mod imp {
 
     struct LinuxTray {
         actions: Sender<SystemTrayAction>,
-        refresh: Sender<()>,
         hidden: Arc<AtomicBool>,
         presentation: Arc<Mutex<TrayPresentation>>,
     }
 
     impl LinuxTray {
         fn toggle_desktop_pet(&self) {
-            let hidden = !self.hidden.load(Ordering::Acquire);
-            self.hidden.store(hidden, Ordering::Release);
-            let _ = self.refresh.try_send(());
-            dispatch_action(&self.actions, SystemTrayAction::ToggleDesktopPet);
+            let _ = dispatch_action(&self.actions, SystemTrayAction::ToggleDesktopPet);
         }
     }
 
@@ -528,7 +528,6 @@ mod imp {
             }));
             let tray = LinuxTray {
                 actions,
-                refresh: refresh.clone(),
                 hidden: hidden.clone(),
                 presentation: presentation.clone(),
             };

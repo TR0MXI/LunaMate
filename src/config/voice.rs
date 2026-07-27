@@ -14,11 +14,9 @@ pub(crate) enum VoiceMode {
     /// 不打开麦克风，也不加载语音模型。
     #[default]
     Off,
-    /// 持续监听，由 VAD 自动开始和结束一段话。
+    /// 持续使用 VAD，并允许语音输入快捷键接管当前录音。
     Auto,
-    /// 持续使用 VAD，同时允许主窗口麦克风按钮接管当前录音。
-    Mixed,
-    /// 仅在用户按住主窗口麦克风按钮时录制。
+    /// 仅在用户按住语音输入快捷键时录制。
     PushToTalk,
 }
 
@@ -28,26 +26,26 @@ impl VoiceMode {
         match self {
             Self::Off => "off",
             Self::Auto => "auto",
-            Self::Mixed => "mixed",
             Self::PushToTalk => "push-to-talk",
         }
     }
 
     /// 是否持续采集并使用 VAD 自动划分语音。
     pub(crate) const fn uses_vad(self) -> bool {
-        matches!(self, Self::Auto | Self::Mixed)
+        matches!(self, Self::Auto)
     }
 
-    /// 是否允许主窗口麦克风按钮控制录音。
+    /// 是否允许语音输入快捷键控制录音。
     pub(crate) const fn supports_push_to_talk(self) -> bool {
-        matches!(self, Self::Mixed | Self::PushToTalk)
+        matches!(self, Self::Auto | Self::PushToTalk)
     }
 
     pub(super) fn from_id(id: &str) -> Option<Self> {
         match id {
             "off" => Some(Self::Off),
             "auto" => Some(Self::Auto),
-            "mixed" => Some(Self::Mixed),
+            // 旧混合模式与当前自动模式语义相同，读取时直接迁移。
+            "mixed" => Some(Self::Auto),
             "push-to-talk" => Some(Self::PushToTalk),
             _ => None,
         }

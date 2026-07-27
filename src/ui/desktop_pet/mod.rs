@@ -33,10 +33,11 @@ use crate::{
         RenderedModelFrame,
     },
     platform::{
-        GlobalCursorTracker, NativeTrayMenuWindow, SystemTray, TrayIconStyle, TrayMenuAnchor,
-        WindowMover, WindowPositionController, configure_settings_window,
-        configure_tray_menu_window,
+        APPLICATION_ID, GlobalCursorTracker, NativeTrayMenuWindow, SystemTray, TrayIconStyle,
+        TrayMenuAnchor, WindowMover, WindowPositionController, configure_settings_window,
+        configure_tray_menu_window, set_desktop_pet_window_visible,
     },
+    shortcut::{ShortcutEvent, ShortcutManager},
     voice::{VoiceActivitySnapshot, VoiceController, VoiceEvent, VoicePhase},
 };
 
@@ -49,6 +50,7 @@ use super::{
 
 const FPS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const VOICE_LEVEL_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
+const VOICE_SHORTCUT_RELEASE_TIMEOUT: Duration = Duration::from_secs(31);
 const CURSOR_TRACKING_INTERVAL: Duration = Duration::from_millis(16);
 /// 合成器钳制窗口尺寸时放弃重试并接受实际 viewport，避免每帧重复请求 resize。
 const MAX_WINDOW_RESIZE_ATTEMPTS: u32 = 8;
@@ -186,6 +188,10 @@ pub(crate) struct DesktopPetView {
     voice_activity: VoiceActivitySnapshot,
     voice_event_task: Option<Task<()>>,
     voice_level_task: Option<Task<()>>,
+    voice_shortcut_release_task: Option<Task<()>>,
+    shortcut_manager: Option<ShortcutManager>,
+    shortcut_runtime_errors: Vec<String>,
+    shortcut_event_task: Option<Task<()>>,
     chat_input_open: bool,
     chat_overlay_visible: bool,
     position_controller: WindowPositionController,
@@ -221,6 +227,7 @@ impl DesktopPetView {
         initial_model: Option<PathBuf>,
         raster_dimensions: [u32; 2],
         system_tray: Option<Rc<SystemTray>>,
+        shortcut_runtime: &tokio::runtime::Handle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -235,6 +242,7 @@ impl DesktopPetView {
             if let Some(wake) = this.frame_rate_wake.take() {
                 wake.close();
             }
+            this.shortcut_manager.take();
             if let Some(mut underlay) = this.gpu_underlay.take() {
                 underlay.shutdown();
             }
@@ -283,6 +291,26 @@ impl DesktopPetView {
             .map(VoiceController::activity)
             .unwrap_or_default();
         let voice_revision = voice.as_ref().map_or(0, VoiceController::current_revision);
+        let shortcut_settings = CONFIG.shortcut_settings();
+        let (shortcut_manager, shortcut_errors) = match ShortcutManager::new(
+            shortcut_settings.as_ref().clone(),
+            window,
+            shortcut_runtime,
+        ) {
+            Ok((manager, errors)) => (Some(manager), errors),
+            Err(error) => {
+                log::warn!("全局快捷键运行时不可用：{error}");
+                let errors = vec![error.clone()];
+                (None, errors)
+            }
+        };
+        let shortcut_runtime_errors = shortcut_errors.clone();
+        if !shortcut_errors.is_empty() {
+            config.update(cx, |config, cx| {
+                config.report_shortcut_runtime_errors(shortcut_errors, cx);
+            });
+        }
+        let shortcut_events = shortcut_manager.as_ref().map(ShortcutManager::events);
         let chat_overlay_visible = chat.read(cx).reply_visible();
         let chat_subscription = cx.observe(&chat, |this, chat, cx| {
             let visible = chat.read(cx).reply_visible();
@@ -393,6 +421,12 @@ impl DesktopPetView {
                 SettingsEvent::VoiceChanged(settings) => {
                     this.apply_voice_settings(settings, cx);
                 }
+                SettingsEvent::ShortcutsChanged(settings) => {
+                    this.apply_shortcut_settings(settings, cx);
+                }
+                SettingsEvent::ShortcutRecordingChanged(recording) => {
+                    this.set_shortcut_recording(*recording, cx);
+                }
             });
         cache_window_position(window, ConfigWindow::DesktopPet);
         let bounds_subscription = cx.observe_window_bounds(window, |this, window, _| {
@@ -403,7 +437,7 @@ impl DesktopPetView {
         });
         let activation_subscription = cx.observe_window_activation(window, |this, window, _| {
             if !window.is_window_active() {
-                this.set_push_to_talk(false);
+                this.release_voice_shortcut();
             }
         });
         let tray_for_appearance = system_tray.clone();
@@ -452,6 +486,10 @@ impl DesktopPetView {
             voice_activity,
             voice_event_task: None,
             voice_level_task: None,
+            voice_shortcut_release_task: None,
+            shortcut_manager,
+            shortcut_runtime_errors,
+            shortcut_event_task: None,
             chat_input_open: false,
             chat_overlay_visible,
             position_controller: WindowPositionController::default(),
@@ -518,13 +556,27 @@ impl DesktopPetView {
                 }
             }));
         }
+        if let Some(events) = shortcut_events {
+            view.shortcut_event_task = Some(cx.spawn(async move |this, cx| {
+                while let Ok(event) = events.recv().await {
+                    let keep_running = this
+                        .update_in(cx, |this, window, cx| {
+                            this.handle_shortcut_event(event, window, cx)
+                        })
+                        .unwrap_or(false);
+                    if !keep_running {
+                        break;
+                    }
+                }
+            }));
+        }
         view.load_model(initial_model, cx);
         view.sync_cursor_tracking_task(cx);
         view
     }
 
     fn apply_voice_settings(&mut self, settings: &VoiceSettings, cx: &mut Context<Self>) {
-        self.set_push_to_talk(false);
+        self.release_voice_shortcut();
         self.voice_mode = settings.mode;
         if let Some(voice) = &self.voice {
             let mut runtime_settings = settings.clone();
@@ -543,6 +595,119 @@ impl DesktopPetView {
         });
         self.sync_voice_level_task(cx);
         cx.notify();
+    }
+
+    fn apply_shortcut_settings(
+        &mut self,
+        settings: &crate::config::ShortcutSettings,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_voice_shortcut();
+        let (errors, asynchronous) = if let Some(manager) = &mut self.shortcut_manager {
+            let errors = manager.configure(settings.clone());
+            (errors, manager.reports_status_asynchronously())
+        } else {
+            (self.shortcut_runtime_errors.clone(), false)
+        };
+        if !asynchronous || !errors.is_empty() {
+            self.report_shortcut_runtime_errors(errors, cx);
+        }
+    }
+
+    fn set_shortcut_recording(&mut self, recording: bool, cx: &mut Context<Self>) {
+        if recording {
+            self.release_voice_shortcut();
+        }
+        if let Some(manager) = &mut self.shortcut_manager {
+            let errors = manager.set_suspended(recording);
+            if !manager.reports_status_asynchronously() && (!errors.is_empty() || !recording) {
+                self.report_shortcut_runtime_errors(errors, cx);
+            }
+        } else {
+            self.report_shortcut_runtime_errors(self.shortcut_runtime_errors.clone(), cx);
+        }
+    }
+
+    fn report_shortcut_runtime_errors(&mut self, errors: Vec<String>, cx: &mut Context<Self>) {
+        if !errors.is_empty() {
+            log::warn!("全局快捷键配置存在运行时错误：count={}", errors.len());
+        }
+        self.shortcut_runtime_errors = errors.clone();
+        self.config.update(cx, |config, cx| {
+            config.report_shortcut_runtime_errors(errors, cx);
+        });
+    }
+
+    fn handle_shortcut_event(
+        &mut self,
+        event: ShortcutEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let runtime_bindings = self
+            .shortcut_manager
+            .as_ref()
+            .and_then(|manager| manager.runtime_bindings(&event))
+            .map(|bindings| bindings.to_vec());
+        if let Some(bindings) = runtime_bindings {
+            self.config.update(cx, |config, cx| {
+                config.report_shortcut_runtime_bindings(bindings, cx);
+            });
+            return true;
+        }
+        let runtime_errors = self
+            .shortcut_manager
+            .as_ref()
+            .and_then(|manager| manager.runtime_errors(&event))
+            .map(|errors| errors.to_vec());
+        if let Some(errors) = runtime_errors {
+            self.report_shortcut_runtime_errors(errors, cx);
+            return true;
+        }
+        let Some(event) = self
+            .shortcut_manager
+            .as_ref()
+            .and_then(|manager| manager.resolve(&event))
+        else {
+            return true;
+        };
+        let action = event.action();
+        let should_activate_main_window = event.is_pressed()
+            && match action {
+                crate::config::ShortcutAction::ToggleDesktopPet => !self.desktop_pet_visible,
+                crate::config::ShortcutAction::ToggleChatInput => {
+                    !self.desktop_pet_visible || !self.chat_input_open
+                }
+                crate::config::ShortcutAction::VoiceInput
+                | crate::config::ShortcutAction::ToggleSettings => false,
+            };
+        if should_activate_main_window
+            && let Some(token) = event.activation_token()
+            && let Some(manager) = &self.shortcut_manager
+            && let Err(error) = manager.activate_wayland(token.to_owned())
+        {
+            log::warn!("提交 Wayland 快捷键窗口激活失败：{error}");
+        }
+        if action == crate::config::ShortcutAction::VoiceInput {
+            self.set_voice_shortcut_pressed(event.is_pressed(), cx);
+            return true;
+        }
+        if !event.is_pressed() {
+            return true;
+        }
+        match action {
+            crate::config::ShortcutAction::VoiceInput => {}
+            crate::config::ShortcutAction::ToggleDesktopPet => {
+                if let Err(error) = self.toggle_desktop_pet_visibility(window, cx) {
+                    log::warn!("全局快捷键切换桌宠显隐失败：{error}");
+                }
+            }
+            crate::config::ShortcutAction::ToggleSettings => self.toggle_config_window(cx),
+            crate::config::ShortcutAction::ToggleChatInput => {
+                self.toggle_chat_input_from_shortcut(window, cx);
+            }
+        }
+        true
     }
 
     fn handle_voice_event(&mut self, event: VoiceEvent, cx: &mut Context<Self>) -> bool {
@@ -632,6 +797,27 @@ impl DesktopPetView {
         {
             voice.set_push_to_talk(pressed);
         }
+    }
+
+    fn release_voice_shortcut(&mut self) {
+        self.voice_shortcut_release_task = None;
+        self.set_push_to_talk(false);
+    }
+
+    fn set_voice_shortcut_pressed(&mut self, pressed: bool, cx: &mut Context<Self>) {
+        self.release_voice_shortcut();
+        if !pressed || !self.voice_mode.supports_push_to_talk() {
+            return;
+        }
+        self.set_push_to_talk(true);
+        let background = cx.background_executor().clone();
+        self.voice_shortcut_release_task = Some(cx.spawn(async move |this, cx| {
+            background.timer(VOICE_SHORTCUT_RELEASE_TIMEOUT).await;
+            let _ = this.update(cx, |this, _| {
+                log::warn!("语音输入快捷键超过按住时限，已强制结束录音");
+                this.release_voice_shortcut();
+            });
+        }));
     }
 
     fn update_look_target(&self, position: Point<Pixels>, window: &Window) {
@@ -977,7 +1163,7 @@ impl DesktopPetView {
                 "cpu"
             }
         );
-        self.set_push_to_talk(false);
+        self.release_voice_shortcut();
         if let Some(voice) = &self.voice {
             voice.request_shutdown();
         }
@@ -1011,7 +1197,7 @@ impl DesktopPetView {
 
     /// 在 GPUI 清空原生窗口前同步确认 GPU surface 已经释放。
     pub(crate) fn shutdown_gpu_for_quit(&mut self) {
-        self.set_push_to_talk(false);
+        self.release_voice_shortcut();
         if let Some(voice) = &self.voice {
             voice.request_shutdown();
         }
@@ -1158,6 +1344,9 @@ impl DesktopPetView {
         }
 
         self.desktop_pet_visible = visible;
+        if let Some(tray) = &self.system_tray {
+            tray.set_desktop_pet_hidden(!visible);
+        }
         log::info!(
             "桌宠窗口显隐已更新：visible={visible}, generation={}",
             self.model_generation
@@ -1185,6 +1374,25 @@ impl DesktopPetView {
         }
         self.sync_cursor_tracking_task(cx);
         cx.notify();
+    }
+
+    /// 切换原生桌宠窗口显隐，并只在平台请求成功后更新运行时状态。
+    pub(crate) fn toggle_desktop_pet_visibility(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, String> {
+        let visible = !self.desktop_pet_visible;
+        set_desktop_pet_window_visible(window, visible)?;
+        self.set_desktop_pet_visible(visible, window, cx);
+        Ok(visible)
+    }
+
+    /// 显隐请求失败时把原生托盘勾选恢复为视图中的权威状态。
+    pub(crate) fn sync_desktop_pet_visibility_to_tray(&self) {
+        if let Some(tray) = &self.system_tray {
+            tray.set_desktop_pet_hidden(!self.desktop_pet_visible);
+        }
     }
 
     fn release_rendered_images(&mut self, window: &mut Window) {
@@ -1296,16 +1504,48 @@ impl DesktopPetView {
         };
     }
 
-    fn toggle_chat_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.chat_input_open = !self.chat_input_open;
-        if self.chat_input_open {
+    fn set_chat_input_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.chat_input_open == open {
+            if open {
+                self.chat.update(cx, |chat, cx| {
+                    chat.set_input_visible(true, window, cx);
+                });
+            }
+            return;
+        }
+        self.chat_input_open = open;
+        if open {
             self.reset_look_target();
         }
         self.sync_cursor_tracking_task(cx);
         self.chat.update(cx, |chat, cx| {
-            chat.set_input_visible(self.chat_input_open, window, cx);
+            chat.set_input_visible(open, window, cx);
         });
         cx.notify();
+    }
+
+    fn toggle_chat_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_chat_input_open(!self.chat_input_open, window, cx);
+    }
+
+    fn open_chat_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.desktop_pet_visible {
+            if let Err(error) = set_desktop_pet_window_visible(window, true) {
+                log::warn!("全局快捷键恢复桌宠窗口失败：{error}");
+                return;
+            }
+            self.set_desktop_pet_visible(true, window, cx);
+        }
+        window.activate_window();
+        self.set_chat_input_open(true, window, cx);
+    }
+
+    fn toggle_chat_input_from_shortcut(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.desktop_pet_visible && self.chat_input_open {
+            self.set_chat_input_open(false, window, cx);
+        } else {
+            self.open_chat_input(window, cx);
+        }
     }
 
     pub(crate) fn open_config_window(&mut self, cx: &mut Context<Self>) {
@@ -1334,7 +1574,7 @@ impl DesktopPetView {
                 is_minimizable: true,
                 is_movable: true,
                 app_owns_titlebar_drag: true,
-                app_id: Some("lunamate-settings".to_owned()),
+                app_id: Some(APPLICATION_ID.to_owned()),
                 ..Default::default()
             },
             move |window, cx| {
@@ -1357,6 +1597,18 @@ impl DesktopPetView {
             }
             Err(error) => log::error!("{}", t!("log.settings_window_create_failed", error = error)),
         }
+    }
+
+    fn toggle_config_window(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.config_window.take()
+            && handle
+                .update(cx, |_, window, _| window.remove_window())
+                .is_ok()
+        {
+            log::info!("设置窗口已关闭");
+            return;
+        }
+        self.open_config_window(cx);
     }
 
     pub(crate) fn toggle_tray_menu(&mut self, anchor: TrayMenuAnchor, cx: &mut Context<Self>) {

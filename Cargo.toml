@@ -39,6 +39,7 @@ base64 = "0.22.1"
 ringbuf = "0.4.8"
 cpal = "0.18.1"
 rubato = "0.16.2"
+global-hotkey = "0.8.0"
 
 [patch.crates-io]
 # 上游 PR #14 修复了 2.0.1 中的 Rust future-incompatibility 警告。
@@ -57,11 +58,11 @@ whisper-rs = { version = "0.16.0", features = ["raw-api", "log_backend", "metal"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux 截屏交给桌面门户，避免静态截图无条件引入 PipeWire/GBM 开发依赖。
-ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screenshot"] }
+ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "global_shortcuts", "screenshot"] }
 # 托盘使用 StatusNotifierItem，避免为 GPUI 引入另一套 GTK 事件循环。
 ksni = { version = "0.3.6", default-features = false, features = ["tokio"] }
 wayland-client = { version = "0.31.15", features = ["system"] }
-wayland-protocols = { version = "0.32.13", features = ["client"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 # 通用产物固定包含 Vulkan；raw-api 仅用于同步 Whisper 推理的可取消 callback。
 whisper-rs = { version = "0.16.0", features = ["raw-api", "log_backend", "vulkan"] }
 

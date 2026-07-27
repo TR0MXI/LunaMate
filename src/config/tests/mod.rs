@@ -4,5 +4,6 @@ mod appearance;
 mod config;
 mod llm;
 mod persona;
+mod shortcut;
 mod types;
 mod voice;

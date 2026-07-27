@@ -27,7 +27,6 @@ impl SettingsView {
         let modes = [
             ("voice-mode-off", VoiceMode::Off, t!("voice.mode_off")),
             ("voice-mode-auto", VoiceMode::Auto, t!("voice.mode_auto")),
-            ("voice-mode-mixed", VoiceMode::Mixed, t!("voice.mode_mixed")),
             (
                 "voice-mode-push-to-talk",
                 VoiceMode::PushToTalk,

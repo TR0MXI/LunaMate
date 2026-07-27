@@ -5,7 +5,6 @@ use gpui::{
     StyleRefinement, StyledImage, Window, WindowControlArea, div, img, prelude::*, px, svg,
 };
 use gpui_component::StyledExt as _;
-use gpui_component::tooltip::Tooltip;
 use rust_i18n::t;
 
 use super::DesktopPetView;
@@ -36,7 +35,6 @@ impl Render for DesktopPetView {
         let model_generation = self.model_generation;
         let show_fps = self.show_fps;
         let actual_fps = self.actual_fps;
-        let voice_mode = self.voice_mode;
         let voice_activity = self.voice_activity;
         let diagnostics_top = if show_fps { px(42.0) } else { px(12.0) };
 
@@ -207,101 +205,6 @@ impl Render for DesktopPetView {
                         ),
                 )
             })
-            .when(voice_mode.supports_push_to_talk(), |this| {
-                let recording = voice_activity.phase == VoicePhase::Recording;
-                let tooltip = t!("voice.push_to_talk").to_string();
-                this.child(
-                    div()
-                        .id("push-to-talk")
-                        .absolute()
-                        .left_3()
-                        .bottom(px(if chat_input_open { 104.0 } else { 56.0 }))
-                        .flex()
-                        .size_9()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(if recording {
-                            palette.primary
-                        } else {
-                            palette.border
-                        })
-                        .bg(if recording {
-                            palette.primary
-                        } else {
-                            control_background
-                        })
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(control_hover))
-                        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                window.prevent_default();
-                                cx.stop_propagation();
-                                this.set_push_to_talk(true);
-                            }),
-                        )
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.set_push_to_talk(false);
-                            }),
-                        )
-                        .on_mouse_up_out(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, _| this.set_push_to_talk(false)),
-                        )
-                        .child(
-                            svg()
-                                .path("icons/mic.svg")
-                                .size_4()
-                                .text_color(if recording {
-                                    palette.primary_foreground
-                                } else {
-                                    palette.foreground
-                                }),
-                        ),
-                )
-            })
-            .child(
-                div()
-                    .id("close-window")
-                    .absolute()
-                    .top_3()
-                    .right_3()
-                    .flex()
-                    .size_9()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .bg(control_background)
-                    .border_1()
-                    .border_color(palette.border)
-                    .text_color(palette.foreground)
-                    .cursor_pointer()
-                    .hover(move |style| {
-                        style
-                            .bg(palette.danger)
-                            .text_color(palette.danger_foreground)
-                    })
-                    .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                    })
-                    .on_click(|_, _, cx| {
-                        cx.stop_propagation();
-                        cx.quit();
-                    })
-                    .child(
-                        svg()
-                            .path("icons/x.svg")
-                            .size_4()
-                            .text_color(palette.foreground),
-                    ),
-            )
             .child(
                 div()
                     .id("toggle-chat")
@@ -338,39 +241,6 @@ impl Render for DesktopPetView {
                         },
                     )),
             )
-            .when(!chat_input_open, |this| {
-                this.child(
-                    div()
-                        .id("toggle-settings")
-                        .absolute()
-                        .right_3()
-                        .bottom(px(56.0))
-                        .flex()
-                        .size_9()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .bg(control_background)
-                        .border_1()
-                        .border_color(palette.border)
-                        .cursor_pointer()
-                        .hover(move |style| style.bg(control_hover))
-                        .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.open_config_window(cx);
-                        }))
-                        .child(
-                            svg()
-                                .path("icons/settings.svg")
-                                .size_4()
-                                .text_color(palette.foreground),
-                        ),
-                )
-            })
             .child(
                 div()
                     .id("move-window")

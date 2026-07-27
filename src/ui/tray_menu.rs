@@ -236,7 +236,7 @@ pub(in crate::ui) fn tray_menu_window_options(
                 WindowBackgroundAppearance::Blurred
             },
             window_decorations: Some(WindowDecorations::Client),
-            app_id: Some("lunamate-tray-menu".to_owned()),
+            app_id: Some(crate::platform::APPLICATION_ID.to_owned()),
             ..Default::default()
         },
         bounds,

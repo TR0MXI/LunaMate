@@ -236,8 +236,12 @@ fn core_settings_text_exists_in_every_supported_language() {
             "voice.model_downloads"
         );
         assert_ne!(
-            rust_i18n::t!("voice.mode_mixed", locale = locale),
-            "voice.mode_mixed"
+            rust_i18n::t!("settings.shortcut", locale = locale),
+            "settings.shortcut"
+        );
+        assert_ne!(
+            rust_i18n::t!("shortcut.toggle_chat_input", locale = locale),
+            "shortcut.toggle_chat_input"
         );
         assert_ne!(
             rust_i18n::t!("voice.model_download_notice", locale = locale),

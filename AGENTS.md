@@ -20,6 +20,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 - Live2D 运行时、模型目录、能力、交互命令、帧调度与 CPU/GPU 渲染统一通过
   `src/model` façade 暴露；外部模块不得依赖其动画、表情、资源解析、worker 或 renderer
   子模块。
+- 全局快捷键的系统注册、事件路由与 GPUI 按键转换统一收口在 `src/shortcut.rs`；可持久化的
+  动作和按键组合属于配置域。设置录入期间必须释放已有注册，语音按住事件必须有独立于音频
+  推进的超时释放兜底。
 - 对话能力、供应商与人格设置编辑器和人格记忆收口在 `src/agent`；应用与其他 UI 模块只
   通过 `Agent`、`AgentView`、`AgentShutdown`、`AgentMemoryAccess`、`PersonaMemory` 与两个
   设置编辑器的 `*View`、`*Draft`、`*Event` 交互，不得构造或依赖内部会话、存储、快照、
@@ -41,6 +44,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
   不要用个人 fork 或另一版 GPUI 绕过类型冲突。
 - GPUI 的 `test-support` feature 只作为 dev-dependency 启用，用于无头 `TestAppContext`；
   它必须与生产 `gpui` 解析到同一 commit，且不得被生产代码路径依赖。
+- `global-hotkey` 只用于 Windows、macOS 与 X11 的系统级快捷键；原生 Wayland 使用 XDG
+  GlobalShortcuts portal、稳定应用/动作 ID 和合成器返回的绑定子集，不得把 preferred trigger
+  或本地配置伪装为注册成功。发布包必须安装与应用 ID 匹配的 desktop entry。
 - `vendor/mocari` 是第三方源码边界；保留 MIT `LICENSE`、原始 manifest 和
   `LUNAMATE.md`，本地修改限于必要的兼容或安全修复，并同步记录差异。升级相关依赖时
   检查 `[patch.crates-io]` 是否可以移除。

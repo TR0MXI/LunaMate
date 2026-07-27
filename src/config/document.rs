@@ -15,7 +15,8 @@ use crate::database::{AtomicReplaceOperation, atomic_replace};
 use super::{
     AppLanguage, AppearanceSettings, ConfigWindow, ConfigWriteError, CustomThemeSettings,
     FrameRate, LoadedConfig, LogLevel, LoggingSettings, ModelWindowSize, ThemePreset,
-    WindowPosition, parse_llm_settings, parse_persona_settings, parse_voice_settings,
+    WindowPosition, parse_llm_settings, parse_persona_settings, parse_shortcut_settings,
+    parse_voice_settings,
 };
 
 const LEGACY_CONFIG_PATH: &str = "./config.toml";
@@ -284,6 +285,7 @@ fn parse_document(document: &DocumentMut) -> (LoadedConfig, Option<String>) {
     loaded.appearance = parse_appearance(document, &mut warnings);
     loaded.llm = parse_llm_settings(document, &mut warnings);
     loaded.persona = parse_persona_settings(document, &mut warnings);
+    loaded.shortcuts = parse_shortcut_settings(document, &mut warnings);
     loaded.voice = parse_voice_settings(document, &mut warnings);
     loaded.window_positions.desktop_pet =
         parse_window_position(document, ConfigWindow::DesktopPet, &mut warnings);

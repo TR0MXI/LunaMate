@@ -6,25 +6,18 @@ use crate::config::{VoiceMode, VoiceSettings, parse_voice_settings, write_voice_
 
 #[test]
 fn voice_mode_ids_round_trip() {
-    for mode in [
-        VoiceMode::Off,
-        VoiceMode::Auto,
-        VoiceMode::Mixed,
-        VoiceMode::PushToTalk,
-    ] {
+    for mode in [VoiceMode::Off, VoiceMode::Auto, VoiceMode::PushToTalk] {
         assert_eq!(VoiceMode::from_id(mode.id()), Some(mode));
     }
-    assert_eq!(VoiceMode::Mixed.id(), "mixed");
+    assert_eq!(VoiceMode::from_id("mixed"), Some(VoiceMode::Auto));
 }
 
 #[test]
-fn mixed_mode_combines_automatic_and_manual_capabilities() {
+fn automatic_mode_combines_vad_and_shortcut_capabilities() {
     assert!(!VoiceMode::Off.uses_vad());
     assert!(!VoiceMode::Off.supports_push_to_talk());
     assert!(VoiceMode::Auto.uses_vad());
-    assert!(!VoiceMode::Auto.supports_push_to_talk());
-    assert!(VoiceMode::Mixed.uses_vad());
-    assert!(VoiceMode::Mixed.supports_push_to_talk());
+    assert!(VoiceMode::Auto.supports_push_to_talk());
     assert!(!VoiceMode::PushToTalk.uses_vad());
     assert!(VoiceMode::PushToTalk.supports_push_to_talk());
 }

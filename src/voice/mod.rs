@@ -214,7 +214,7 @@ impl VoiceController {
         revision
     }
 
-    /// 开始或结束一次按住说话录音。
+    /// 开始或结束一次由全局语音快捷键控制的录音。
     pub(crate) fn set_push_to_talk(&self, pressed: bool) {
         let revision = self.revision.load(Ordering::Acquire);
         let _ = self

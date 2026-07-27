@@ -1,0 +1,79 @@
+_version = 2
+
+[settings.shortcut]
+"zh-CN" = "快捷键"
+"zh-TW" = "快速鍵"
+"en" = "Shortcuts"
+"ja" = "ショートカット"
+
+[shortcut.title]
+"zh-CN" = "快捷键设置"
+"zh-TW" = "快速鍵設定"
+"en" = "Shortcut Settings"
+"ja" = "ショートカット設定"
+
+[shortcut.actions]
+"zh-CN" = "全局操作"
+"zh-TW" = "全域操作"
+"en" = "Global Actions"
+"ja" = "グローバル操作"
+
+[shortcut.voice_input]
+"zh-CN" = "语音输入"
+"zh-TW" = "語音輸入"
+"en" = "Voice input"
+"ja" = "音声入力"
+
+[shortcut.toggle_desktop_pet]
+"zh-CN" = "隐藏/显示桌宠"
+"zh-TW" = "隱藏/顯示桌寵"
+"en" = "Hide/show desktop pet"
+"ja" = "デスクトップペットを隠す/表示"
+
+[shortcut.toggle_settings]
+"zh-CN" = "打开/关闭设置"
+"zh-TW" = "開啟/關閉設定"
+"en" = "Open/close settings"
+"ja" = "設定を開く/閉じる"
+
+[shortcut.toggle_chat_input]
+"zh-CN" = "打开/关闭聊天框"
+"zh-TW" = "開啟/關閉聊天框"
+"en" = "Open/close chat"
+"ja" = "チャットを開く/閉じる"
+
+[shortcut.recording]
+"zh-CN" = "正在录入"
+"zh-TW" = "正在錄入"
+"en" = "Recording"
+"ja" = "入力待ち"
+
+[shortcut.unassigned]
+"zh-CN" = "未设置"
+"zh-TW" = "未設定"
+"en" = "Not set"
+"ja" = "未設定"
+
+[shortcut.record_tooltip]
+"zh-CN" = "点击录入快捷键，按 Esc 清空"
+"zh-TW" = "點擊錄入快速鍵，按 Esc 清除"
+"en" = "Click to record; press Esc to clear"
+"ja" = "クリックして入力、Esc で解除"
+
+[shortcut.saved]
+"zh-CN" = "快捷键已保存"
+"zh-TW" = "快速鍵已儲存"
+"en" = "Shortcuts saved"
+"ja" = "ショートカットを保存しました"
+
+[shortcut.save_failed]
+"zh-CN" = "快捷键保存失败，已恢复原设置：%{error}"
+"zh-TW" = "快速鍵儲存失敗，已恢復原設定：%{error}"
+"en" = "Could not save shortcuts; the previous settings were restored: %{error}"
+"ja" = "ショートカットを保存できなかったため、以前の設定に戻しました：%{error}"
+
+[shortcut.registration_failed]
+"zh-CN" = "部分快捷键未能生效：%{error}"
+"zh-TW" = "部分快速鍵未能生效：%{error}"
+"en" = "Some shortcuts could not be activated: %{error}"
+"ja" = "一部のショートカットを有効にできませんでした：%{error}"

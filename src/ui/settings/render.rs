@@ -34,6 +34,11 @@ impl SettingsView {
                 ConfigSection::Voice,
             ),
             (
+                "section-shortcut",
+                t!("settings.shortcut").to_string(),
+                ConfigSection::Shortcut,
+            ),
+            (
                 "section-tool",
                 t!("settings.tool").to_string(),
                 ConfigSection::Tool,
@@ -75,8 +80,7 @@ impl SettingsView {
                             active_section == section,
                             palette,
                             cx.listener(move |this: &mut SettingsView, _, _, cx| {
-                                this.section = section;
-                                cx.notify();
+                                this.set_section(section, cx);
                             }),
                         )
                     })),
@@ -116,6 +120,7 @@ impl Render for SettingsView {
                             .map(embedded_page)
                             .unwrap_or_else(|| uninitialized_page(palette)),
                         ConfigSection::Voice => self.render_voice_page(cx),
+                        ConfigSection::Shortcut => self.render_shortcut_page(cx),
                         ConfigSection::Tool => self.render_tool_page(cx),
                         ConfigSection::System => self.render_system_page(cx),
                         ConfigSection::Debug => self.render_debug_page(cx),

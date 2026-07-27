@@ -207,7 +207,7 @@ impl Worker {
                 }
                 self.publish_phase(VoicePhase::Listening);
             }
-            VoiceMode::Auto | VoiceMode::Mixed => {
+            VoiceMode::Auto => {
                 if let Err(error) = self.prepare_auto_vad() {
                     self.fail(error);
                     return;
@@ -233,13 +233,13 @@ impl Worker {
             .settings
             .whisper_model
             .as_deref()
-            .ok_or_else(|| "自动或混合语音模式需要先选择 Whisper 模型".to_owned())?;
+            .ok_or_else(|| "自动语音模式需要先选择 Whisper 模型".to_owned())?;
         validate_model_file(whisper_path, MAX_WHISPER_MODEL_BYTES, "Whisper")?;
         let vad_path = self
             .settings
             .vad_model
             .as_deref()
-            .ok_or_else(|| "自动或混合语音模式需要先选择 Silero VAD 模型".to_owned())?;
+            .ok_or_else(|| "自动语音模式需要先选择 Silero VAD 模型".to_owned())?;
         validate_model_file(vad_path, MAX_VAD_MODEL_BYTES, "Silero VAD")?;
         self.vad = Some(RollingVad::load(vad_path)?);
         Ok(())
@@ -295,9 +295,8 @@ impl Worker {
         }
         self.activity.set_level(audio_level(&self.normalized));
         match self.settings.mode {
+            VoiceMode::Auto if self.manual_samples.is_some() => self.consume_manual_audio(),
             VoiceMode::Auto => self.consume_auto_audio(),
-            VoiceMode::Mixed if self.manual_samples.is_some() => self.consume_manual_audio(),
-            VoiceMode::Mixed => self.consume_auto_audio(),
             VoiceMode::PushToTalk => self.consume_manual_audio(),
             VoiceMode::Off => {}
         }

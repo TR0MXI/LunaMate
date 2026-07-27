@@ -9,6 +9,7 @@ mod database;
 mod logging;
 mod model;
 mod platform;
+mod shortcut;
 mod ui;
 mod voice;
 

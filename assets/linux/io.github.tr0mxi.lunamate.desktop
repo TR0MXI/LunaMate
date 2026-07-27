@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LunaMate
+Comment=Live2D desktop companion
+Exec=lunamate
+Terminal=false
+Categories=Utility;
+StartupWMClass=io.github.tr0mxi.lunamate

@@ -2,6 +2,8 @@
 
 mod tray;
 mod underlay;
+#[cfg(target_os = "linux")]
+mod wayland_activation;
 mod window;
 
 #[cfg(test)]
@@ -12,8 +14,15 @@ pub(crate) use underlay::{
     InitializationCancellation, NativeAttachment, SurfaceFactory, SurfaceOwner, SurfaceSeed,
     UnderlaySize, attach as attach_underlay,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use wayland_activation::{
+    WaylandActivationController, WaylandActivationTarget, wayland_activation_target,
+};
 pub(crate) use window::{
     GlobalCursorTracker, NativeTrayMenuWindow, WindowMover, WindowPositionController,
     configure_desktop_pet_window, configure_settings_window, configure_tray_menu_window,
     set_desktop_pet_window_visible,
 };
+
+/// 桌面入口、Wayland surface 与 portal 权限存储共同使用的稳定应用标识。
+pub(crate) const APPLICATION_ID: &str = "io.github.tr0mxi.lunamate";
