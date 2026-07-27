@@ -105,6 +105,17 @@ jobs:
           install_runtime: true
           cache: true
 
+      - name: 配置 Windows Vulkan Runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $env:VULKAN_SDK "runtime\x64"
+          $loader = Join-Path $runtime "vulkan-1.dll"
+          if (-not (Test-Path -LiteralPath $loader -PathType Leaf)) {
+            throw "未找到 Vulkan Runtime loader: $loader"
+          }
+          $runtime | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: 启用 sccache
         uses: mozilla-actions/sccache-action@v0.0.10
         with:
