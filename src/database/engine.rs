@@ -1,6 +1,6 @@
 //! 连接 SurrealKV，并提供与具体数据库类型解耦的有界文档存储接口。
 
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, path::PathBuf, sync::Arc, time::Instant};
 
 use surrealdb::{
     Surreal,
@@ -51,7 +51,13 @@ impl Database {
     ///
     /// 数据目录无法创建或限制权限、SurrealKV 无法打开、数据库选择或模式初始化失败时返回错误。
     pub(crate) async fn open_default() -> Result<Arc<Self>, DatabaseError> {
-        Self::open_surreal_kv(PathBuf::from(DATABASE_PATH)).await
+        let started = Instant::now();
+        let database = Self::open_surreal_kv(PathBuf::from(DATABASE_PATH)).await?;
+        log::info!(
+            "嵌入式数据库已就绪：backend=surrealkv, elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+        Ok(database)
     }
 
     async fn open_surreal_kv(path: PathBuf) -> Result<Arc<Self>, DatabaseError> {

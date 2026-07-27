@@ -24,7 +24,6 @@ use std::{
 
 use arc_swap::ArcSwap;
 use parking_lot::Mutex;
-use rust_i18n::t;
 use tokio::sync::watch;
 use toml_edit::{DocumentMut, Value};
 
@@ -184,10 +183,6 @@ impl LunaConfig {
     fn load_from(path: PathBuf) -> Self {
         let (loaded, startup_warning) = read_config_file(&path);
         let (agent_screenshot_permission_revision_sender, _) = watch::channel(0);
-        if let Some(warning) = &startup_warning {
-            log::warn!("{}", t!("log.startup_config_warning", warning = warning));
-        }
-
         Self {
             path,
             frame_rate: AtomicU32::new(loaded.frame_rate.atomic_value()),
@@ -235,6 +230,21 @@ impl LunaConfig {
     /// 返回启动配置诊断；该消息不会阻止用户继续修改并修复配置。
     pub(crate) fn startup_warning(&self) -> Option<&str> {
         self.startup_warning.as_deref()
+    }
+
+    /// 在日志过滤等级生效后记录不含路径、凭据或自由文本的启动配置摘要。
+    pub(crate) fn log_startup_summary(&self) {
+        if self.startup_warning.is_some() {
+            log::warn!("启动配置包含无效或不可读取项，相关字段已回退安全默认值");
+        }
+        log::info!(
+            "配置已加载：warning={}, providers={}, personas={}, model_selected={}, voice_mode={}",
+            self.startup_warning.is_some(),
+            self.llm.load().models.len(),
+            self.persona.load().personas.len(),
+            self.snapshot.load().selected_model.is_some(),
+            self.voice.load().mode.id()
+        );
     }
 
     /// 返回当前渲染帧率；该读取不会获取锁。
@@ -398,6 +408,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.frame_rate_request_revision,
             revision,
+            "render.frame_rate",
             || {
                 self.frame_rate
                     .store(frame_rate.atomic_value(), Ordering::Relaxed);
@@ -441,6 +452,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.show_fps_request_revision,
             revision,
+            "debug.show_fps",
             || self.show_fps.store(show, Ordering::Relaxed),
             |document| {
                 ensure_table_like(&mut document["debug"]);
@@ -464,6 +476,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.use_native_tray_menu_request_revision,
             revision,
+            "debug.use_native_tray_menu",
             || self.use_native_tray_menu.store(enabled, Ordering::Relaxed),
             |document| {
                 ensure_table_like(&mut document["debug"]);
@@ -490,6 +503,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.allow_agent_outfit_change_request_revision,
             revision,
+            "tools.allow_agent_outfit_change",
             || {
                 self.allow_agent_outfit_change
                     .store(allowed, Ordering::Relaxed);
@@ -524,74 +538,82 @@ impl LunaConfig {
         allowed: bool,
         revision: u64,
     ) -> Result<Option<()>, ConfigWriteError> {
-        let _guard = self.write_lock.lock();
-        if !revision_is_current(&self.allow_agent_screenshot_request_revision, revision) {
-            return Ok(None);
-        }
-        if self
-            .applied_allow_agent_screenshot_revision
-            .load(Ordering::Acquire)
-            == revision
-            && self.allow_agent_screenshot.load(Ordering::Acquire) == allowed
-            && self
-                .requested_allow_agent_screenshot
+        let result = (|| {
+            let _guard = self.write_lock.lock();
+            if !revision_is_current(&self.allow_agent_screenshot_request_revision, revision) {
+                return Ok(None);
+            }
+            if self
+                .applied_allow_agent_screenshot_revision
                 .load(Ordering::Acquire)
-                == allowed
-            && !self
-                .agent_screenshot_permission_retry_required
-                .load(Ordering::Acquire)
-        {
-            return Ok(Some(()));
-        }
-
-        let mut candidate_revision = revision;
-        let mut candidate_allowed = allowed;
-        loop {
-            if let Err(error) = self.edit_document_locked(|document| {
-                ensure_table_like(&mut document["tools"]);
-                set_item_value(
-                    &mut document["tools"]["allow_agent_screenshot"],
-                    Value::from(candidate_allowed),
-                );
-            }) {
-                let _revision_guard = self.revision_lock.lock();
-                if revision_is_current(
-                    &self.allow_agent_screenshot_request_revision,
-                    candidate_revision,
-                ) && self
+                == revision
+                && self.allow_agent_screenshot.load(Ordering::Acquire) == allowed
+                && self
                     .requested_allow_agent_screenshot
                     .load(Ordering::Acquire)
-                    == candidate_allowed
-                {
-                    // 持久化结果不确定时不从旧磁盘值重新开放隐私权限。
-                    self.allow_agent_screenshot.store(false, Ordering::Release);
-                    self.requested_allow_agent_screenshot
-                        .store(false, Ordering::Release);
-                    self.agent_screenshot_permission_retry_required
-                        .store(!candidate_allowed, Ordering::Release);
-                }
-                return Err(error);
+                    == allowed
+                && !self
+                    .agent_screenshot_permission_retry_required
+                    .load(Ordering::Acquire)
+            {
+                return Ok(Some(()));
             }
 
-            let _revision_guard = self.revision_lock.lock();
-            let current_revision = self
-                .allow_agent_screenshot_request_revision
-                .load(Ordering::Acquire);
-            let current_allowed = self
-                .requested_allow_agent_screenshot
-                .load(Ordering::Acquire);
-            if current_revision == candidate_revision && current_allowed == candidate_allowed {
-                self.allow_agent_screenshot
-                    .store(candidate_allowed, Ordering::Release);
-                self.applied_allow_agent_screenshot_revision
-                    .store(candidate_revision, Ordering::Release);
-                self.agent_screenshot_permission_retry_required
-                    .store(false, Ordering::Release);
-                return Ok((candidate_revision == revision).then_some(()));
+            let mut candidate_revision = revision;
+            let mut candidate_allowed = allowed;
+            loop {
+                if let Err(error) = self.edit_document_locked(|document| {
+                    ensure_table_like(&mut document["tools"]);
+                    set_item_value(
+                        &mut document["tools"]["allow_agent_screenshot"],
+                        Value::from(candidate_allowed),
+                    );
+                }) {
+                    let _revision_guard = self.revision_lock.lock();
+                    if revision_is_current(
+                        &self.allow_agent_screenshot_request_revision,
+                        candidate_revision,
+                    ) && self
+                        .requested_allow_agent_screenshot
+                        .load(Ordering::Acquire)
+                        == candidate_allowed
+                    {
+                        // 持久化结果不确定时不从旧磁盘值重新开放隐私权限。
+                        self.allow_agent_screenshot.store(false, Ordering::Release);
+                        self.requested_allow_agent_screenshot
+                            .store(false, Ordering::Release);
+                        self.agent_screenshot_permission_retry_required
+                            .store(!candidate_allowed, Ordering::Release);
+                    }
+                    return Err(error);
+                }
+
+                let _revision_guard = self.revision_lock.lock();
+                let current_revision = self
+                    .allow_agent_screenshot_request_revision
+                    .load(Ordering::Acquire);
+                let current_allowed = self
+                    .requested_allow_agent_screenshot
+                    .load(Ordering::Acquire);
+                if current_revision == candidate_revision && current_allowed == candidate_allowed {
+                    self.allow_agent_screenshot
+                        .store(candidate_allowed, Ordering::Release);
+                    self.applied_allow_agent_screenshot_revision
+                        .store(candidate_revision, Ordering::Release);
+                    self.agent_screenshot_permission_retry_required
+                        .store(false, Ordering::Release);
+                    return Ok((candidate_revision == revision).then_some(()));
+                }
+                candidate_revision = current_revision;
+                candidate_allowed = current_allowed;
             }
-            candidate_revision = current_revision;
-            candidate_allowed = current_allowed;
-        }
+        })();
+        log_config_update(
+            "tools.allow_agent_screenshot",
+            revision,
+            result.as_ref().map(|applied| applied.is_some()),
+        );
+        result
     }
 
     /// 更新完整日志配置并持久化。
@@ -627,6 +649,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.logging_request_revision,
             revision,
+            "logging",
             move || self.logging.store(published),
             move |document| write_logging_settings(document, &settings),
         )?;
@@ -647,6 +670,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.model_window_size_request_revision,
             revision,
+            "window.model_size",
             || {
                 self.model_window_size
                     .store(size.atomic_value(), Ordering::Relaxed);
@@ -676,6 +700,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.eye_tracking_request_revision,
             revision,
+            "interaction.eye_tracking",
             || self.eye_tracking.store(enabled, Ordering::Relaxed),
             |document| {
                 ensure_table_like(&mut document["interaction"]);
@@ -699,23 +724,31 @@ impl LunaConfig {
         settings: AppearanceSettings,
         revision: u64,
     ) -> Result<Option<Arc<AppearanceSettings>>, ConfigWriteError> {
-        let settings = Arc::new(
-            settings
-                .normalized()
-                .map_err(ConfigWriteError::InvalidValue)?,
+        let result = (|| {
+            let settings = Arc::new(
+                settings
+                    .normalized()
+                    .map_err(ConfigWriteError::InvalidValue)?,
+            );
+            let _guard = self.write_lock.lock();
+            if !revision_is_current(&self.appearance_request_revision, revision) {
+                return Ok(None);
+            }
+            self.edit_document_locked(|document| write_appearance(document, &settings))?;
+            // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
+            let _revision_guard = self.revision_lock.lock();
+            if !revision_is_current(&self.appearance_request_revision, revision) {
+                return Ok(None);
+            }
+            self.appearance.store(settings.clone());
+            Ok(Some(settings))
+        })();
+        log_config_update(
+            "appearance",
+            revision,
+            result.as_ref().map(|applied| applied.is_some()),
         );
-        let _guard = self.write_lock.lock();
-        if !revision_is_current(&self.appearance_request_revision, revision) {
-            return Ok(None);
-        }
-        self.edit_document_locked(|document| write_appearance(document, &settings))?;
-        // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
-        let _revision_guard = self.revision_lock.lock();
-        if !revision_is_current(&self.appearance_request_revision, revision) {
-            return Ok(None);
-        }
-        self.appearance.store(settings.clone());
-        Ok(Some(settings))
+        result
     }
 
     /// 更新窗口位置保存开关，并准确修改 TOML 中对应键。
@@ -748,6 +781,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.remember_positions_request_revision,
             revision,
+            "window.remember_position",
             || {
                 self.remember_window_positions
                     .store(remember, Ordering::Relaxed);
@@ -781,6 +815,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.model_request_revision,
             revision,
+            "model.selected",
             || {
                 self.snapshot.rcu(|current| {
                     let mut next = ConfigSnapshot::clone(current);
@@ -817,19 +852,27 @@ impl LunaConfig {
         settings: LlmSettings,
         revision: u64,
     ) -> Result<Option<SharedLlmSettings>, ConfigWriteError> {
-        let settings = Arc::new(settings.normalized()?);
-        let _guard = self.write_lock.lock();
-        if self.llm_request_revision.load(Ordering::Relaxed) != revision {
-            return Ok(None);
-        }
-        self.edit_document_locked(|document| write_llm_settings(document, &settings))?;
-        // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
-        let _revision_guard = self.revision_lock.lock();
-        if self.llm_request_revision.load(Ordering::Relaxed) != revision {
-            return Ok(None);
-        }
-        self.llm.store(settings.clone());
-        Ok(Some(settings))
+        let result = (|| {
+            let settings = Arc::new(settings.normalized()?);
+            let _guard = self.write_lock.lock();
+            if self.llm_request_revision.load(Ordering::Relaxed) != revision {
+                return Ok(None);
+            }
+            self.edit_document_locked(|document| write_llm_settings(document, &settings))?;
+            // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
+            let _revision_guard = self.revision_lock.lock();
+            if self.llm_request_revision.load(Ordering::Relaxed) != revision {
+                return Ok(None);
+            }
+            self.llm.store(settings.clone());
+            Ok(Some(settings))
+        })();
+        log_config_update(
+            "agent.providers",
+            revision,
+            result.as_ref().map(|applied| applied.is_some()),
+        );
+        result
     }
 
     /// 为一份由人格设置编辑器提交的草稿分配单调 revision。
@@ -847,19 +890,27 @@ impl LunaConfig {
         settings: PersonaSettings,
         revision: u64,
     ) -> Result<Option<SharedPersonaSettings>, ConfigWriteError> {
-        let settings = Arc::new(settings.normalized()?);
-        let _guard = self.write_lock.lock();
-        if self.persona_request_revision.load(Ordering::Relaxed) != revision {
-            return Ok(None);
-        }
-        self.edit_document_locked(|document| write_persona_settings(document, &settings))?;
-        // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
-        let _revision_guard = self.revision_lock.lock();
-        if self.persona_request_revision.load(Ordering::Relaxed) != revision {
-            return Ok(None);
-        }
-        self.persona.store(settings.clone());
-        Ok(Some(settings))
+        let result = (|| {
+            let settings = Arc::new(settings.normalized()?);
+            let _guard = self.write_lock.lock();
+            if self.persona_request_revision.load(Ordering::Relaxed) != revision {
+                return Ok(None);
+            }
+            self.edit_document_locked(|document| write_persona_settings(document, &settings))?;
+            // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
+            let _revision_guard = self.revision_lock.lock();
+            if self.persona_request_revision.load(Ordering::Relaxed) != revision {
+                return Ok(None);
+            }
+            self.persona.store(settings.clone());
+            Ok(Some(settings))
+        })();
+        log_config_update(
+            "agent.personas",
+            revision,
+            result.as_ref().map(|applied| applied.is_some()),
+        );
+        result
     }
 
     /// 为一份完整语音配置分配单调 revision。
@@ -873,18 +924,26 @@ impl LunaConfig {
         settings: VoiceSettings,
         revision: u64,
     ) -> Result<Option<SharedVoiceSettings>, ConfigWriteError> {
-        let settings = Arc::new(settings.normalized()?);
-        let _guard = self.write_lock.lock();
-        if !revision_is_current(&self.voice_request_revision, revision) {
-            return Ok(None);
-        }
-        self.edit_document_locked(|document| write_voice_settings(document, &settings))?;
-        let _revision_guard = self.revision_lock.lock();
-        if !revision_is_current(&self.voice_request_revision, revision) {
-            return Ok(None);
-        }
-        self.voice.store(settings.clone());
-        Ok(Some(settings))
+        let result = (|| {
+            let settings = Arc::new(settings.normalized()?);
+            let _guard = self.write_lock.lock();
+            if !revision_is_current(&self.voice_request_revision, revision) {
+                return Ok(None);
+            }
+            self.edit_document_locked(|document| write_voice_settings(document, &settings))?;
+            let _revision_guard = self.revision_lock.lock();
+            if !revision_is_current(&self.voice_request_revision, revision) {
+                return Ok(None);
+            }
+            self.voice.store(settings.clone());
+            Ok(Some(settings))
+        })();
+        log_config_update(
+            "voice",
+            revision,
+            result.as_ref().map(|applied| applied.is_some()),
+        );
+        result
     }
 
     /// 只更新内存中的窗口位置快照；拖动期间不会访问磁盘。
@@ -940,6 +999,7 @@ impl LunaConfig {
         let applied = self.edit_config_at_revision(
             &self.reset_positions_request_revision,
             revision,
+            "window.saved_positions",
             || {
                 *self.window_positions.lock() = WindowPositions::default();
             },
@@ -987,21 +1047,39 @@ impl LunaConfig {
         &self,
         counter: &AtomicU64,
         revision: u64,
+        setting: &'static str,
         publish: impl FnOnce(),
         edit: impl FnOnce(&mut DocumentMut),
     ) -> Result<bool, ConfigWriteError> {
-        let _guard = self.write_lock.lock();
-        if !revision_is_current(counter, revision) {
-            return Ok(false);
+        let result = (|| {
+            let _guard = self.write_lock.lock();
+            if !revision_is_current(counter, revision) {
+                return Ok(false);
+            }
+            self.edit_document_locked(edit)?;
+            // 磁盘写入期间允许新请求递增 revision；最终复核与发布必须保持原子顺序。
+            let _revision_guard = self.revision_lock.lock();
+            if !revision_is_current(counter, revision) {
+                return Ok(false);
+            }
+            publish();
+            Ok(true)
+        })();
+        log_config_update(setting, revision, result.as_ref().map(|applied| *applied));
+        result
+    }
+}
+
+fn log_config_update(setting: &str, revision: u64, outcome: Result<bool, &ConfigWriteError>) {
+    match outcome {
+        Ok(true) => log::info!("配置已更新：setting={setting}, revision={revision}"),
+        Ok(false) => {
+            log::debug!("配置更新已被较新请求替代：setting={setting}, revision={revision}");
         }
-        self.edit_document_locked(edit)?;
-        // 磁盘写入期间允许新请求递增 revision；最终复核与发布必须保持原子顺序。
-        let _revision_guard = self.revision_lock.lock();
-        if !revision_is_current(counter, revision) {
-            return Ok(false);
-        }
-        publish();
-        Ok(true)
+        Err(error) => log::error!(
+            "配置更新失败：setting={setting}, revision={revision}, error_kind={}",
+            error.diagnostic_kind()
+        ),
     }
 }
 

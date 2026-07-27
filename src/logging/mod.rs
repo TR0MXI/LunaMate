@@ -62,7 +62,7 @@ pub(crate) fn init() {
         return;
     }
     if let Some(reason) = fallback_reason {
-        log::error!("{}", t!("log.file_fallback", reason = reason));
+        log::warn!("{}", t!("log.file_fallback", reason = reason));
     }
 }
 
@@ -82,6 +82,7 @@ pub(crate) fn apply_current_settings() -> Result<(), String> {
     let runtime = guard.as_mut().ok_or_else(|| "日志器已经关闭".to_owned())?;
 
     // reset_flw 会重建 writer 并重跑轮转与清理，只在轮转参数真正变化时执行。
+    let mut writer_rebuilt = false;
     if runtime.has_file_writer
         && runtime
             .applied_file_settings
@@ -93,11 +94,22 @@ pub(crate) fn apply_current_settings() -> Result<(), String> {
             .reset_flw(&builder)
             .map_err(|error| format!("更新日志文件配置失败：{error}"))?;
         runtime.applied_file_settings = Some(settings);
+        writer_rebuilt = true;
     }
     runtime
         .handle
         .parse_new_spec(&application_log_spec(settings.level))
-        .map_err(|error| format!("更新日志等级失败：{error}"))
+        .map_err(|error| format!("更新日志等级失败：{error}"))?;
+    drop(guard);
+    log::debug!(
+        "日志配置已应用：level={}, rotation={}, compression={}, max_size_mb={}, keep_files={}, writer_rebuilt={writer_rebuilt}",
+        settings.level.id(),
+        settings.rotation,
+        settings.compression,
+        settings.max_size_mb,
+        settings.keep_files
+    );
+    Ok(())
 }
 
 /// 比较影响 file writer 的轮转字段；`level` 由日志过滤器单独应用。

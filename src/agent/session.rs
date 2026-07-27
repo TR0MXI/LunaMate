@@ -108,6 +108,13 @@ impl Default for ChatLimits {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ResponseId(u64);
 
+impl ResponseId {
+    /// 返回仅在当前会话进程内有效的关联编号。
+    pub(super) const fn get(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ActiveResponse {
     id: ResponseId,

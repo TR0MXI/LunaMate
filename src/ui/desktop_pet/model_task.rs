@@ -130,6 +130,18 @@ impl DesktopPetView {
             self.model_generation = 1;
         }
         self.selected_model = model_path.clone();
+        log::info!(
+            "Live2D 模型 generation 已创建：generation={}, renderer={}, has_model={}, width={}, height={}",
+            self.model_generation,
+            if self.gpu_underlay.is_some() {
+                "gpu"
+            } else {
+                "cpu"
+            },
+            model_path.is_some(),
+            self.raster_dimensions[0],
+            self.raster_dimensions[1]
+        );
         self.frame = None;
         self.sync_cursor_tracking_task(cx);
         self.frame_rate_meter.reset();
@@ -143,6 +155,13 @@ impl DesktopPetView {
 
         let Some(model_path) = model_path else {
             self.model_state = ModelLoadState::NoModel;
+            if self.cpu_fallback_pending {
+                log::info!(
+                    "Live2D 已完成 GPU 到 CPU 回退：generation={}, renderer=cpu, has_model=false",
+                    self.model_generation
+                );
+                self.cpu_fallback_pending = false;
+            }
             if self.gpu_underlay.is_some() {
                 let (_, command_receiver) = command_channel();
                 let cancellation = RenderCancellation::default();
@@ -225,6 +244,16 @@ impl DesktopPetView {
                     let error = error.to_string();
                     let _ = this.update(cx, |this, cx| {
                         if this.model_generation == generation {
+                            if this.cpu_fallback_pending {
+                                log::error!(
+                                    "Live2D GPU 回退后的 CPU 模型加载失败：generation={generation}, stage=model_load"
+                                );
+                            } else {
+                                log::warn!(
+                                    "Live2D 模型加载失败：generation={generation}, renderer=cpu, stage=model_load"
+                                );
+                            }
+                            this.cpu_fallback_pending = false;
                             this.model_state = ModelLoadState::Failed(
                                 t!("model_state.load_failed", name = model_name, error = error)
                                     .to_string(),
@@ -267,7 +296,25 @@ impl DesktopPetView {
                         this.frame = Some(Arc::new(frame));
                         this.sync_cursor_tracking_task(cx);
                     }
+                    let diagnostic_count = diagnostics.entries().len();
+                    let outfit_count = capabilities.outfits().len();
+                    let motion_count = capabilities.motions().len();
+                    let expression_count = capabilities.expressions().len();
                     this.model_state = ModelLoadState::ready(diagnostics);
+                    log::info!(
+                        "Live2D 模型已就绪：generation={generation}, renderer=cpu, outfits={outfit_count}, motions={motion_count}, expressions={expression_count}, diagnostics={diagnostic_count}"
+                    );
+                    if diagnostic_count > 0 {
+                        log::warn!(
+                            "Live2D 模型存在非致命能力问题：generation={generation}, diagnostics={diagnostic_count}"
+                        );
+                    }
+                    if this.cpu_fallback_pending {
+                        log::info!(
+                            "Live2D 已完成 GPU 到 CPU 回退：generation={generation}, renderer=cpu"
+                        );
+                    }
+                    this.cpu_fallback_pending = false;
                     this.config.update(cx, |config, cx| {
                         config.set_preview_capabilities(capabilities.clone(), cx);
                     });

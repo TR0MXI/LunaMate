@@ -843,13 +843,17 @@ impl SettingsView {
                 .await;
             let _ = this.update(cx, |this, cx| match result {
                 Ok(directory) => {
+                    log::info!("正在通过系统文件管理器打开模型目录");
                     cx.open_with_system(&directory);
                     this.set_status(t!("status.opening_model_directory").to_string(), cx);
                 }
-                Err(error) => this.set_status(
-                    t!("status.open_model_directory_failed", error = error).to_string(),
-                    cx,
-                ),
+                Err(error) => {
+                    log::warn!("无法打开模型目录：stage=prepare_or_launch");
+                    this.set_status(
+                        t!("status.open_model_directory_failed", error = error).to_string(),
+                        cx,
+                    );
+                }
             });
         })
         .detach();
@@ -868,6 +872,7 @@ impl SettingsView {
         let root = self.catalog.root().to_path_buf();
         let model_revision = self.model_revision;
         let background = cx.background_executor().clone();
+        log::debug!("开始扫描 Live2D 模型目录：scan_revision={model_revision}");
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
@@ -889,6 +894,15 @@ impl SettingsView {
                         let new_path = catalog.selected_model_path();
                         let (families, outfits) = catalog.counts();
                         let warning = catalog.warning().map(str::to_owned);
+                        if warning.is_some() {
+                            log::warn!(
+                                "Live2D 模型扫描完成但存在可恢复问题：scan_revision={model_revision}, families={families}, outfits={outfits}"
+                            );
+                        } else {
+                            log::info!(
+                                "Live2D 模型扫描完成：scan_revision={model_revision}, families={families}, outfits={outfits}"
+                            );
+                        }
                         this.catalog = catalog;
                         let status = match warning {
                             Some(warning) => t!(
@@ -911,6 +925,9 @@ impl SettingsView {
                         }
                     }
                     Err(error) => {
+                        log::warn!(
+                            "Live2D 模型扫描失败：scan_revision={model_revision}, stage=root_scan"
+                        );
                         this.set_status(t!("status.scan_failed", error = error).to_string(), cx)
                     }
                 }
@@ -1286,6 +1303,10 @@ impl SettingsView {
                 Ok(Ok(Some(paths))) => paths.into_iter().next(),
                 Ok(Ok(None)) => return,
                 Ok(Err(_)) | Err(_) => {
+                    log::warn!(
+                        "语音模型文件选择器失败：kind={}",
+                        if whisper { "whisper" } else { "vad" }
+                    );
                     let _ = this.update(cx, |this, cx| {
                         if this.voice_picker_revision == revision {
                             this.set_status(t!("voice.picker_failed").to_string(), cx);
@@ -1332,21 +1353,22 @@ impl SettingsView {
                 .spawn(async move {
                     let persisted = CONFIG
                         .set_logging_settings_at_revision(settings, config_revision)
-                        .map_err(|error| error.to_string())?;
+                        .map_err(|error| ("persist", error.to_string()))?;
                     if persisted.is_some() {
-                        crate::logging::apply_current_settings()?;
+                        crate::logging::apply_current_settings()
+                            .map_err(|error| ("apply_runtime", error))?;
                     }
-                    Ok::<Option<()>, String>(persisted)
+                    Ok::<Option<()>, (&'static str, String)>(persisted)
                 })
                 .await;
-            if let Err(error) = &result {
-                log::error!("{}", t!("log.logging_update_failed", error = error));
+            if let Err(("apply_runtime", _)) = &result {
+                log::error!("更新运行时日志配置失败：phase=apply_runtime");
             }
             let _ = this.update(cx, |this, cx| {
                 if this.revision != revision {
                     return;
                 }
-                if let Err(error) = result {
+                if let Err((_, error)) = result {
                     this.set_status(t!("status.setting_failed", error = error).to_string(), cx);
                 } else {
                     cx.notify();

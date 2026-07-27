@@ -45,6 +45,23 @@ pub(crate) enum DatabaseError {
     InvalidStoredDocument,
 }
 
+impl DatabaseError {
+    /// 返回不含路径、查询或文档内容的稳定诊断分类。
+    pub(crate) const fn diagnostic_kind(&self) -> &'static str {
+        match self {
+            Self::CreateDirectory { .. } => "create_directory",
+            #[cfg(unix)]
+            Self::SetDirectoryPermissions { .. } => "set_directory_permissions",
+            Self::Open { .. } => "open",
+            Self::Engine { .. } => "engine",
+            Self::InvalidDocumentKey(_) => "invalid_document_key",
+            Self::InvalidDocumentVersion => "invalid_document_version",
+            Self::DocumentTooLarge { .. } => "document_too_large",
+            Self::InvalidStoredDocument => "invalid_stored_document",
+        }
+    }
+}
+
 impl fmt::Display for DatabaseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

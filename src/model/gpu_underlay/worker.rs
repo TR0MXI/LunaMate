@@ -12,7 +12,6 @@ use async_channel::{Sender as AsyncSender, TrySendError};
 use futures::executor::block_on;
 use gpui_wgpu::wgpu;
 use parking_lot::Mutex;
-use rust_i18n::t;
 
 use crate::{
     config::{CONFIG, FrameRate},
@@ -26,7 +25,8 @@ use super::super::{
 };
 
 use super::{
-    GpuUnderlayEvent, GpuUnderlaySize, LatestFrameSlot, LoadRequest, PresentedFrame, WorkerMailbox,
+    GpuUnavailableKind, GpuUnderlayEvent, GpuUnderlaySize, LatestFrameSlot, LoadRequest,
+    PresentedFrame, WorkerMailbox,
 };
 
 const SURFACE_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(16);
@@ -160,17 +160,9 @@ impl GpuSurface {
         let device_lost = Arc::new(AtomicBool::new(false));
         let lost_flag = device_lost.clone();
         let lost_wake = mailbox.clone();
-        device.set_device_lost_callback(move |reason, message| {
+        device.set_device_lost_callback(move |_, _| {
             lost_flag.store(true, Ordering::Release);
             lost_wake.wake();
-            log::error!(
-                "{}",
-                t!(
-                    "log.gpu_device_lost",
-                    reason = format!("{reason:?}"),
-                    message = message
-                )
-            );
         });
         let device_error = Arc::new(Mutex::new(None));
         let uncaptured_error = device_error.clone();
@@ -424,14 +416,26 @@ pub(super) fn run(
     let Some(mut request) = wait_for_replacement(&mailbox) else {
         return;
     };
+    let initialization_started = Instant::now();
     let mut surface = match GpuSurface::new(factory, request.size, mailbox.clone()) {
         Ok(Some(surface)) => surface,
         Ok(None) => return,
-        Err(error) => {
-            let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
+        Err(_) => {
+            let _ = events.send_blocking(GpuUnderlayEvent::Unavailable {
+                kind: GpuUnavailableKind::Initialization,
+            });
             return;
         }
     };
+    log::info!(
+        "Live2D GPU surface 已就绪：backend={:?}, present_mode={:?}, alpha_mode={:?}, width={}, height={}, elapsed_ms={}",
+        surface._adapter.get_info().backend,
+        surface.config.present_mode,
+        surface.alpha_mode,
+        surface.config.width,
+        surface.config.height,
+        initialization_started.elapsed().as_millis()
+    );
 
     'worker: loop {
         match wait_while_paused(&mailbox) {
@@ -442,8 +446,10 @@ pub(super) fn run(
             }
             PauseWaitResult::Shutdown => return,
         }
-        if let Err(error) = surface.resize(request.size) {
-            let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
+        if surface.resize(request.size).is_err() {
+            let _ = events.send_blocking(GpuUnderlayEvent::Unavailable {
+                kind: GpuUnavailableKind::Resize,
+            });
             return;
         }
         match clear_surface_until_ready(&mut surface, &mailbox) {
@@ -454,8 +460,10 @@ pub(super) fn run(
             }
             Ok(ClearSurfaceResult::Paused) => continue,
             Ok(ClearSurfaceResult::Shutdown) => return,
-            Err(error) => {
-                let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
+            Err(_) => {
+                let _ = events.send_blocking(GpuUnderlayEvent::Unavailable {
+                    kind: GpuUnavailableKind::SurfaceClear,
+                });
                 return;
             }
         }
@@ -572,8 +580,10 @@ pub(super) fn run(
                     request = replacement;
                     continue 'worker;
                 }
-                Err(GpuFrameError::Surface(error)) => {
-                    let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
+                Err(GpuFrameError::Surface(_)) => {
+                    let _ = events.send_blocking(GpuUnderlayEvent::Unavailable {
+                        kind: GpuUnavailableKind::Surface,
+                    });
                     return;
                 }
             }
@@ -618,8 +628,10 @@ pub(super) fn run(
                     PauseWaitResult::Shutdown => break 'worker,
                 }
             }
-            if let Err(error) = sync_frame_rate(&mut surface, &mut pacer) {
-                let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
+            if sync_frame_rate(&mut surface, &mut pacer).is_err() {
+                let _ = events.send_blocking(GpuUnderlayEvent::Unavailable {
+                    kind: GpuUnavailableKind::FrameRateSync,
+                });
                 break 'worker;
             }
             let should_render = needs_next_frame || render_requested;
@@ -643,8 +655,10 @@ pub(super) fn run(
                     continue;
                 }
             }
-            if let Err(error) = sync_frame_rate(&mut surface, &mut pacer) {
-                let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
+            if sync_frame_rate(&mut surface, &mut pacer).is_err() {
+                let _ = events.send_blocking(GpuUnderlayEvent::Unavailable {
+                    kind: GpuUnavailableKind::FrameRateSync,
+                });
                 break 'worker;
             }
             render_requested |= update.woken;
@@ -717,9 +731,9 @@ pub(super) fn run(
                         }
                         Ok(ClearSurfaceResult::Paused) => {}
                         Ok(ClearSurfaceResult::Shutdown) => break 'worker,
-                        Err(surface_error) => {
+                        Err(_) => {
                             let _ = events.send_blocking(GpuUnderlayEvent::Unavailable {
-                                error: surface_error,
+                                kind: GpuUnavailableKind::SurfaceClear,
                             });
                             break 'worker;
                         }
@@ -735,8 +749,10 @@ pub(super) fn run(
                     request = replacement;
                     continue 'worker;
                 }
-                Err(GpuFrameError::Surface(error)) => {
-                    let _ = events.send_blocking(GpuUnderlayEvent::Unavailable { error });
+                Err(GpuFrameError::Surface(_)) => {
+                    let _ = events.send_blocking(GpuUnderlayEvent::Unavailable {
+                        kind: GpuUnavailableKind::Surface,
+                    });
                     break 'worker;
                 }
             }

@@ -25,6 +25,14 @@ fn main() {
     if let Err(error) = logging::apply_current_settings() {
         log::error!("{}", t!("log.apply_settings_failed", error = error));
     }
+    config::CONFIG.log_startup_summary();
+    log::info!(
+        "LunaMate 启动：version={}, os={}, arch={}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     app::run();
+    log::info!("LunaMate 进程退出");
     logging::shutdown();
 }

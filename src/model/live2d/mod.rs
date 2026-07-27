@@ -9,17 +9,15 @@ use std::{error::Error, fmt, path::Path, time::Duration};
 #[cfg(test)]
 use std::sync::Arc;
 
-#[cfg(test)]
-use gpui::RenderImage;
-use mocari::assets::{AssetLoadError, RuntimeModel, load_model_runtime};
-use rust_i18n::t;
-
 use super::{
     animation::{self, AnimationController, MotionPlayResult},
     capabilities::{AuxiliaryResourceBudget, ModelCapabilities, ModelLoadDiagnostics},
     expression::{self, ExpressionController},
     interaction::{ModelCommand, RenderedModelFrame, render_hit_areas},
 };
+#[cfg(test)]
+use gpui::RenderImage;
+use mocari::assets::{AssetLoadError, RuntimeModel, load_model_runtime};
 
 pub(crate) use self::gpu_renderer::{GpuModelRenderer, SurfaceAlphaMode};
 use self::renderer::{CpuRenderer, ModelTransform};
@@ -239,12 +237,6 @@ impl AnimatedModel {
             .map_err(|_| ModelLoadError::Cancelled)?;
         diagnostics.extend(animation_diagnostics);
         diagnostics.extend(expression_diagnostics);
-        for diagnostic in diagnostics.entries() {
-            log::warn!(
-                "{}",
-                t!("log.model_capability_warning", diagnostic = diagnostic)
-            );
-        }
 
         Ok(Self {
             model,

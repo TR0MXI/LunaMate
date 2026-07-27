@@ -12,7 +12,7 @@ mod view;
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use async_channel::{Receiver, Sender};
 use gpui::{App, AppContext, Entity, Window};
@@ -110,6 +110,7 @@ pub(crate) struct Agent {
 impl Agent {
     /// 从全局配置读取供应商与人格设置，并按当前人格从数据库恢复短期上下文。
     pub(crate) async fn load(database: Result<Arc<Database>, DatabaseError>) -> Self {
+        let started = Instant::now();
         let settings = CONFIG.llm_settings();
         let persona = CONFIG.persona_settings();
         // 人格配置在解析阶段保证非空，这里的兜底只覆盖理论上的空列表。
@@ -124,17 +125,33 @@ impl Agent {
                     Ok((session, store)) => {
                         (session, store, AgentMemoryAccess::new(Some(database)), None)
                     }
-                    Err(error) => Self::without_persistence(error.to_string()),
+                    Err(error) => {
+                        log::error!(
+                            "恢复聊天会话失败，持久化已禁用：error_kind={}",
+                            error.diagnostic_kind()
+                        );
+                        Self::without_persistence(error.to_string())
+                    }
                 }
             }
             Err(error) => {
                 log::error!(
                     "{}",
-                    t!("log.database_init_failed", error = error.to_string())
+                    t!("log.database_init_failed", error = error.diagnostic_kind())
                 );
                 Self::without_persistence(error.to_string())
             }
         };
+        let usage = session.usage();
+        log::info!(
+            "Agent 已就绪：providers={}, personas={}, persistence_available={}, restored_messages={}, restored_bytes={}, elapsed_ms={}",
+            settings.models.len(),
+            persona.personas.len(),
+            store.is_available(),
+            usage.messages,
+            usage.bytes,
+            started.elapsed().as_millis()
+        );
         Self {
             settings,
             persona,

@@ -171,6 +171,7 @@ pub(crate) struct DesktopPetView {
     gpu_event_task: Option<Task<()>>,
     gpu_shutdown_pending: bool,
     gpu_shutdown_restart_cpu: bool,
+    cpu_fallback_pending: bool,
     close_after_gpu_shutdown: bool,
     quitting: bool,
     gpu_shutdown_completion: Option<Arc<GpuShutdownCompletion>>,
@@ -260,11 +261,18 @@ impl DesktopPetView {
         let look_target = Arc::new(Mutex::new([0.0, 0.0]));
         let global_cursor_tracker = GlobalCursorTracker::new(window);
         let gpu_underlay_size = gpu_underlay_size_for_window(window);
-        let gpu_underlay = match GpuUnderlay::attach(window) {
-            Ok(underlay) => underlay,
+        let (gpu_underlay, cpu_fallback_pending) = match GpuUnderlay::attach(window) {
+            Ok(Some(underlay)) => {
+                log::info!("Live2D GPU underlay attachment 已建立");
+                (Some(underlay), false)
+            }
+            Ok(None) => {
+                log::info!("当前窗口后端不支持 Live2D GPU underlay，使用 CPU renderer");
+                (None, false)
+            }
             Err(error) => {
                 log::warn!("{}", t!("log.gpu_underlay_init_failed", error = error));
-                None
+                (None, true)
             }
         };
         let gpu_events = gpu_underlay.as_ref().map(GpuUnderlay::events);
@@ -429,6 +437,7 @@ impl DesktopPetView {
             gpu_event_task: None,
             gpu_shutdown_pending: false,
             gpu_shutdown_restart_cpu: false,
+            cpu_fallback_pending,
             close_after_gpu_shutdown: false,
             quitting: false,
             gpu_shutdown_completion: None,
@@ -487,7 +496,7 @@ impl DesktopPetView {
                         Err(_) => {
                             let _ = this.update(cx, |this, cx| {
                                 if this.gpu_underlay.is_some() {
-                                    log::error!("{}", t!("log.gpu_worker_exited"));
+                                    log::warn!("{}", t!("log.gpu_worker_exited"));
                                     this.fallback_to_cpu(cx);
                                 }
                             });
@@ -846,7 +855,20 @@ impl DesktopPetView {
                 if self.desktop_pet_visible {
                     self.frame = Some(Arc::new(frame));
                 }
+                let diagnostic_count = diagnostics.entries().len();
+                let outfit_count = capabilities.outfits().len();
+                let motion_count = capabilities.motions().len();
+                let expression_count = capabilities.expressions().len();
                 self.model_state = ModelLoadState::ready(diagnostics);
+                log::info!(
+                    "Live2D 模型已就绪：generation={generation}, renderer=gpu, outfits={outfit_count}, motions={motion_count}, expressions={expression_count}, diagnostics={diagnostic_count}"
+                );
+                if diagnostic_count > 0 {
+                    log::warn!(
+                        "Live2D 模型存在非致命能力问题：generation={generation}, diagnostics={diagnostic_count}"
+                    );
+                }
+                self.cpu_fallback_pending = false;
                 self.sync_cursor_tracking_task(cx);
                 self.config.update(cx, |config, cx| {
                     config.set_preview_capabilities(capabilities, cx);
@@ -884,6 +906,9 @@ impl DesktopPetView {
                     .as_deref()
                     .map(model_display_name)
                     .unwrap_or_else(|| t!("model_state.unnamed").to_string());
+                log::warn!(
+                    "Live2D 模型加载失败：generation={generation}, renderer=gpu, stage=model_load"
+                );
                 self.model_state = ModelLoadState::Failed(
                     t!("model_state.load_failed", name = model_name, error = error).to_string(),
                 );
@@ -900,23 +925,19 @@ impl DesktopPetView {
                 if self.model_generation != generation || self.gpu_underlay.is_none() {
                     return true;
                 }
-                let model_name = self
-                    .selected_model
-                    .as_deref()
-                    .map(model_display_name)
-                    .unwrap_or_else(|| t!("model_state.unnamed").to_string());
-                let message = t!(
-                    "model_state.render_failed",
-                    name = model_name,
-                    error = error
-                )
-                .to_string();
-                log::error!("{}", t!("log.gpu_model_cpu_fallback", message = message));
+                let _ = error;
+                log::warn!(
+                    "Live2D GPU 模型渲染失败，正在回退 CPU：generation={generation}, stage=model_render"
+                );
                 self.fallback_to_cpu(cx);
                 return false;
             }
-            GpuUnderlayEvent::Unavailable { error } => {
-                log::error!("{}", t!("log.gpu_underlay_cpu_fallback", error = error));
+            GpuUnderlayEvent::Unavailable { kind } => {
+                log::warn!(
+                    "Live2D GPU underlay 不可用，正在回退 CPU：generation={}, stage=underlay_runtime, reason={}",
+                    self.model_generation,
+                    kind.id()
+                );
                 self.fallback_to_cpu(cx);
                 return false;
             }
@@ -925,6 +946,7 @@ impl DesktopPetView {
     }
 
     fn fallback_to_cpu(&mut self, cx: &mut Context<Self>) {
+        self.cpu_fallback_pending = true;
         if let Some(cancellation) = self.model_cancellation.take() {
             cancellation.cancel();
         }
@@ -946,6 +968,15 @@ impl DesktopPetView {
 
     /// 请求关闭窗口；存在 GPU worker 时先异步回收 surface，再移除原生窗口。
     pub(crate) fn request_window_close(&mut self, cx: &mut Context<Self>) -> bool {
+        log::info!(
+            "桌宠窗口收到关闭请求：generation={}, renderer={}",
+            self.model_generation,
+            if self.gpu_underlay.is_some() {
+                "gpu"
+            } else {
+                "cpu"
+            }
+        );
         self.set_push_to_talk(false);
         if let Some(voice) = &self.voice {
             voice.request_shutdown();
@@ -1023,6 +1054,7 @@ impl DesktopPetView {
             }
             return;
         };
+        log::debug!("正在停止 Live2D GPU worker：generation={generation}");
         let worker = underlay.request_shutdown();
         let completion = Arc::new(GpuShutdownCompletion::default());
         self.gpu_shutdown_pending = true;
@@ -1047,6 +1079,7 @@ impl DesktopPetView {
             let _ = this.update_in(cx, |this, window, cx| {
                 this.gpu_shutdown_pending = false;
                 this.gpu_shutdown_completion = None;
+                log::debug!("Live2D GPU worker 已完成回收：generation={generation}");
                 if this.close_after_gpu_shutdown {
                     window.remove_window();
                 } else if this.gpu_shutdown_restart_cpu && this.model_generation == generation {
@@ -1125,6 +1158,10 @@ impl DesktopPetView {
         }
 
         self.desktop_pet_visible = visible;
+        log::info!(
+            "桌宠窗口显隐已更新：visible={visible}, generation={}",
+            self.model_generation
+        );
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
         let voice_settings = CONFIG.voice_settings();
         self.apply_voice_settings(&voice_settings, cx);
@@ -1196,6 +1233,11 @@ impl DesktopPetView {
             && (f32::from(viewport.height) - height).abs() < 0.5;
         // 合成器可能钳制或拒绝请求的尺寸；重试有上限，否则每帧都会重新调用 resize。
         if reached_target || self.pending_model_window_size_attempts >= MAX_WINDOW_RESIZE_ATTEMPTS {
+            if !reached_target {
+                log::warn!(
+                    "窗口后端未采用请求的桌宠尺寸，使用实际 viewport：attempts={MAX_WINDOW_RESIZE_ATTEMPTS}"
+                );
+            }
             let (width, height) = if reached_target {
                 (width, height)
             } else {
@@ -1309,7 +1351,10 @@ impl DesktopPetView {
             },
         );
         match result {
-            Ok(handle) => self.config_window = Some(handle.into()),
+            Ok(handle) => {
+                self.config_window = Some(handle.into());
+                log::info!("设置窗口已打开");
+            }
             Err(error) => log::error!("{}", t!("log.settings_window_create_failed", error = error)),
         }
     }

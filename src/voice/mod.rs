@@ -153,6 +153,10 @@ impl VoiceController {
         let activity = Arc::new(VoiceActivity::default());
         let revision = Arc::new(AtomicU64::new(1));
         let completion = std::sync::mpsc::sync_channel(1);
+        let initial_mode = settings.mode.id();
+        let whisper_configured = settings.whisper_model.is_some();
+        let vad_configured = settings.vad_model.is_some();
+        let gpu_requested = settings.use_gpu;
         let worker = worker::spawn(
             settings,
             command_receiver,
@@ -162,6 +166,9 @@ impl VoiceController {
             revision.clone(),
             completion.0,
         )?;
+        log::info!(
+            "语音控制端已创建：revision=1, mode={initial_mode}, whisper_configured={whisper_configured}, vad_configured={vad_configured}, gpu_requested={gpu_requested}"
+        );
         Ok((
             Self {
                 commands: commands.clone(),
@@ -232,11 +239,36 @@ impl VoiceShutdown {
     /// 请求停止并在给定上限内等待；超时会分离线程而不是卡住进程收尾。
     pub(crate) fn shutdown(mut self, timeout: Duration) -> bool {
         let _ = self.commands.send_blocking(VoiceCommand::Shutdown);
-        let completed = self.completion.recv_timeout(timeout).is_ok();
-        if completed && let Some(worker) = self.worker.take() {
-            return worker.join().is_ok();
+        match self.completion.recv_timeout(timeout) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                log::warn!(
+                    "等待语音工作线程退出超时：timeout_ms={}",
+                    timeout.as_millis()
+                );
+                return false;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                if self
+                    .worker
+                    .take()
+                    .is_some_and(|worker| worker.join().is_err())
+                {
+                    log::error!("语音工作线程在退出时发生 panic");
+                } else {
+                    log::error!("语音工作线程未报告完成便关闭了完成通道");
+                }
+                return false;
+            }
         }
-        false
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            log::error!("语音工作线程在退出时发生 panic");
+            return false;
+        }
+        log::info!("语音服务已停止");
+        true
     }
 }
 

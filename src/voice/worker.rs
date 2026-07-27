@@ -45,6 +45,7 @@ pub(super) fn spawn(
                 .name("lunamate-whisper".to_owned())
                 .spawn(move || transcribe::run(asr_queue, asr_commands));
             let Ok(asr_worker) = asr_worker else {
+                log::error!("无法启动 Whisper 工作线程");
                 publish_error(
                     &events,
                     &activity,
@@ -54,6 +55,7 @@ pub(super) fn spawn(
                 let _ = completion.try_send(());
                 return;
             };
+            log::info!("语音与 Whisper 工作线程已启动");
             let mut worker = Worker::new(
                 settings,
                 commands,
@@ -66,7 +68,9 @@ pub(super) fn spawn(
             worker.configure_current(1);
             worker.run();
             worker.transcription_queue.shutdown();
-            let _ = asr_worker.join();
+            if asr_worker.join().is_err() {
+                log::error!("Whisper 工作线程在退出时发生 panic");
+            }
             let _ = completion.try_send(());
         })
         .map_err(|error| format!("无法启动语音工作线程：{error}"))
@@ -172,6 +176,7 @@ impl Worker {
         self.transcription_queue.cancel_pending();
         self.vad = None;
         self.publish_phase(VoicePhase::Off);
+        log::debug!("语音 worker 已完成运行时清理：revision={}", self.revision);
     }
 
     fn configure_current(&mut self, revision: u64) {
@@ -214,6 +219,13 @@ impl Worker {
                 self.publish_phase(VoicePhase::Listening);
             }
         }
+        log::info!(
+            "语音配置已生效：revision={revision}, mode={}, whisper_configured={}, vad_configured={}, gpu_requested={}",
+            self.settings.mode.id(),
+            self.settings.whisper_model.is_some(),
+            self.settings.vad_model.is_some(),
+            self.settings.use_gpu
+        );
     }
 
     fn prepare_auto_vad(&mut self) -> Result<(), String> {
@@ -240,11 +252,21 @@ impl Worker {
             let capture = Capture::start(self.revision, capture_id, self.command_sender.clone())?;
             self.active_capture_id = Some(capture_id);
             self.capture = Some(capture);
+            log::debug!(
+                "麦克风采集已启动：revision={}, capture_id={capture_id}",
+                self.revision
+            );
         }
         Ok(())
     }
 
     fn stop_capture(&mut self) -> Option<Capture> {
+        if let Some(capture_id) = self.active_capture_id {
+            log::debug!(
+                "麦克风采集已停止：revision={}, capture_id={capture_id}",
+                self.revision
+            );
+        }
         self.active_capture_id = None;
         self.capture.take()
     }
@@ -371,6 +393,11 @@ impl Worker {
         self.next_utterance_id = self.next_utterance_id.wrapping_add(1).max(1);
         let utterance_id = self.next_utterance_id;
         self.active_utterance = Some(utterance_id);
+        log::debug!(
+            "语音句段已开始：revision={}, utterance_id={utterance_id}, mode={}",
+            self.revision,
+            self.settings.mode.id()
+        );
         self.publish_phase(VoicePhase::Recording);
         self.publish_event(VoiceEvent::SpeechStarted {
             revision: self.revision,
@@ -426,6 +453,12 @@ impl Worker {
         self.transcription_pending = true;
         self.transcription_utterance = Some(utterance_id);
         self.publish_phase(VoicePhase::Transcribing);
+        log::debug!(
+            "语音转写已派发：revision={}, utterance_id={utterance_id}, samples={}, duration_ms={}",
+            self.revision,
+            samples.len(),
+            samples.len().saturating_mul(1_000) / 16_000
+        );
         let job = TranscriptionJob {
             revision: self.revision,
             utterance_id,
@@ -453,6 +486,12 @@ impl Worker {
         self.transcription_utterance = None;
         match result.result {
             Ok(text) => {
+                log::info!(
+                    "语音转写已完成：revision={}, utterance_id={}, transcript_bytes={}",
+                    self.revision,
+                    result.utterance_id,
+                    text.len()
+                );
                 self.publish_event(VoiceEvent::TranscriptReady {
                     revision: self.revision,
                     utterance_id: result.utterance_id,
@@ -460,6 +499,11 @@ impl Worker {
                 });
             }
             Err(error) => {
+                log::warn!(
+                    "语音转写失败：revision={}, utterance_id={}",
+                    self.revision,
+                    result.utterance_id
+                );
                 self.publish_event(VoiceEvent::Error {
                     revision: self.revision,
                     message: error,
@@ -512,6 +556,13 @@ impl Worker {
     }
 
     fn fail(&mut self, message: String) {
+        log::warn!(
+            "语音管线进入错误状态：revision={}, mode={}, active_utterance={}, transcription_pending={}",
+            self.revision,
+            self.settings.mode.id(),
+            self.active_utterance.is_some(),
+            self.transcription_pending
+        );
         self.stop_capture();
         self.vad = None;
         self.manual_samples = None;
@@ -526,6 +577,11 @@ impl Worker {
     }
 
     fn handle_audio_discontinuity(&mut self) {
+        log::warn!(
+            "麦克风音频出现不连续，本段录音已取消：revision={}, capture_id={}",
+            self.revision,
+            self.active_capture_id.unwrap_or(0)
+        );
         self.normalized.clear();
         self.endpoint.reset();
         if let Some(vad) = &mut self.vad {

@@ -54,8 +54,14 @@ pub(crate) fn atomic_replace(
     let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary_path = temporary_path(path, caller_nonce, sequence);
     let result = write_and_replace(&temporary_path, path, contents);
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary_path);
+    if result.is_err()
+        && let Err(error) = fs::remove_file(&temporary_path)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        log::warn!(
+            "原子写入失败后无法清理临时文件：target_role=config, error_kind={:?}",
+            error.kind()
+        );
     }
     result
 }

@@ -225,6 +225,21 @@ pub(super) enum ChatStoreError {
     Unavailable,
 }
 
+impl ChatStoreError {
+    /// 返回不会包含会话内容、人格键或数据库路径的稳定分类。
+    pub(super) const fn diagnostic_kind(&self) -> &'static str {
+        match self {
+            Self::Format(_) => "format",
+            Self::Serialize(_) => "serialize",
+            Self::TooLarge => "too_large",
+            Self::UnsupportedDocumentVersion(_) => "unsupported_version",
+            Self::Session(_) => "invalid_session",
+            Self::Database(error) => error.diagnostic_kind(),
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
 impl fmt::Display for ChatStoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

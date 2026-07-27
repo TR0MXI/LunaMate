@@ -94,6 +94,7 @@ pub(crate) struct AgentView {
 struct ActiveRequestAbort {
     response_id: ResponseId,
     handle: AbortHandle,
+    started_at: Instant,
 }
 
 struct PendingVoice {
@@ -260,8 +261,8 @@ impl AgentView {
         cx.on_release(|this, cx| {
             let shutdown = this.shutdown_snapshot();
             Tokio::spawn(cx, async move {
-                if let Err(error) = shutdown.persist().await {
-                    log::error!("{}", t!("log.chat_close_save_failed", error = error));
+                if shutdown.persist().await.is_err() {
+                    log::error!("聊天视图关闭时保存会话失败：error_kind=persist");
                 }
             })
             .detach();
@@ -419,18 +420,25 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) {
         self.pending_voice = None;
-        self.cancel_network_request();
+        self.cancel_network_request("persona_switch");
         self.session.interrupt_active_response();
         self.persist(true, cx);
 
         self.persona_swap_revision = self.persona_swap_revision.wrapping_add(1).max(1);
         let revision = self.persona_swap_revision;
+        log::info!(
+            "开始切换 Agent 人格上下文：revision={revision}, persistence_available={}",
+            self.memory.database().is_some()
+        );
         self.active_persona = next_persona.clone();
         self.active_limits = next_limits;
         let Some(database) = self.memory.database() else {
             // 数据库不可用时无法恢复上下文；换入一个空会话仍然优于继续沿用旧人格的记忆。
             self.session = ChatSession::new(next_limits).unwrap_or_default();
             self.persona_swap_task = None;
+            log::info!(
+                "Agent 人格上下文切换完成：revision={revision}, persistence_available=false, restored_messages=0"
+            );
             cx.notify();
             return;
         };
@@ -445,26 +453,42 @@ impl AgentView {
             let _ = this.update(cx, |this, cx| {
                 // 换入期间可能又切换了一次人格；只有最新一次请求可以覆盖会话。
                 if this.persona_swap_revision != revision {
+                    log::debug!("丢弃迟到的人格上下文切换结果：revision={revision}");
                     return;
                 }
                 this.persona_swap_task = None;
                 match loaded {
                     Ok(Ok((session, store))) => {
+                        let restored_messages = session.messages().len();
                         this.session = session;
                         this.persist_revision = store.latest_revision();
                         this.shutdown_revision = None;
                         this.store = store;
                         this.reply_message_id = None;
                         this.status = None;
+                        log::info!(
+                            "Agent 人格上下文切换完成：revision={revision}, persistence_available=true, restored_messages={restored_messages}"
+                        );
                     }
-                    Ok(Err(error)) => this.show_status(
-                        t!("chat.persistence_unavailable", error = error).to_string(),
-                        cx,
-                    ),
-                    Err(error) => this.show_status(
-                        t!("chat.task_ended", kind = join_error_kind(&error)).to_string(),
-                        cx,
-                    ),
+                    Ok(Err(error)) => {
+                        log::error!(
+                            "Agent 人格上下文切换失败：revision={revision}, error_kind=store_load"
+                        );
+                        this.show_status(
+                            t!("chat.persistence_unavailable", error = error).to_string(),
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        log::error!(
+                            "Agent 人格上下文切换任务异常结束：revision={revision}, error_kind={}",
+                            join_error_kind(&error)
+                        );
+                        this.show_status(
+                            t!("chat.task_ended", kind = join_error_kind(&error)).to_string(),
+                            cx,
+                        );
+                    }
                 }
                 cx.notify();
             });
@@ -479,11 +503,12 @@ impl AgentView {
     pub(crate) fn clear_persona_context(&mut self, persona_id: &str, cx: &mut Context<Self>) {
         if persona_id == self.active_persona {
             self.pending_voice = None;
-            self.cancel_network_request();
+            self.cancel_network_request("context_clear");
             self.session.clear();
             self.reply_message_id = None;
             self.status = None;
             self.persist(true, cx);
+            log::info!("当前 Agent 人格的短期上下文已在内存清除，持久化任务已提交");
             cx.notify();
             return;
         }
@@ -492,11 +517,12 @@ impl AgentView {
         };
         let persona_id = persona_id.to_owned();
         Tokio::spawn(cx, async move {
-            if let Err(error) = super::store::delete_persona_session(&database, &persona_id).await {
-                log::error!(
-                    "{}",
-                    t!("log.chat_close_save_failed", error = error.to_string())
-                );
+            match super::store::delete_persona_session(&database, &persona_id).await {
+                Ok(()) => log::info!("非活动 Agent 人格的短期上下文已清除"),
+                Err(error) => log::error!(
+                    "清除非活动 Agent 人格的短期上下文失败：error_kind={}",
+                    error.diagnostic_kind()
+                ),
             }
         })
         .detach();
@@ -578,7 +604,7 @@ impl AgentView {
             persona_settings,
             language,
         });
-        self.cancel_network_request();
+        self.cancel_network_request("voice_interruption");
         if let Some(response_id) = self.session.active_response_id()
             && self.session.interrupt_response_by_voice(response_id)
         {
@@ -662,7 +688,7 @@ impl AgentView {
     /// 终止活动请求并返回退出流程必须等待写入的最后快照。
     pub(crate) fn shutdown_snapshot(&mut self) -> AgentShutdown {
         self.pending_voice = None;
-        self.cancel_network_request();
+        self.cancel_network_request("shutdown");
         self.session.interrupt_active_response();
         let revision = match self.shutdown_revision {
             Some(revision) => revision,
@@ -796,6 +822,8 @@ impl AgentView {
             self.show_status(t!("chat.configure_model").to_string(), cx);
             return false;
         };
+        let has_image = image.is_some();
+        let provider = model.provider.id();
         let started = match self.session.start_turn_with_image(text, image) {
             Ok(started) => started,
             Err(error) => {
@@ -805,6 +833,7 @@ impl AgentView {
         };
 
         let response_id = started.response_id;
+        let context_messages = started.context.len();
         let request = ChatServiceRequest {
             model,
             system_prompt: self.active_system_prompt(),
@@ -815,7 +844,9 @@ impl AgentView {
             outfit_revision: self.outfit_revision,
             language,
         };
-        self.cancel_network_request();
+        let screenshot_tool = request.screenshot_permission_revision.is_some();
+        let outfit_tool = request.allow_agent_outfit_change && !request.outfits.is_empty();
+        self.cancel_network_request("request_replaced");
         let (sender, mut receiver) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let network_abort = abort_handle.clone();
@@ -826,7 +857,17 @@ impl AgentView {
         self.request_abort = Some(ActiveRequestAbort {
             response_id,
             handle: abort_handle,
+            started_at: Instant::now(),
         });
+        log::info!(
+            "Agent 请求已开始：response_id={}, provider={}, context_messages={}, has_image={}, screenshot_tool={}, outfit_tool={}",
+            response_id.get(),
+            provider,
+            context_messages,
+            has_image,
+            screenshot_tool,
+            outfit_tool
+        );
         self.status = None;
         self.reply_message_id = self.session.messages().back().map(ChatMessage::id);
         self.reveal_reply(cx);
@@ -861,13 +902,30 @@ impl AgentView {
 
             let network_result = network_task.await;
             let _ = this.update(cx, |this, cx| {
+                let elapsed_ms = this.request_elapsed_ms(response_id);
                 this.clear_request_abort(response_id);
-                let failure = match network_result {
-                    Ok(Ok(())) => t!("chat.stream_ended").to_string(),
+                let (failure, task_failed) = match network_result {
+                    Ok(Ok(())) => (t!("chat.stream_ended").to_string(), false),
                     Ok(Err(_)) => return,
-                    Err(error) => t!("chat.task_ended", kind = join_error_kind(&error)).to_string(),
+                    Err(error) => (
+                        t!("chat.task_ended", kind = join_error_kind(&error)).to_string(),
+                        true,
+                    ),
                 };
                 if this.session.fail_response(response_id, failure.clone()) {
+                    if task_failed {
+                        log::error!(
+                            "Agent 请求任务异常结束：response_id={}, elapsed_ms={}",
+                            response_id.get(),
+                            elapsed_ms
+                        );
+                    } else {
+                        log::warn!(
+                            "Agent 流在终态事件前结束：response_id={}, elapsed_ms={}",
+                            response_id.get(),
+                            elapsed_ms
+                        );
+                    }
                     this.status = Some(failure);
                     this.persist(true, cx);
                     this.messages_scroll.scroll_to_bottom();
@@ -891,6 +949,13 @@ impl AgentView {
         Some(match event {
             ChatStreamEvent::Delta(chunk) => {
                 if self.session.append_response(response_id, &chunk).is_err() {
+                    let elapsed_ms = self.request_elapsed_ms(response_id);
+                    log::warn!(
+                        "Agent 响应超过本地限制：response_id={}, elapsed_ms={}",
+                        response_id.get(),
+                        elapsed_ms
+                    );
+                    self.clear_request_abort(response_id);
                     // 回退状态与会话状态必须一致；`reply_display` 会优先展示消息本身。
                     let failure = t!("chat.reply_too_large").to_string();
                     self.session.fail_response(response_id, failure.clone());
@@ -912,12 +977,26 @@ impl AgentView {
                 if !self.session.finish_response(response_id) {
                     return None;
                 }
+                let elapsed_ms = self.request_elapsed_ms(response_id);
+                log::info!(
+                    "Agent 请求已完成：response_id={}, elapsed_ms={}",
+                    response_id.get(),
+                    elapsed_ms
+                );
+                self.clear_request_abort(response_id);
                 (false, true)
             }
             ChatStreamEvent::Failed(message) => {
                 if !self.session.fail_response(response_id, message.clone()) {
                     return None;
                 }
+                let elapsed_ms = self.request_elapsed_ms(response_id);
+                log::warn!(
+                    "Agent 请求失败：response_id={}, elapsed_ms={}",
+                    response_id.get(),
+                    elapsed_ms
+                );
+                self.clear_request_abort(response_id);
                 self.status = Some(message);
                 (false, true)
             }
@@ -928,7 +1007,7 @@ impl AgentView {
         if self.shutdown_revision.is_some() {
             return;
         }
-        self.cancel_network_request();
+        self.cancel_network_request("user_stop");
         if let Some(response_id) = self.session.active_response_id() {
             self.session.cancel_response(response_id);
         }
@@ -1077,11 +1156,30 @@ impl AgentView {
         })
     }
 
-    fn cancel_network_request(&mut self) {
+    fn cancel_network_request(&mut self, reason: &'static str) {
         if let Some(request) = self.request_abort.take() {
+            let elapsed_ms = request.started_at.elapsed().as_millis();
+            if matches!(reason, "user_stop" | "voice_interruption" | "context_clear") {
+                log::info!(
+                    "Agent 请求已取消：response_id={}, reason={reason}, elapsed_ms={elapsed_ms}",
+                    request.response_id.get()
+                );
+            } else {
+                log::debug!(
+                    "Agent 请求已取消：response_id={}, reason={reason}, elapsed_ms={elapsed_ms}",
+                    request.response_id.get()
+                );
+            }
             request.handle.abort();
         }
         self.request_task = None;
+    }
+
+    fn request_elapsed_ms(&self, response_id: ResponseId) -> u128 {
+        self.request_abort
+            .as_ref()
+            .filter(|request| request.response_id == response_id)
+            .map_or(0, |request| request.started_at.elapsed().as_millis())
     }
 
     fn clear_request_abort(&mut self, response_id: ResponseId) {
@@ -1109,10 +1207,20 @@ impl AgentView {
         self.persist_revision = self.persist_revision.saturating_add(1).max(1);
         self.last_persist = Instant::now();
         let snapshot = self.session.snapshot(self.persist_revision);
+        let revision = self.persist_revision;
         let store = self.store.clone();
         Tokio::spawn(cx, async move {
-            if let Err(error) = store.save(snapshot).await {
-                log::error!("{}", t!("log.chat_save_failed", error = error));
+            match store.save(snapshot).await {
+                Ok(()) if force => {
+                    log::debug!("聊天会话快照保存任务已完成：revision={revision}");
+                }
+                Ok(()) => {}
+                Err(error) => {
+                    log::error!(
+                        "保存聊天会话失败：revision={revision}, error_kind={}",
+                        error.diagnostic_kind()
+                    );
+                }
             }
         })
         .detach();

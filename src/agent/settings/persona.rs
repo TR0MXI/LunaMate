@@ -399,9 +399,11 @@ impl PersonaSettingsView {
         };
         match pending {
             PendingConfirm::ClearMemory { persona, scope } => {
+                log::info!("用户已确认清除人格记忆：scope={}", scope.id());
                 self.clear_memory(persona, scope, cx);
             }
             PendingConfirm::DeletePersona { persona } => {
+                log::info!("用户已确认删除人格及其记忆");
                 self.delete_persona(persona, window, cx);
             }
         }
@@ -417,6 +419,20 @@ impl PersonaSettingsView {
         self.set_status(t!("persona.memory_clearing").to_string(), cx);
         let track = cx.spawn(async move |this, cx| {
             let result = task.await;
+            match &result {
+                Ok(Ok(())) if matches!(scope, MemoryScope::Medium | MemoryScope::Long) => {
+                    log::info!("人格记忆清除完成：scope={}", scope.id());
+                }
+                Ok(Ok(())) if scope == MemoryScope::Context => {
+                    log::info!("人格短期上下文清除请求已提交");
+                }
+                Ok(Ok(())) => {
+                    log::info!("人格中长期记忆已清除，短期上下文清除请求已提交");
+                }
+                Ok(Err(_)) | Err(_) => {
+                    log::error!("人格记忆清除失败：scope={}", scope.id());
+                }
+            }
             let _ = this.update(cx, |this, cx| {
                 let status = match result {
                     Ok(Ok(())) => t!("persona.memory_cleared").to_string(),

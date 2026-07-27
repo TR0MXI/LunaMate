@@ -119,6 +119,18 @@ pub(crate) enum MemoryScope {
     All,
 }
 
+impl MemoryScope {
+    /// 返回日志和持久化操作使用的稳定范围标识。
+    pub(crate) const fn id(self) -> &'static str {
+        match self {
+            Self::Context => "context",
+            Self::Medium => "medium",
+            Self::Long => "long",
+            Self::All => "all",
+        }
+    }
+}
+
 /// 绑定到单个人格的记忆存储句柄。
 ///
 /// 数据库初始化失败时句柄仍然可用，但所有操作都会返回 [`MemoryError::Unavailable`]，

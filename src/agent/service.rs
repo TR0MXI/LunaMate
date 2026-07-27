@@ -172,6 +172,10 @@ async fn stream_chat(
                 .is_some()
         })
     {
+        log::warn!(
+            "Agent 请求使用了 Provider 不支持的图片能力：provider={}",
+            model.provider.id()
+        );
         let _ = send_terminal_event(
             &mut events,
             ChatStreamEvent::Failed(t!("chat.error.provider_image_unsupported").to_string()),
@@ -237,6 +241,7 @@ async fn stream_chat(
                 calls,
             } => {
                 if used_tools {
+                    log::warn!("Agent 工具循环超过单轮上限，已拒绝继续执行");
                     let _ = send_terminal_event(
                         &mut events,
                         ChatStreamEvent::Failed(t!("chat.error.tool_loop").to_string()),
@@ -316,6 +321,7 @@ async fn stream_with_retry(
     events: &mut mpsc::Sender<ChatStreamEvent>,
 ) -> Result<StreamOutcome, AttemptFailure> {
     let mut retry_delays = RETRY_DELAYS.into_iter();
+    let mut retry_attempt = 0_u8;
     let total_deadline = attempt.total_deadline;
     loop {
         if attempt
@@ -334,6 +340,12 @@ async fn stream_with_retry(
                 if delay >= remaining {
                     return Err(failure);
                 }
+                retry_attempt = retry_attempt.saturating_add(1);
+                log::debug!(
+                    "Provider 请求将在退避后重试：attempt={retry_attempt}, delay_ms={}, remaining_ms={}",
+                    delay.as_millis(),
+                    remaining.as_millis()
+                );
                 sleep(delay).await;
             }
             Err(failure) => return Err(failure),
@@ -1022,6 +1034,7 @@ impl ToolContinuation {
         if self.image.take().is_none() {
             return;
         }
+        log::info!("Agent 截图在上传前因权限撤销而被丢弃");
         for (index, response) in self.responses.iter_mut().enumerate() {
             if response.fn_name.as_deref() == Some(SCREEN_CAPTURE_TOOL) {
                 let content = json!({"status": "error", "code": "permission_revoked"});
@@ -1062,24 +1075,45 @@ async fn execute_tool_calls(
                     match permission_revision
                         .filter(|revision| CONFIG.agent_screenshot_permission_is_current(*revision))
                     {
-                        Some(revision) => match capture_screen(total_deadline, revision).await {
-                            Ok(captured)
-                                if CONFIG.agent_screenshot_permission_is_current(revision) =>
-                            {
-                                let content = json!({
-                                    "status": "ok",
-                                    "image": "attached_in_next_user_message",
-                                    "width": captured.width(),
-                                    "height": captured.height()
-                                });
-                                image = Some(captured);
-                                content
+                        Some(revision) => {
+                            let capture_started = Instant::now();
+                            log::info!("Agent 截图请求已授权执行：permission_revision={revision}");
+                            match capture_screen(total_deadline, revision).await {
+                                Ok(captured)
+                                    if CONFIG.agent_screenshot_permission_is_current(revision) =>
+                                {
+                                    log::info!(
+                                        "Agent 截图已完成：permission_revision={revision}, width={}, height={}, encoded_bytes={}, elapsed_ms={}",
+                                        captured.width(),
+                                        captured.height(),
+                                        captured.bytes().map_or(0, <[u8]>::len),
+                                        capture_started.elapsed().as_millis()
+                                    );
+                                    let content = json!({
+                                        "status": "ok",
+                                        "image": "attached_in_next_user_message",
+                                        "width": captured.width(),
+                                        "height": captured.height()
+                                    });
+                                    image = Some(captured);
+                                    content
+                                }
+                                Ok(_) => {
+                                    log::warn!(
+                                        "Agent 截图完成后权限已撤销：permission_revision={revision}, elapsed_ms={}",
+                                        capture_started.elapsed().as_millis()
+                                    );
+                                    json!({"status": "error", "code": "permission_revoked"})
+                                }
+                                Err(code) => {
+                                    log::warn!(
+                                        "Agent 截图失败：permission_revision={revision}, result={code}, elapsed_ms={}",
+                                        capture_started.elapsed().as_millis()
+                                    );
+                                    json!({"status": "error", "code": code})
+                                }
                             }
-                            Ok(_) => {
-                                json!({"status": "error", "code": "permission_revoked"})
-                            }
-                            Err(code) => json!({"status": "error", "code": code}),
-                        },
+                        }
                         None => json!({"status": "error", "code": "permission_disabled"}),
                     }
                 }
@@ -1137,6 +1171,7 @@ pub(super) async fn request_outfit_change(
     events: &mut mpsc::Sender<ChatStreamEvent>,
 ) -> Result<(), &'static str> {
     let (request, result) = AgentOutfitRequest::channel(outfit, outfit_revision);
+    log::debug!("Agent 换装工具请求已投递：outfit_revision={outfit_revision}");
     match timeout_at(
         total_deadline,
         events.send(ChatStreamEvent::ChangeOutfit(request)),
@@ -1148,8 +1183,14 @@ pub(super) async fn request_outfit_change(
         Err(_) => return Err("change_timeout"),
     }
     match timeout_at(total_deadline, result.recv()).await {
-        Ok(Ok(AgentOutfitResult::Applied)) => Ok(()),
-        Ok(Ok(AgentOutfitResult::Failed)) => Err("change_failed"),
+        Ok(Ok(AgentOutfitResult::Applied)) => {
+            log::debug!("Agent 换装工具请求已完成：outfit_revision={outfit_revision}");
+            Ok(())
+        }
+        Ok(Ok(AgentOutfitResult::Failed)) => {
+            log::warn!("Agent 换装工具请求失败：outfit_revision={outfit_revision}");
+            Err("change_failed")
+        }
         Ok(Err(_)) => Err("view_unavailable"),
         Err(_) => Err("change_timeout"),
     }

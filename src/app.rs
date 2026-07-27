@@ -170,7 +170,14 @@ fn create_system_tray(
     runtime: &tokio::runtime::Handle,
 ) -> Option<(Rc<SystemTray>, Receiver<SystemTrayAction>)> {
     match SystemTray::install(runtime, CONFIG.use_native_tray_menu()) {
-        Ok((tray, actions)) => Some((Rc::new(tray), actions)),
+        Ok((tray, actions)) => {
+            log::info!(
+                "系统托盘控制端已创建：native_menu={}, style_choice_supported={}",
+                tray.uses_native_menu(),
+                SystemTray::supports_menu_style_choice()
+            );
+            Some((Rc::new(tray), actions))
+        }
         Err(error) => {
             log::warn!("{}", t!("log.tray_init_failed", error = error));
             None
@@ -200,6 +207,10 @@ fn listen_for_system_tray_actions(
                         Ok(Ok(())) => {
                             desktop_pet_hidden = next_hidden;
                             tray.set_desktop_pet_hidden(next_hidden);
+                            log::info!(
+                                "托盘操作已完成：action=toggle_desktop_pet, visible={}",
+                                !next_hidden
+                            );
                         }
                         Ok(Err(error)) => {
                             tray.set_desktop_pet_hidden(desktop_pet_hidden);
@@ -209,6 +220,7 @@ fn listen_for_system_tray_actions(
                     }
                 }
                 SystemTrayAction::OpenSettings => {
+                    log::info!("收到托盘操作：action=open_settings");
                     if model_for_tray
                         .update(cx, |model, cx| model.open_config_window(cx))
                         .is_err()
@@ -217,6 +229,7 @@ fn listen_for_system_tray_actions(
                     }
                 }
                 SystemTrayAction::OpenMenu(anchor) => {
+                    log::debug!("收到托盘操作：action=open_menu");
                     if model_for_tray
                         .update(cx, |model, cx| model.toggle_tray_menu(anchor, cx))
                         .is_err()
@@ -225,6 +238,7 @@ fn listen_for_system_tray_actions(
                     }
                 }
                 SystemTrayAction::Quit => {
+                    log::info!("收到托盘操作：action=quit");
                     cx.update(|cx| cx.quit());
                     break;
                 }
@@ -262,6 +276,7 @@ pub(super) fn run() {
             return;
         }
     };
+    log::info!("异步运行时已就绪：worker_threads={ASYNC_WORKER_THREADS}");
     let database = async_runtime.block_on(Database::open_default());
     let agent = async_runtime.block_on(Agent::load(database));
     let agent_memory = agent.memory_access();
@@ -339,6 +354,7 @@ pub(super) fn run() {
                     let final_agent_save_for_quit = final_agent_save.clone();
                     let async_handle_for_quit = async_handle.clone();
                     cx.on_app_quit(move |cx| {
+                        log::info!("应用开始退出，正在提交配置与会话状态");
                         let config_tasks = config_for_quit
                             .update(cx, |config, cx| config.take_pending_write_tasks(cx))
                             .unwrap_or_default();
@@ -427,17 +443,17 @@ pub(super) fn run() {
                     })
                 },
             );
-            if let Err(error) = result {
-                log::error!("{}", t!("log.main_window_create_failed", error = error));
-                cx.quit();
+            match result {
+                Ok(_) => log::info!("桌宠主窗口已创建"),
+                Err(error) => {
+                    log::error!("{}", t!("log.main_window_create_failed", error = error));
+                    cx.quit();
+                }
             }
         });
 
-    if let Some(voice_shutdown) = voice_shutdown
-        && !voice_shutdown.shutdown(VOICE_SHUTDOWN_WAIT_TIMEOUT)
-    {
-        log::warn!("等待语音工作线程退出超时");
-    }
+    let voice_shutdown_completed = voice_shutdown
+        .is_none_or(|voice_shutdown| voice_shutdown.shutdown(VOICE_SHUTDOWN_WAIT_TIMEOUT));
 
     let final_save = final_agent_save.lock().take();
     if let Some(final_save) = final_save {
@@ -456,6 +472,13 @@ pub(super) fn run() {
         });
         if let Err(error) = result {
             log::error!("{}", t!("log.exit_chat_save_failed", error = error));
+        } else {
+            log::debug!("应用退出前的最终会话保存已完成");
         }
+    }
+    if voice_shutdown_completed {
+        log::info!("应用运行时资源已完成回收");
+    } else {
+        log::warn!("应用收尾结束，但语音工作线程未确认退出");
     }
 }

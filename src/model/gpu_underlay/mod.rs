@@ -26,6 +26,30 @@ pub(in crate::model) mod worker;
 
 pub(crate) use crate::platform::UnderlaySize as GpuUnderlaySize;
 
+/// 标识 GPU underlay 永久失效的阶段，供前台在不记录驱动自由文本时诊断回退原因。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GpuUnavailableKind {
+    WorkerPanic,
+    Initialization,
+    Resize,
+    SurfaceClear,
+    FrameRateSync,
+    Surface,
+}
+
+impl GpuUnavailableKind {
+    pub(crate) const fn id(self) -> &'static str {
+        match self {
+            Self::WorkerPanic => "worker_panic",
+            Self::Initialization => "initialization",
+            Self::Resize => "resize",
+            Self::SurfaceClear => "surface_clear",
+            Self::FrameRateSync => "frame_rate_sync",
+            Self::Surface => "surface",
+        }
+    }
+}
+
 /// GPU worker 向 GPUI 发布的 generation 状态。
 pub(crate) enum GpuUnderlayEvent {
     /// 首帧已经成功提交并呈现。
@@ -44,7 +68,7 @@ pub(crate) enum GpuUnderlayEvent {
     /// 模型无法创建或继续使用 GPU renderer，调用方应永久回退 CPU。
     ModelGpuFailed { generation: u64, error: String },
     /// 原生 surface、adapter 或 device 不再可用，调用方应永久回退 CPU。
-    Unavailable { error: String },
+    Unavailable { kind: GpuUnavailableKind },
 }
 
 /// UI 线程持有的 GPU underlay 控制器。
@@ -122,14 +146,17 @@ impl GpuUnderlay {
         let worker = thread::Builder::new()
             .name("lunamate-live2d-gpu".to_owned())
             .spawn(move || {
+                log::info!("Live2D GPU worker 已启动");
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     worker::run(factory, worker_mailbox, event_sender, worker_latest_frame)
                 }));
                 if result.is_err() {
+                    log::error!("Live2D GPU worker 发生内部 panic");
                     let _ = panic_sender.try_send(GpuUnderlayEvent::Unavailable {
-                        error: "Live2D GPU worker 发生内部 panic".to_owned(),
+                        kind: GpuUnavailableKind::WorkerPanic,
                     });
                 }
+                log::info!("Live2D GPU worker 已停止");
             })
             .map_err(|error| format!("无法启动 Live2D GPU worker：{error}"))?;
 

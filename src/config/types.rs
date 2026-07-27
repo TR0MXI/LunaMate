@@ -362,6 +362,18 @@ pub(crate) enum ConfigWriteError {
     },
 }
 
+impl ConfigWriteError {
+    /// 返回适合日志聚合的稳定分类，不暴露配置路径或用户输入。
+    pub(crate) const fn diagnostic_kind(&self) -> &'static str {
+        match self {
+            Self::InvalidValue(_) => "invalid_value",
+            #[cfg(test)]
+            Self::StaleConfigUpdate => "stale_update",
+            Self::Io { .. } => "io",
+        }
+    }
+}
+
 impl fmt::Display for ConfigWriteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

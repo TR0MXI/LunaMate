@@ -534,7 +534,10 @@ mod imp {
             };
             let task = runtime.spawn(async move {
                 let handle = match tray.assume_sni_available(true).spawn().await {
-                    Ok(handle) => handle,
+                    Ok(handle) => {
+                        log::info!("Linux StatusNotifierItem 托盘服务已注册");
+                        handle
+                    }
                     Err(error) => {
                         log::warn!("{}", t!("log.tray_init_failed", error = error.to_string()));
                         return;
@@ -557,6 +560,7 @@ mod imp {
                     }
                 }
                 handle.shutdown().await;
+                log::debug!("Linux StatusNotifierItem 托盘服务已停止");
             });
 
             Ok(Self {

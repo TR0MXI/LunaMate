@@ -7,6 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 use async_channel::Sender;
@@ -109,9 +110,31 @@ pub(super) fn run(queue: Arc<TranscriptionQueue>, voice_commands: Sender<VoiceCo
         if queue.is_cancelled(job.revision) {
             continue;
         }
+        let started = Instant::now();
+        let sample_count = job.samples.len();
         let result = transcriber.transcribe(&job, &queue);
         if queue.is_cancelled(job.revision) {
+            log::debug!(
+                "丢弃已过期的 Whisper 结果：revision={}, utterance_id={}",
+                job.revision,
+                job.utterance_id
+            );
             continue;
+        }
+        match &result {
+            Ok(text) => log::debug!(
+                "Whisper 推理完成：revision={}, utterance_id={}, samples={sample_count}, transcript_bytes={}, elapsed_ms={}",
+                job.revision,
+                job.utterance_id,
+                text.len(),
+                started.elapsed().as_millis()
+            ),
+            Err(_) => log::debug!(
+                "Whisper 推理失败：revision={}, utterance_id={}, samples={sample_count}, elapsed_ms={}",
+                job.revision,
+                job.utterance_id,
+                started.elapsed().as_millis()
+            ),
         }
         let _ = voice_commands.try_send(VoiceCommand::TranscriptionFinished(TranscriptionResult {
             revision: job.revision,
@@ -146,11 +169,15 @@ impl Transcriber {
         let ran_on_gpu = self.loaded_with_gpu;
         match self.run_once(&job.samples, queue, job.revision) {
             Ok(text) => Ok(text),
-            Err(RunError::Inference(gpu_error)) if ran_on_gpu => {
-                log::warn!("Whisper GPU 转写失败，正在回退 CPU：{gpu_error}");
+            Err(RunError::Inference(_)) if ran_on_gpu => {
                 if queue.is_cancelled(job.revision) {
                     return Err("Whisper 转写已取消".to_owned());
                 }
+                log::warn!(
+                    "Whisper GPU 推理失败，正在回退 CPU：revision={}, utterance_id={}, stage=inference",
+                    job.revision,
+                    job.utterance_id
+                );
                 self.context = None;
                 self.loaded_path = None;
                 self.ensure_context(path, false)?;
@@ -174,8 +201,8 @@ impl Transcriber {
         parameters.use_gpu(use_gpu);
         let (context, loaded_with_gpu) = match WhisperContext::new_with_params(path, parameters) {
             Ok(context) => (context, use_gpu),
-            Err(gpu_error) if use_gpu => {
-                log::warn!("Whisper GPU 初始化失败，正在回退 CPU：{gpu_error}");
+            Err(_) if use_gpu => {
+                log::warn!("Whisper GPU 初始化失败，正在回退 CPU：stage=model_init");
                 let mut cpu_parameters = WhisperContextParameters::default();
                 cpu_parameters.use_gpu(false);
                 (
