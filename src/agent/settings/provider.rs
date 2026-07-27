@@ -32,9 +32,12 @@ impl AgentSettingsDraft {
     }
 }
 
-/// 供应商设置成功发布后通知设置窗口和桌宠视图。
+/// 供应商设置写入完成后通知设置窗口；只有 `Saved` 需要刷新桌宠运行时。
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct AgentSettingsEvent;
+pub(crate) enum AgentSettingsEvent {
+    Saved,
+    SaveFinished,
+}
 
 /// 设置窗口中的供应商编辑器。
 pub(crate) struct AgentSettingsView {
@@ -558,14 +561,18 @@ impl AgentSettingsView {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.is_saving = false;
-                let status = match result {
-                    Ok(Some(_)) => {
-                        cx.emit(AgentSettingsEvent);
-                        t!("llm.saved").to_string()
-                    }
-                    Ok(None) => t!("llm.save_replaced").to_string(),
-                    Err(error) => t!("llm.save_failed", error = error.to_string()).to_string(),
+                let (status, event) = match result {
+                    Ok(Some(_)) => (t!("llm.saved").to_string(), AgentSettingsEvent::Saved),
+                    Ok(None) => (
+                        t!("llm.save_replaced").to_string(),
+                        AgentSettingsEvent::SaveFinished,
+                    ),
+                    Err(error) => (
+                        t!("llm.save_failed", error = error.to_string()).to_string(),
+                        AgentSettingsEvent::SaveFinished,
+                    ),
                 };
+                cx.emit(event);
                 this.set_status(status, cx);
             });
         });

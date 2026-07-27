@@ -12,8 +12,8 @@
 LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅提供二进制应用；
 `src/main.rs` 是唯一 crate 入口，不要新增 `src/lib.rs` 或 `[lib]` target。
 
-- UI/窗口、Live2D 运行时与渲染、互动状态、LLM、配置和持久化保持职责边界。Provider
-  细节不得进入 UI，Live2D 层不得发起网络请求。
+- UI/窗口、Live2D 运行时与渲染、互动状态、LLM、语音、配置和持久化保持职责边界。Provider
+  细节不得进入 UI，Live2D 层不得发起网络请求，音频层不得访问 Agent 内部会话或 Provider。
 - 通用 GPUI 视图、主题和窗口布局通过 `src/ui` façade 暴露，Agent 对话、供应商与人格
   设置视图通过 `src/agent` façade 暴露；原生窗口适配、underlay surface attachment
   与对应 `unsafe` 收口在 `src/platform`。可持久化外观类型属于配置域，不得依赖 UI。
@@ -44,6 +44,13 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 - `vendor/mocari` 是第三方源码边界；保留 MIT `LICENSE`、原始 manifest 和
   `LUNAMATE.md`，本地修改限于必要的兼容或安全修复，并同步记录差异。升级相关依赖时
   检查 `[patch.crates-io]` 是否可以移除。
+- Silero VAD 只使用 whisper-rs 公开安全接口和有界滚动上下文，不 vendor 或 patch
+  `whisper-rs-sys`。`raw-api` 只用于转写线程的同步 abort callback；whisper-rs 修复 safe
+  callback 的 trampoline 类型与所有权后，必须删除该 feature 和本地 abort FFI。
+- Whisper 通用构建不暴露 LunaMate GPU feature：macOS 固定包含 Metal，Windows 和 Linux
+  固定包含 Vulkan。CUDA、ROCm 与 Intel SYCL 会直接链接供应商运行库，不得加入通用二进制；
+  Windows 和 Linux 运行时由系统或 GPU 驱动提供 Vulkan loader。如需支持供应商后端，必须先
+  设计可选后端动态加载与独立产物策略。
 - SurrealDB 生产依赖只启用 SurrealKV 与 Rustls，测试才启用 Mem；不要启用远程协议、
   原生 TLS、HTTP、脚本、ML 或其 allocator，除非对应能力已有明确需求和验收。
 
@@ -119,8 +126,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
   生产文件不保留内联 `mod tests`，也不为测试把内部实现扩大到顶级 façade 之外。
 - 为测试新增的构造器和访问器使用 `#[cfg(test)]` 并保持模块内可见性，命名以 `_for_test`
   结尾；不得因此放宽生产可见性或改变生产行为。
-- `unsafe` 仅用于必要的平台或 GPU 互操作，范围保持最小；每个块紧邻 `// SAFETY:`，用
-  中文说明可验证的安全前置条件。清理失效注释、注释掉的代码和无跟踪项的模糊 `TODO`。
+- `unsafe` 仅用于必要的平台、GPU 互操作，以及 `src/voice/transcribe.rs` 的同步推理 abort
+  callback，范围保持最小；每个块紧邻 `// SAFETY:`，用中文说明可验证的安全前置条件。清理
+  失效注释、注释掉的代码和无跟踪项的模糊 `TODO`。
 - 遵守 `clippy::unwrap_used = "deny"`。使用 `?` 或显式分支处理失败；`expect()` 仅用于
   已证明的不变量或测试前置条件，并写明条件。网络、配置、模型和平台错误应带上下文且
   可恢复，单个子系统失败不得拖垮应用。
@@ -146,4 +154,6 @@ cargo test --locked
   Provider 服务层用 fake backend 覆盖。
 - 依赖真实 Live2D 模型或桌面截屏授权的用例标注 `#[ignore]` 并写明原因；仓库不分发模型，
   由使用者自备模型后手动运行。
+- 依赖真实麦克风、Whisper 或 Silero 模型、GPU 后端的用例同样标注 `#[ignore]`；常规测试用
+  fake VAD 和纯状态机覆盖端点、取消与迟到结果，仓库不分发语音模型。
 - 修改依赖策略、平台支持、目录约定或关键架构时同步更新本文件；具体计划写入 `TODO.md`。

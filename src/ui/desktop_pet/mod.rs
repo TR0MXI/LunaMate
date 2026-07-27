@@ -23,7 +23,10 @@ use rust_i18n::t;
 
 use crate::{
     agent::{AgentOutfitRequest, AgentView, AgentViewEvent},
-    config::{AppearanceSettings, CONFIG, ConfigWindow, ModelWindowSize, ThemePreset},
+    config::{
+        AppearanceSettings, CONFIG, ConfigWindow, ModelWindowSize, ThemePreset, VoiceMode,
+        VoiceSettings,
+    },
     model::{
         FrameRateMeter, FrameWake, GpuUnderlay, GpuUnderlayEvent, GpuUnderlaySize, ModelCommand,
         ModelCommandSender, ModelLoadDiagnostics, ModelPreviewCapabilities, RenderCancellation,
@@ -33,6 +36,7 @@ use crate::{
         NativeTrayMenuWindow, SystemTray, TrayIconStyle, TrayMenuAnchor, WindowMover,
         WindowPositionController, configure_settings_window, configure_tray_menu_window,
     },
+    voice::{VoiceActivitySnapshot, VoiceController, VoiceEvent, VoicePhase},
 };
 
 use super::{
@@ -43,6 +47,7 @@ use super::{
 };
 
 const FPS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
+const VOICE_LEVEL_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
 /// 合成器钳制窗口尺寸时放弃重试并接受实际 viewport，避免每帧重复请求 resize。
 const MAX_WINDOW_RESIZE_ATTEMPTS: u32 = 8;
 /// 退出时同步等待 GPU worker 的上限；驱动卡死时不应无限阻塞主线程。
@@ -158,6 +163,12 @@ pub(crate) struct DesktopPetView {
     appearance: Rc<RefCell<AppearanceSettings>>,
     config: Entity<SettingsView>,
     chat: Entity<AgentView>,
+    voice: Option<VoiceController>,
+    voice_mode: VoiceMode,
+    voice_revision: u64,
+    voice_activity: VoiceActivitySnapshot,
+    voice_event_task: Option<Task<()>>,
+    voice_level_task: Option<Task<()>>,
     chat_input_open: bool,
     chat_overlay_visible: bool,
     position_controller: WindowPositionController,
@@ -176,14 +187,20 @@ pub(crate) struct DesktopPetView {
     _chat_subscription: Subscription,
     _agent_event_subscription: Subscription,
     _bounds_subscription: Subscription,
+    _activation_subscription: Subscription,
     _appearance_subscription: Subscription,
 }
 
 impl DesktopPetView {
     /// 创建桌宠根视图并启动初始模型 generation。
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "根视图挂载时需要一次性交接独立实体、窗口服务和语音控制端"
+    )]
     pub(crate) fn new(
         config: Entity<SettingsView>,
         chat: Entity<AgentView>,
+        voice: Option<VoiceController>,
         initial_model: Option<PathBuf>,
         raster_dimensions: [u32; 2],
         system_tray: Option<Rc<SystemTray>>,
@@ -203,6 +220,9 @@ impl DesktopPetView {
             }
             if let Some(mut underlay) = this.gpu_underlay.take() {
                 underlay.shutdown();
+            }
+            if let Some(voice) = &this.voice {
+                voice.request_shutdown();
             }
             if let Some(handle) = this.tray_menu_window.take() {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
@@ -232,6 +252,12 @@ impl DesktopPetView {
         };
         let gpu_events = gpu_underlay.as_ref().map(GpuUnderlay::events);
         let appearance = Rc::new(RefCell::new(CONFIG.appearance().as_ref().clone()));
+        let voice_events = voice.as_ref().map(VoiceController::events);
+        let voice_activity = voice
+            .as_ref()
+            .map(VoiceController::activity)
+            .unwrap_or_default();
+        let voice_revision = voice.as_ref().map_or(0, VoiceController::current_revision);
         let chat_overlay_visible = chat.read(cx).reply_visible();
         let chat_subscription = cx.observe(&chat, |this, chat, cx| {
             let visible = chat.read(cx).reply_visible();
@@ -306,6 +332,10 @@ impl DesktopPetView {
                     }
                 }
                 SettingsEvent::AgentChanged => {
+                    // Provider 或人格变化会改变转写文本的发送目标；正在录制的旧 generation
+                    // 必须先失效，不能在刷新后重新绑定到新的 Agent 配置。
+                    let voice_settings = CONFIG.voice_settings();
+                    this.apply_voice_settings(&voice_settings, cx);
                     this.chat.update(cx, |chat, cx| {
                         chat.refresh_settings(cx);
                     });
@@ -334,6 +364,9 @@ impl DesktopPetView {
                     this.sync_system_tray_appearance(cx);
                     this.sync_agent_outfits(cx);
                 }
+                SettingsEvent::VoiceChanged(settings) => {
+                    this.apply_voice_settings(settings, cx);
+                }
             });
         cache_window_position(window, ConfigWindow::DesktopPet);
         let bounds_subscription = cx.observe_window_bounds(window, |this, window, _| {
@@ -341,6 +374,11 @@ impl DesktopPetView {
                 return;
             }
             cache_window_position(window, ConfigWindow::DesktopPet);
+        });
+        let activation_subscription = cx.observe_window_activation(window, |this, window, _| {
+            if !window.is_window_active() {
+                this.set_push_to_talk(false);
+            }
         });
         let tray_for_appearance = system_tray.clone();
         let appearance_for_observer = appearance.clone();
@@ -379,6 +417,12 @@ impl DesktopPetView {
             appearance,
             config,
             chat,
+            voice,
+            voice_mode: CONFIG.voice_settings().mode,
+            voice_revision,
+            voice_activity,
+            voice_event_task: None,
+            voice_level_task: None,
             chat_input_open: false,
             chat_overlay_visible,
             position_controller: WindowPositionController::default(),
@@ -401,6 +445,7 @@ impl DesktopPetView {
             _chat_subscription: chat_subscription,
             _agent_event_subscription: agent_event_subscription,
             _bounds_subscription: bounds_subscription,
+            _activation_subscription: activation_subscription,
             _appearance_subscription: appearance_subscription,
         };
         view.sync_system_tray_appearance(cx);
@@ -432,8 +477,131 @@ impl DesktopPetView {
                 }
             }));
         }
+        if let Some(events) = voice_events {
+            view.voice_event_task = Some(cx.spawn(async move |this, cx| {
+                while let Ok(event) = events.recv().await {
+                    let keep_running = this
+                        .update(cx, |this, cx| this.handle_voice_event(event, cx))
+                        .unwrap_or(false);
+                    if !keep_running {
+                        break;
+                    }
+                }
+            }));
+        }
         view.load_model(initial_model, cx);
         view
+    }
+
+    fn apply_voice_settings(&mut self, settings: &VoiceSettings, cx: &mut Context<Self>) {
+        self.set_push_to_talk(false);
+        self.voice_mode = settings.mode;
+        if let Some(voice) = &self.voice {
+            let mut runtime_settings = settings.clone();
+            if !self.desktop_pet_visible {
+                runtime_settings.mode = VoiceMode::Off;
+            }
+            self.voice_revision = voice.configure(runtime_settings);
+            self.voice_activity = VoiceActivitySnapshot::default();
+        } else {
+            self.voice_revision = 0;
+            self.voice_activity = VoiceActivitySnapshot::default();
+        }
+        self.chat.update(cx, |chat, cx| {
+            chat.cancel_pending_voice();
+            chat.set_voice_indicator_visible(false, cx);
+        });
+        self.sync_voice_level_task(cx);
+        cx.notify();
+    }
+
+    fn handle_voice_event(&mut self, event: VoiceEvent, cx: &mut Context<Self>) -> bool {
+        match event {
+            VoiceEvent::ActivityChanged { revision } if revision == self.voice_revision => {
+                if let Some(voice) = &self.voice {
+                    self.voice_activity = voice.activity();
+                    let recording = self.voice_activity.phase == VoicePhase::Recording;
+                    self.chat.update(cx, |chat, cx| {
+                        chat.set_voice_indicator_visible(recording, cx);
+                    });
+                    self.sync_voice_level_task(cx);
+                    cx.notify();
+                }
+            }
+            VoiceEvent::SpeechStarted {
+                revision,
+                utterance_id,
+            } if revision == self.voice_revision => {
+                let language = self.appearance.borrow().language;
+                self.chat.update(cx, |chat, cx| {
+                    chat.voice_speech_started(utterance_id, language, cx);
+                });
+            }
+            VoiceEvent::UtteranceCancelled {
+                revision,
+                utterance_id,
+            } if revision == self.voice_revision => {
+                self.chat.update(cx, |chat, _| {
+                    chat.voice_utterance_cancelled(utterance_id);
+                });
+            }
+            VoiceEvent::TranscriptReady {
+                revision,
+                utterance_id,
+                text,
+            } if revision == self.voice_revision => {
+                self.chat.update(cx, |chat, cx| {
+                    chat.send_voice_transcript(utterance_id, text, cx);
+                });
+            }
+            VoiceEvent::Error { revision, message } if revision == self.voice_revision => {
+                self.chat.update(cx, |chat, cx| {
+                    chat.voice_failed(message, cx);
+                });
+            }
+            _ => {}
+        }
+        true
+    }
+
+    fn sync_voice_level_task(&mut self, cx: &mut Context<Self>) {
+        if self.voice_activity.phase != VoicePhase::Recording {
+            self.voice_level_task = None;
+            return;
+        }
+        if self.voice_level_task.is_some() {
+            return;
+        }
+        let Some(voice) = self.voice.clone() else {
+            return;
+        };
+        let background = cx.background_executor().clone();
+        self.voice_level_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                background.timer(VOICE_LEVEL_REFRESH_INTERVAL).await;
+                let keep_running = this
+                    .update(cx, |this, cx| {
+                        this.voice_activity = voice.activity();
+                        if this.voice_activity.phase != VoicePhase::Recording {
+                            return false;
+                        }
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_running {
+                    break;
+                }
+            }
+        }));
+    }
+
+    pub(in crate::ui) fn set_push_to_talk(&self, pressed: bool) {
+        if self.voice_mode.supports_push_to_talk()
+            && let Some(voice) = &self.voice
+        {
+            voice.set_push_to_talk(pressed);
+        }
     }
 
     fn update_look_target(&self, position: gpui::Point<gpui::Pixels>, window: &Window) {
@@ -704,6 +872,16 @@ impl DesktopPetView {
 
     /// 请求关闭窗口；存在 GPU worker 时先异步回收 surface，再移除原生窗口。
     pub(crate) fn request_window_close(&mut self, cx: &mut Context<Self>) -> bool {
+        self.set_push_to_talk(false);
+        if let Some(voice) = &self.voice {
+            voice.request_shutdown();
+        }
+        self.voice_activity = VoiceActivitySnapshot::default();
+        self.voice_level_task = None;
+        self.chat.update(cx, |chat, cx| {
+            chat.cancel_pending_voice();
+            chat.set_voice_indicator_visible(false, cx);
+        });
         self.gpu_shutdown_restart_cpu = false;
         self.close_after_gpu_shutdown = true;
         if let Some(cancellation) = self.model_cancellation.take() {
@@ -727,6 +905,10 @@ impl DesktopPetView {
 
     /// 在 GPUI 清空原生窗口前同步确认 GPU surface 已经释放。
     pub(crate) fn shutdown_gpu_for_quit(&mut self) {
+        self.set_push_to_talk(false);
+        if let Some(voice) = &self.voice {
+            voice.request_shutdown();
+        }
         self.gpu_shutdown_restart_cpu = false;
         // 退出后 GPUI 禁止再向前台执行器投递任务；后续 GPU 事件必须同步收尾。
         self.quitting = true;
@@ -867,6 +1049,8 @@ impl DesktopPetView {
 
         self.desktop_pet_visible = visible;
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
+        let voice_settings = CONFIG.voice_settings();
+        self.apply_voice_settings(&voice_settings, cx);
         self.frame_rate_meter.reset();
         self.actual_fps = 0.0;
         if let Some(underlay) = &self.gpu_underlay {

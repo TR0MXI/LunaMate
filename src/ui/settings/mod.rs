@@ -5,6 +5,7 @@ mod model_page;
 mod render;
 mod system_page;
 mod tool_page;
+mod voice_page;
 mod window;
 
 use std::{
@@ -13,7 +14,9 @@ use std::{
     time::Duration,
 };
 
-use gpui::{AppContext, Context, Entity, EventEmitter, Subscription, Task, Window};
+use gpui::{
+    AppContext, Context, Entity, EventEmitter, PathPromptOptions, Subscription, Task, Window,
+};
 use gpui_component::input::{InputEvent, InputState, MaskPattern};
 use rust_i18n::t;
 
@@ -26,7 +29,7 @@ use crate::{
         AppLanguage, AppearanceSettings, CONFIG, CUSTOM_FRAME_RATE_MAX, CUSTOM_FRAME_RATE_MIN,
         ConfigWriteError, FrameRate, LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES,
         LOGGING_MIN_FILE_SIZE_MB, LOGGING_MIN_KEEP_FILES, LoggingSettings, ModelWindowSize,
-        ThemePreset,
+        ThemePreset, VoiceMode, VoiceSettings,
     },
     model::{ModelCatalog, ModelPreviewCapabilities, ensure_model_directory},
 };
@@ -69,6 +72,8 @@ pub(crate) enum SettingsEvent {
     PersonaContextCleared(String),
     /// 外观设置已经发布，所有窗口应刷新主题和语言。
     AppearanceChanged(AppearanceSettings),
+    /// 本地语音配置已经持久化并发布。
+    VoiceChanged(VoiceSettings),
     /// 已清除持久化位置，所有现存窗口应立即返回默认位置。
     WindowPositionsReset,
 }
@@ -98,9 +103,20 @@ enum ConfigSection {
     Model,
     Provider,
     Persona,
+    Voice,
     Tool,
     System,
     Debug,
+}
+
+struct RetiredAgentSettingsEditor {
+    view: Entity<AgentSettingsView>,
+    _subscription: Subscription,
+}
+
+struct RetiredPersonaSettingsEditor {
+    view: Entity<PersonaSettingsView>,
+    _subscription: Subscription,
 }
 
 /// 独立设置窗口的主体状态。
@@ -116,6 +132,8 @@ pub(crate) struct SettingsView {
     custom_frame_rate_input: Option<Entity<InputState>>,
     log_max_size_input: Option<Entity<InputState>>,
     log_keep_files_input: Option<Entity<InputState>>,
+    voice_whisper_model_input: Option<Entity<InputState>>,
+    voice_vad_model_input: Option<Entity<InputState>>,
     preview_capabilities: ModelPreviewCapabilities,
     active_outfit: Option<String>,
     section: ConfigSection,
@@ -131,6 +149,7 @@ pub(crate) struct SettingsView {
     screenshot_permission_retry_required: bool,
     logging: LoggingSettings,
     appearance: AppearanceSettings,
+    voice: VoiceSettings,
     is_refreshing: bool,
     revision: u64,
     model_revision: u64,
@@ -138,15 +157,21 @@ pub(crate) struct SettingsView {
     write_tasks: Vec<Task<()>>,
     agent_settings_subscription: Option<Subscription>,
     persona_settings_subscription: Option<Subscription>,
+    retired_agent_settings_editors: Vec<RetiredAgentSettingsEditor>,
+    retired_persona_settings_editors: Vec<RetiredPersonaSettingsEditor>,
     custom_frame_rate_subscription: Option<Subscription>,
     custom_frame_rate_input_revision: u64,
     custom_frame_rate_save_task: Option<Task<()>>,
     logging_input_subscriptions: Vec<Subscription>,
+    voice_input_subscriptions: Vec<Subscription>,
     logging_input_revision: u64,
     logging_save_task: Option<Task<()>>,
     screenshot_permission_revision: u64,
     toast_revision: u64,
     toast_task: Option<Task<()>>,
+    voice_save_revision: u64,
+    voice_picker_revision: u64,
+    voice_picker_task: Option<Task<()>>,
 }
 
 impl SettingsView {
@@ -176,6 +201,8 @@ impl SettingsView {
             custom_frame_rate_input: None,
             log_max_size_input: None,
             log_keep_files_input: None,
+            voice_whisper_model_input: None,
+            voice_vad_model_input: None,
             preview_capabilities: ModelPreviewCapabilities::default(),
             active_outfit: None,
             section: ConfigSection::Model,
@@ -192,6 +219,7 @@ impl SettingsView {
                 .agent_screenshot_permission_retry_required(),
             logging: *CONFIG.logging_settings(),
             appearance: CONFIG.appearance().as_ref().clone(),
+            voice: CONFIG.voice_settings().as_ref().clone(),
             is_refreshing: false,
             revision: 0,
             model_revision: 0,
@@ -199,15 +227,21 @@ impl SettingsView {
             write_tasks: Vec::new(),
             agent_settings_subscription: None,
             persona_settings_subscription: None,
+            retired_agent_settings_editors: Vec::new(),
+            retired_persona_settings_editors: Vec::new(),
             custom_frame_rate_subscription: None,
             custom_frame_rate_input_revision: 0,
             custom_frame_rate_save_task: None,
             logging_input_subscriptions: Vec::new(),
+            voice_input_subscriptions: Vec::new(),
             logging_input_revision: 0,
             logging_save_task: None,
             screenshot_permission_revision: 0,
             toast_revision: 0,
             toast_task: None,
+            voice_save_revision: 0,
+            voice_picker_revision: 0,
+            voice_picker_task: None,
         };
         if let Some(status) = status {
             view.set_status(status, cx);
@@ -308,16 +342,51 @@ impl SettingsView {
         ];
         self.log_max_size_input = Some(log_max_size_input);
         self.log_keep_files_input = Some(log_keep_files_input);
-        // 供应商目录变化会改变人格可绑定的候选项，两个编辑器必须保持同步。
-        let persona_settings_view = self.persona_settings_view.clone();
-        self.agent_settings_subscription = Some(cx.subscribe_in(
-            &agent_settings_view,
-            window,
-            move |_, _, _: &AgentSettingsEvent, window, cx| {
-                if let Some(persona) = &persona_settings_view {
-                    persona.update(cx, |persona, cx| persona.refresh_providers(window, cx));
+        let voice_whisper_model_input = cx.new(|cx| {
+            InputState::new(window, cx).default_value(
+                self.voice
+                    .whisper_model
+                    .as_deref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            )
+        });
+        let voice_vad_model_input = cx.new(|cx| {
+            InputState::new(window, cx).default_value(
+                self.voice
+                    .vad_model
+                    .as_deref()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            )
+        });
+        self.voice_whisper_model_input = Some(voice_whisper_model_input.clone());
+        self.voice_vad_model_input = Some(voice_vad_model_input.clone());
+        self.voice_input_subscriptions = vec![
+            cx.subscribe(
+                &voice_whisper_model_input,
+                |this, _, event: &InputEvent, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.capture_voice_draft(cx);
+                    }
+                },
+            ),
+            cx.subscribe(&voice_vad_model_input, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.capture_voice_draft(cx);
                 }
-                cx.emit(SettingsEvent::AgentChanged);
+            }),
+        ];
+        // 供应商目录变化会改变人格可绑定的候选项，两个编辑器必须保持同步。
+        self.agent_settings_subscription = Some(cx.subscribe(
+            &agent_settings_view,
+            |this, editor, event: &AgentSettingsEvent, cx| {
+                let editor_id = editor.entity_id();
+                this.retired_agent_settings_editors
+                    .retain(|retired| retired.view.entity_id() != editor_id);
+                if matches!(event, AgentSettingsEvent::Saved) {
+                    cx.emit(SettingsEvent::AgentChanged);
+                }
             },
         ));
         self.agent_settings_view = Some(agent_settings_view);
@@ -333,8 +402,18 @@ impl SettingsView {
         let view = cx.new(|cx| PersonaSettingsView::new(draft, memory, window, cx));
         self.persona_settings_subscription = Some(cx.subscribe(
             &view,
-            |_, _, event: &PersonaSettingsEvent, cx| match event {
-                PersonaSettingsEvent::Saved => cx.emit(SettingsEvent::AgentChanged),
+            |this, editor, event: &PersonaSettingsEvent, cx| match event {
+                PersonaSettingsEvent::Saved => {
+                    let editor_id = editor.entity_id();
+                    this.retired_persona_settings_editors
+                        .retain(|retired| retired.view.entity_id() != editor_id);
+                    cx.emit(SettingsEvent::AgentChanged);
+                }
+                PersonaSettingsEvent::SaveFinished => {
+                    let editor_id = editor.entity_id();
+                    this.retired_persona_settings_editors
+                        .retain(|retired| retired.view.entity_id() != editor_id);
+                }
                 PersonaSettingsEvent::ClearContext(persona) => {
                     cx.emit(SettingsEvent::PersonaContextCleared(persona.clone()));
                 }
@@ -349,27 +428,60 @@ impl SettingsView {
             let (draft, pending) =
                 agent_settings_view.update(cx, |view, cx| view.take_window_state(cx));
             self.agent_settings_draft = Some(draft);
+            let has_pending = pending.iter().any(|task| !task.is_ready());
+            if has_pending && let Some(subscription) = self.agent_settings_subscription.take() {
+                self.retired_agent_settings_editors
+                    .push(RetiredAgentSettingsEditor {
+                        view: agent_settings_view,
+                        _subscription: subscription,
+                    });
+            }
             self.write_tasks.extend(pending);
         }
         if let Some(persona_settings_view) = self.persona_settings_view.take() {
             let (draft, pending) =
                 persona_settings_view.update(cx, |view, cx| view.take_window_state(cx));
             self.persona_settings_draft = Some(draft);
+            let has_pending = pending.iter().any(|task| !task.is_ready());
+            if has_pending && let Some(subscription) = self.persona_settings_subscription.take() {
+                self.retired_persona_settings_editors
+                    .push(RetiredPersonaSettingsEditor {
+                        view: persona_settings_view,
+                        _subscription: subscription,
+                    });
+            }
             self.write_tasks.extend(pending);
         }
         self.flush_custom_frame_rate_input(cx);
         self.flush_logging_inputs(cx);
+        self.capture_voice_draft(cx);
         self.custom_accent_input = None;
         self.custom_background_input = None;
         self.custom_frame_rate_input = None;
         self.custom_frame_rate_save_task = None;
         self.log_max_size_input = None;
         self.log_keep_files_input = None;
+        self.voice_input_subscriptions.clear();
+        self.voice_whisper_model_input = None;
+        self.voice_vad_model_input = None;
+        self.voice_picker_revision = self.voice_picker_revision.wrapping_add(1).max(1);
+        self.voice_picker_task = None;
         self.agent_settings_subscription = None;
         self.persona_settings_subscription = None;
         self.custom_frame_rate_subscription = None;
         self.logging_input_subscriptions.clear();
         cx.notify();
+    }
+
+    /// 当前设置窗口接到 Agent 配置发布事件后刷新人格可绑定的 Provider 候选。
+    pub(crate) fn refresh_persona_providers(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(persona) = &self.persona_settings_view {
+            persona.update(cx, |persona, cx| persona.refresh_providers(window, cx));
+        }
     }
 
     /// 取出设置主体和 Agent 编辑器中尚未完成的写入任务。
@@ -448,6 +560,8 @@ impl SettingsView {
         self.agent_settings_view.is_some()
             && self.persona_settings_view.is_some()
             && self.custom_frame_rate_input.is_some()
+            && self.voice_whisper_model_input.is_some()
+            && self.voice_vad_model_input.is_some()
     }
 
     /// 返回后台模型扫描是否仍在进行。
@@ -473,8 +587,9 @@ impl SettingsView {
             0 => ConfigSection::Model,
             1 => ConfigSection::Provider,
             2 => ConfigSection::Persona,
-            3 => ConfigSection::Tool,
-            4 => ConfigSection::System,
+            3 => ConfigSection::Voice,
+            4 => ConfigSection::Tool,
+            5 => ConfigSection::System,
             _ => ConfigSection::Debug,
         };
         cx.notify();
@@ -483,7 +598,7 @@ impl SettingsView {
     /// 返回配置分区总数，供测试遍历全部页面。
     #[cfg(test)]
     pub(in crate::ui) const fn section_count_for_test() -> usize {
-        6
+        7
     }
 
     /// 接收主模型 generation 的能力快照，供设置窗口显示可用控制项。
@@ -1083,6 +1198,122 @@ impl SettingsView {
             move || CONFIG.set_allow_agent_outfit_change_at_revision(allowed, config_revision),
             cx,
         );
+    }
+
+    fn set_voice_mode_draft(&mut self, mode: VoiceMode, cx: &mut Context<Self>) {
+        if self.voice.mode == mode {
+            return;
+        }
+        self.voice.mode = mode;
+        self.voice_save_revision = self.voice_save_revision.wrapping_add(1).max(1);
+        cx.notify();
+    }
+
+    fn toggle_voice_gpu_draft(&mut self, cx: &mut Context<Self>) {
+        self.voice.use_gpu = !self.voice.use_gpu;
+        self.voice_save_revision = self.voice_save_revision.wrapping_add(1).max(1);
+        cx.notify();
+    }
+
+    fn capture_voice_draft(&mut self, cx: &mut Context<Self>) {
+        let whisper_model = self.voice_whisper_model_input.as_ref().and_then(|input| {
+            let value = input.read(cx).value().to_string();
+            let value = value.trim();
+            (!value.is_empty()).then(|| PathBuf::from(value))
+        });
+        let vad_model = self.voice_vad_model_input.as_ref().and_then(|input| {
+            let value = input.read(cx).value().to_string();
+            let value = value.trim();
+            (!value.is_empty()).then(|| PathBuf::from(value))
+        });
+        if self.voice.whisper_model != whisper_model || self.voice.vad_model != vad_model {
+            self.voice.whisper_model = whisper_model;
+            self.voice.vad_model = vad_model;
+            self.voice_save_revision = self.voice_save_revision.wrapping_add(1).max(1);
+        }
+    }
+
+    fn save_voice_settings(&mut self, cx: &mut Context<Self>) {
+        self.capture_voice_draft(cx);
+        let settings = self.voice.clone();
+        self.voice_save_revision = self.voice_save_revision.wrapping_add(1).max(1);
+        let ui_revision = self.voice_save_revision;
+        let config_revision = CONFIG.reserve_voice_settings_revision();
+        let background = cx.background_executor().clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = background
+                .spawn(
+                    async move { CONFIG.set_voice_settings_at_revision(settings, config_revision) },
+                )
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(Some(settings)) = &result {
+                    let current = CONFIG.voice_settings();
+                    if current.as_ref() == settings.as_ref() {
+                        cx.emit(SettingsEvent::VoiceChanged(current.as_ref().clone()));
+                    }
+                }
+                if this.voice_save_revision != ui_revision {
+                    return;
+                }
+                match result {
+                    Ok(Some(settings)) => {
+                        this.voice = settings.as_ref().clone();
+                        this.set_status(t!("voice.saved").to_string(), cx);
+                    }
+                    Ok(None) => {}
+                    Err(error) => this.set_status(
+                        t!("status.setting_failed", error = error.to_string()).to_string(),
+                        cx,
+                    ),
+                }
+            });
+        });
+        self.track_write_task(task);
+    }
+
+    fn choose_voice_model(&mut self, whisper: bool, cx: &mut Context<Self>) {
+        self.voice_picker_revision = self.voice_picker_revision.wrapping_add(1).max(1);
+        let revision = self.voice_picker_revision;
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(t!("voice.select_model").to_string().into()),
+        });
+        self.voice_picker_task = Some(cx.spawn(async move |this, cx| {
+            let path = match paths.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => return,
+                Ok(Err(_)) | Err(_) => {
+                    let _ = this.update(cx, |this, cx| {
+                        if this.voice_picker_revision == revision {
+                            this.set_status(t!("voice.picker_failed").to_string(), cx);
+                        }
+                    });
+                    return;
+                }
+            };
+            let Some(path) = path else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.voice_picker_revision != revision {
+                    return;
+                }
+                let input = if whisper {
+                    this.voice_whisper_model_input.clone()
+                } else {
+                    this.voice_vad_model_input.clone()
+                };
+                if let Some(input) = input {
+                    input.update(cx, |input, cx| {
+                        input.set_value(path.to_string_lossy().into_owned(), window, cx);
+                    });
+                    this.capture_voice_draft(cx);
+                }
+            });
+        }));
     }
 
     fn set_logging_settings(&mut self, settings: LoggingSettings, cx: &mut Context<Self>) {

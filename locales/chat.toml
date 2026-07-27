@@ -114,6 +114,12 @@ _version = 2
 "en" = "Response interrupted"
 "ja" = "応答が中断されました"
 
+[chat.interrupted_by_voice]
+"zh-CN" = "已被你的语音打断"
+"zh-TW" = "已被你的語音打斷"
+"en" = "Interrupted by your voice"
+"ja" = "あなたの音声で中断しました"
+
 [chat.unconfigured]
 "zh-CN" = "未配置模型"
 "zh-TW" = "未設定模型"

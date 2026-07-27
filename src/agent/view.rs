@@ -68,6 +68,7 @@ pub(crate) struct AgentView {
     active_persona: String,
     active_limits: ChatLimits,
     memory: AgentMemoryAccess,
+    agent_config_revision: u64,
     persona_swap_revision: u64,
     persona_swap_task: Option<Task<()>>,
     backend: Arc<dyn ChatBackend>,
@@ -80,17 +81,29 @@ pub(crate) struct AgentView {
     messages_scroll: ScrollHandle,
     status: Option<String>,
     input_visible: bool,
+    voice_indicator_visible: bool,
     reply_message_id: Option<u64>,
     reply_lifecycle: ReplyLifecycle,
     reply_fade_task: Option<Task<()>>,
     request_task: Option<Task<()>>,
     request_abort: Option<ActiveRequestAbort>,
+    pending_voice: Option<PendingVoice>,
     _input_subscription: Subscription,
 }
 
 struct ActiveRequestAbort {
     response_id: ResponseId,
     handle: AbortHandle,
+}
+
+struct PendingVoice {
+    utterance_id: u64,
+    agent_config_revision: u64,
+    persona_swap_revision: u64,
+    persona: String,
+    settings: SharedLlmSettings,
+    persona_settings: SharedPersonaSettings,
+    language: AppLanguage,
 }
 
 struct PendingImage {
@@ -272,6 +285,7 @@ impl AgentView {
             active_persona,
             active_limits,
             memory,
+            agent_config_revision: 1,
             persona_swap_revision: 0,
             persona_swap_task: None,
             backend: Arc::new(GenaiChatBackend::new()),
@@ -284,11 +298,13 @@ impl AgentView {
             messages_scroll: ScrollHandle::new(),
             status: initial_status,
             input_visible: false,
+            voice_indicator_visible: false,
             reply_message_id: None,
             reply_lifecycle: ReplyLifecycle::new(reply_visible),
             reply_fade_task: None,
             request_task: None,
             request_abort: None,
+            pending_voice: None,
             _input_subscription: input_subscription,
         }
     }
@@ -328,6 +344,14 @@ impl AgentView {
         self.session.messages().len()
     }
 
+    /// 返回测试可观察的待提交语音 ID。
+    #[cfg(test)]
+    pub(super) fn pending_voice_for_test(&self) -> Option<u64> {
+        self.pending_voice
+            .as_ref()
+            .map(|pending| pending.utterance_id)
+    }
+
     /// 直接投递一条用户消息，跳过输入框与焦点管理。
     #[cfg(test)]
     pub(super) fn send_message_for_test(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
@@ -339,8 +363,14 @@ impl AgentView {
     /// 当前人格或其上下文限制发生变化时，先落盘旧人格的上下文，再异步换入新人格的
     /// 上下文；换入完成前拒绝新消息，避免两个人格的记忆互相污染。
     pub(crate) fn refresh_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings = CONFIG.llm_settings();
-        self.persona = CONFIG.persona_settings();
+        let settings = CONFIG.llm_settings();
+        let persona = CONFIG.persona_settings();
+        if !Arc::ptr_eq(&self.settings, &settings) || !Arc::ptr_eq(&self.persona, &persona) {
+            self.pending_voice = None;
+            self.agent_config_revision = self.agent_config_revision.wrapping_add(1).max(1);
+        }
+        self.settings = settings;
+        self.persona = persona;
         let Some(active) = self.persona.active() else {
             cx.notify();
             return;
@@ -388,6 +418,7 @@ impl AgentView {
         next_limits: ChatLimits,
         cx: &mut Context<Self>,
     ) {
+        self.pending_voice = None;
         self.cancel_network_request();
         self.session.interrupt_active_response();
         self.persist(true, cx);
@@ -447,6 +478,7 @@ impl AgentView {
     /// 落盘空快照，其他人格删除对应文档，两条路径都不会与后台写任务竞争。
     pub(crate) fn clear_persona_context(&mut self, persona_id: &str, cx: &mut Context<Self>) {
         if persona_id == self.active_persona {
+            self.pending_voice = None;
             self.cancel_network_request();
             self.session.clear();
             self.reply_message_id = None;
@@ -491,6 +523,14 @@ impl AgentView {
         self.reply_lifecycle.visible()
     }
 
+    /// 为主窗口底部录音提示预留回复区域，避免波形遮住流式文本。
+    pub(crate) fn set_voice_indicator_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.voice_indicator_visible != visible {
+            self.voice_indicator_visible = visible;
+            cx.notify();
+        }
+    }
+
     /// 将模型部位点击作为当前人格会话中的一轮本地化事件发送给 Provider。
     pub(crate) fn send_model_click_event(
         &mut self,
@@ -502,8 +542,109 @@ impl AgentView {
         if self.is_streaming() {
             return false;
         }
+        self.pending_voice = None;
         let prompt = model_click_event_prompt(part_name, language);
         self.send_message_with_image(prompt, None, language, cx)
+    }
+
+    /// 在 VAD 确认句首时立即打断当前回复，并登记唯一可接受的转写结果。
+    pub(crate) fn voice_speech_started(
+        &mut self,
+        utterance_id: u64,
+        language: AppLanguage,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shutdown_revision.is_some()
+            || self
+                .pending_voice
+                .as_ref()
+                .is_some_and(|pending| pending.utterance_id >= utterance_id)
+        {
+            return;
+        }
+        let settings = CONFIG.llm_settings();
+        let persona_settings = CONFIG.persona_settings();
+        if !Arc::ptr_eq(&self.settings, &settings) || !Arc::ptr_eq(&self.persona, &persona_settings)
+        {
+            self.refresh_settings(cx);
+            return;
+        }
+        self.pending_voice = Some(PendingVoice {
+            utterance_id,
+            agent_config_revision: self.agent_config_revision,
+            persona_swap_revision: self.persona_swap_revision,
+            persona: self.active_persona.clone(),
+            settings,
+            persona_settings,
+            language,
+        });
+        self.cancel_network_request();
+        if let Some(response_id) = self.session.active_response_id()
+            && self.session.interrupt_response_by_voice(response_id)
+        {
+            self.status = None;
+            self.persist(true, cx);
+            self.messages_scroll.scroll_to_bottom();
+            self.reveal_reply(cx);
+            self.schedule_reply_fade(cx);
+        }
+        cx.notify();
+    }
+
+    /// 只提交仍属于当前人格和最近一次录音的转写文本。
+    pub(crate) fn send_voice_transcript(
+        &mut self,
+        utterance_id: u64,
+        text: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self
+            .pending_voice
+            .as_ref()
+            .is_some_and(|pending| pending.utterance_id == utterance_id)
+        {
+            return false;
+        }
+        let Some(pending) = self.pending_voice.take() else {
+            return false;
+        };
+        let settings = CONFIG.llm_settings();
+        let persona_settings = CONFIG.persona_settings();
+        if pending.agent_config_revision != self.agent_config_revision
+            || pending.persona_swap_revision != self.persona_swap_revision
+            || pending.persona != self.active_persona
+            || !Arc::ptr_eq(&pending.settings, &settings)
+            || !Arc::ptr_eq(&pending.persona_settings, &persona_settings)
+            || self.persona_swap_task.is_some()
+            || self.is_streaming()
+        {
+            return false;
+        }
+        self.settings = pending.settings;
+        self.persona = pending.persona_settings;
+        self.send_message_with_current_configuration(text, None, pending.language, cx)
+    }
+
+    /// 只撤销匹配的短录音或 VAD 误触，不影响随后开始的新 utterance。
+    pub(crate) fn voice_utterance_cancelled(&mut self, utterance_id: u64) {
+        if self
+            .pending_voice
+            .as_ref()
+            .is_some_and(|pending| pending.utterance_id == utterance_id)
+        {
+            self.pending_voice = None;
+        }
+    }
+
+    /// 配置切换、隐藏或关闭窗口时使尚未提交的转写失效。
+    pub(crate) fn cancel_pending_voice(&mut self) {
+        self.pending_voice = None;
+    }
+
+    /// 清除等待中的语音并复用回复浮层展示本地诊断。
+    pub(crate) fn voice_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.pending_voice = None;
+        self.show_status(message, cx);
     }
 
     /// 挂载后为启动阶段的持久化告警安排一次可取消淡出。
@@ -520,6 +661,7 @@ impl AgentView {
 
     /// 终止活动请求并返回退出流程必须等待写入的最后快照。
     pub(crate) fn shutdown_snapshot(&mut self) -> AgentShutdown {
+        self.pending_voice = None;
         self.cancel_network_request();
         self.session.interrupt_active_response();
         let revision = match self.shutdown_revision {
@@ -539,6 +681,7 @@ impl AgentView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.pending_voice = None;
         let text = input.read(cx).value().to_string();
         let image = self
             .pending_image
@@ -628,6 +771,19 @@ impl AgentView {
         language: AppLanguage,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.settings = CONFIG.llm_settings();
+        self.persona = CONFIG.persona_settings();
+        self.send_message_with_current_configuration(text, image, language, cx)
+    }
+
+    /// 使用调用方已经校验过的 Agent 快照创建请求，不在语音提交中重新绑定 Provider。
+    fn send_message_with_current_configuration(
+        &mut self,
+        text: String,
+        image: Option<ImageAttachment>,
+        language: AppLanguage,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if self.shutdown_revision.is_some() {
             return false;
         }
@@ -636,8 +792,6 @@ impl AgentView {
             self.show_status(t!("chat.persona_switching").to_string(), cx);
             return false;
         }
-        self.settings = CONFIG.llm_settings();
-        self.persona = CONFIG.persona_settings();
         let Some(model) = self.active_model() else {
             self.show_status(t!("chat.configure_model").to_string(), cx);
             return false;
@@ -875,18 +1029,22 @@ impl AgentView {
                     message.id() == message_id && message.role() == ChatRole::Assistant
                 })
         {
-            let waiting = message.content().is_empty()
+            let visible_content = message.visible_content();
+            let waiting = visible_content.is_empty()
                 && matches!(message.state(), ChatMessageState::Streaming);
-            let text = if message.content().is_empty() {
+            let text = if visible_content.is_empty() {
                 match message.state() {
                     ChatMessageState::Streaming => t!("chat.thinking").to_string(),
                     ChatMessageState::Failed(error) => error.clone(),
                     ChatMessageState::Cancelled => t!("chat.stopped").to_string(),
                     ChatMessageState::Interrupted => t!("chat.interrupted").to_string(),
+                    ChatMessageState::InterruptedByVoice => {
+                        t!("chat.interrupted_by_voice").to_string()
+                    }
                     ChatMessageState::Complete => String::new(),
                 }
             } else {
-                message.content().to_owned()
+                visible_content.to_owned()
             };
             let detail = match message.state() {
                 ChatMessageState::Failed(error) if !message.content().is_empty() => {
@@ -897,6 +1055,9 @@ impl AgentView {
                 }
                 ChatMessageState::Interrupted if !message.content().is_empty() => {
                     Some(t!("chat.interrupted").to_string())
+                }
+                ChatMessageState::InterruptedByVoice if !visible_content.is_empty() => {
+                    Some(t!("chat.interrupted_by_voice").to_string())
                 }
                 _ => None,
             };
@@ -966,6 +1127,7 @@ impl Render for AgentView {
             AgentOverlayLayout::for_viewport(f32::from(viewport.width), f32::from(viewport.height));
         let streaming = self.is_streaming();
         let input_visible = self.input_visible;
+        let voice_indicator_visible = self.voice_indicator_visible;
         let reply_fading = self.reply_lifecycle.fading();
         let reply_fade_revision = self.reply_lifecycle.revision();
         let reply_element_id = self.reply_lifecycle.display_generation();
@@ -1059,7 +1221,7 @@ impl Render for AgentView {
                 .absolute()
                 .top(px(REPLY_VERTICAL_INSET))
                 .right(px(layout.horizontal_inset))
-                .bottom(px(if input_visible {
+                .bottom(px(if input_visible || voice_indicator_visible {
                     OVERLAY_BOTTOM_RESERVED
                 } else {
                     REPLY_VERTICAL_INSET

@@ -46,6 +46,8 @@ impl PersonaSettingsDraft {
 pub(crate) enum PersonaSettingsEvent {
     /// 人格配置已发布，桌宠视图应重新读取人格、供应商与上下文。
     Saved,
+    /// 写入被替换或失败；只用于释放关闭窗口后保留的编辑器实体。
+    SaveFinished,
     /// 指定人格的短期上下文需要由持有会话的视图清除。
     ClearContext(String),
 }
@@ -552,14 +554,18 @@ impl PersonaSettingsView {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.is_saving = false;
-                let status = match result {
-                    Ok(Some(_)) => {
-                        cx.emit(PersonaSettingsEvent::Saved);
-                        t!("persona.saved").to_string()
-                    }
-                    Ok(None) => t!("persona.save_replaced").to_string(),
-                    Err(error) => t!("persona.save_failed", error = error.to_string()).to_string(),
+                let (status, event) = match result {
+                    Ok(Some(_)) => (t!("persona.saved").to_string(), PersonaSettingsEvent::Saved),
+                    Ok(None) => (
+                        t!("persona.save_replaced").to_string(),
+                        PersonaSettingsEvent::SaveFinished,
+                    ),
+                    Err(error) => (
+                        t!("persona.save_failed", error = error.to_string()).to_string(),
+                        PersonaSettingsEvent::SaveFinished,
+                    ),
                 };
+                cx.emit(event);
                 this.set_status(status, cx);
             });
         });

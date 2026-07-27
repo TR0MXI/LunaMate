@@ -10,6 +10,7 @@ mod logging;
 mod model;
 mod platform;
 mod ui;
+mod voice;
 
 rust_i18n::i18n!("locales", fallback = "en", minify_key = true);
 

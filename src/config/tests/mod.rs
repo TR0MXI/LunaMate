@@ -5,3 +5,4 @@ mod config;
 mod llm;
 mod persona;
 mod types;
+mod voice;

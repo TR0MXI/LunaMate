@@ -9,6 +9,7 @@ use super::{media::ImageAttachment, memory::ContextUsage};
 
 const SNAPSHOT_VERSION: u32 = 1;
 const MAX_SESSION_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+pub(super) const VOICE_INTERRUPTION_MARKER: &str = "\n\n[系统标注：此回复因用户开始说话而被截断。]";
 
 /// 对话记录中一条消息的角色。
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -25,6 +26,7 @@ pub(super) enum ChatMessageState {
     Failed(String),
     Cancelled,
     Interrupted,
+    InterruptedByVoice,
 }
 
 /// 单个用户轮次中的一条聊天消息。
@@ -53,6 +55,17 @@ impl ChatMessage {
     /// 返回消息正文。
     pub(super) fn content(&self) -> &str {
         &self.content
+    }
+
+    /// 返回去除内部上下文标注后的正文，避免把协议文本直接展示给用户。
+    pub(super) fn visible_content(&self) -> &str {
+        if matches!(self.state, ChatMessageState::InterruptedByVoice) {
+            self.content
+                .strip_suffix(VOICE_INTERRUPTION_MARKER)
+                .unwrap_or(&self.content)
+        } else {
+            &self.content
+        }
     }
 
     /// 返回测试需要核对的图片元数据与进程内内容。
@@ -126,6 +139,7 @@ pub(super) struct ChatSession {
     next_turn_id: u64,
     next_response_id: u64,
     active_response: Option<ActiveResponse>,
+    voice_interruption_pending: bool,
 }
 
 impl ChatSession {
@@ -147,6 +161,7 @@ impl ChatSession {
             next_turn_id: 0,
             next_response_id: 0,
             active_response: None,
+            voice_interruption_pending: false,
         })
     }
 
@@ -172,6 +187,7 @@ impl ChatSession {
         self.total_bytes = 0;
         self.total_image_bytes = 0;
         self.active_response = None;
+        self.voice_interruption_pending = false;
     }
 
     /// 返回当前活动响应 ID。
@@ -255,9 +271,26 @@ impl ChatSession {
             message_id: assistant_id,
         });
 
+        let mut context = self.context_messages();
+        if self.voice_interruption_pending {
+            let marker_retained = context.iter().any(|message| {
+                message.role == ChatRole::Assistant
+                    && message.content.ends_with(VOICE_INTERRUPTION_MARKER)
+            });
+            if !marker_retained
+                && let Some(user) = context
+                    .iter_mut()
+                    .rev()
+                    .find(|message| message.role == ChatRole::User)
+            {
+                user.content = format!("{VOICE_INTERRUPTION_MARKER}\n\n{}", user.content);
+            }
+            self.voice_interruption_pending = false;
+        }
+
         Ok(StartedTurn {
             response_id,
-            context: self.context_messages(),
+            context,
         })
     }
 
@@ -333,6 +366,43 @@ impl ChatSession {
     /// 仅取消匹配的响应，旧任务不能取消后续新请求。
     pub(super) fn cancel_response(&mut self, response_id: ResponseId) -> bool {
         self.set_response_state(response_id, ChatMessageState::Cancelled)
+    }
+
+    /// 截断匹配的回复、追加稳定标注并保留该轮供下一次模型请求理解打断语义。
+    pub(super) fn interrupt_response_by_voice(&mut self, response_id: ResponseId) -> bool {
+        let Ok(active) = self.current_response(response_id) else {
+            return false;
+        };
+        self.trim_completed_turns_for(0, VOICE_INTERRUPTION_MARKER.len(), 0);
+        let Some(index) = self.messages.iter().position(|message| {
+            message.id == active.message_id
+                && message.turn_id == active.turn_id
+                && message.role == ChatRole::Assistant
+                && message.state == ChatMessageState::Streaming
+        }) else {
+            self.active_response = None;
+            return false;
+        };
+        let current_len = self.messages[index].content.len();
+        let bytes_without_response = self.total_bytes.saturating_sub(current_len);
+        let available = self.limits.max_bytes.saturating_sub(bytes_without_response);
+        if available < VOICE_INTERRUPTION_MARKER.len() {
+            // 即使字节预算容不下标注，也持久化独立终态；恢复后可据此向下一轮注入语义。
+            let interrupted =
+                self.set_response_state(response_id, ChatMessageState::InterruptedByVoice);
+            self.voice_interruption_pending = interrupted;
+            return interrupted;
+        }
+        let keep_bytes = available.saturating_sub(VOICE_INTERRUPTION_MARKER.len());
+        let keep_bytes = floor_char_boundary(&self.messages[index].content, keep_bytes);
+        let message = &mut self.messages[index];
+        message.content.truncate(keep_bytes);
+        message.content.push_str(VOICE_INTERRUPTION_MARKER);
+        message.state = ChatMessageState::InterruptedByVoice;
+        self.total_bytes = bytes_without_response.saturating_add(message.content.len());
+        self.active_response = None;
+        self.voice_interruption_pending = true;
+        true
     }
 
     /// 将退出时仍活动的响应标记为中断，且不允许迟到事件继续写入。
@@ -428,6 +498,10 @@ impl ChatSession {
             });
             session.trim_completed_turns_for(0, 0, 0);
         }
+        session.voice_interruption_pending = session
+            .messages
+            .back()
+            .is_some_and(|message| message.state == ChatMessageState::InterruptedByVoice);
         Ok(session)
     }
 
@@ -454,7 +528,10 @@ impl ChatSession {
                     image: user.image.clone(),
                 });
             } else if let Some(assistant) = assistant
-                && assistant.state == ChatMessageState::Complete
+                && matches!(
+                    assistant.state,
+                    ChatMessageState::Complete | ChatMessageState::InterruptedByVoice
+                )
             {
                 context.push(ChatContextMessage {
                     role: ChatRole::User,
@@ -544,6 +621,14 @@ impl Default for ChatSession {
 fn allocate(counter: &mut u64) -> u64 {
     *counter = counter.wrapping_add(1).max(1);
     *counter
+}
+
+fn floor_char_boundary(text: &str, maximum: usize) -> usize {
+    let mut boundary = maximum.min(text.len());
+    while boundary > 0 && !text.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
 }
 
 /// 描述会话状态更新被拒绝的原因。

@@ -8,6 +8,7 @@ mod document;
 mod llm;
 mod persona;
 mod types;
+mod voice;
 
 #[cfg(test)]
 mod tests;
@@ -56,6 +57,8 @@ pub(crate) use types::{
     LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES, LOGGING_MIN_FILE_SIZE_MB,
     LOGGING_MIN_KEEP_FILES, LogLevel, LoggingSettings, ModelWindowSize, WindowPosition,
 };
+pub(crate) use voice::{SharedVoiceSettings, VoiceMode, VoiceSettings};
+use voice::{parse_voice_settings, write_voice_settings};
 /// 全局应用配置；首次访问时从用户配置目录加载，并兼容已有工作目录配置。
 pub(crate) static CONFIG: LazyLock<LunaConfig> = LazyLock::new(LunaConfig::load);
 
@@ -103,6 +106,7 @@ struct LoadedConfig {
     window_positions: WindowPositions,
     llm: LlmSettings,
     persona: PersonaSettings,
+    voice: VoiceSettings,
 }
 
 impl Default for LoadedConfig {
@@ -122,6 +126,7 @@ impl Default for LoadedConfig {
             window_positions: WindowPositions::default(),
             llm: LlmSettings::default(),
             persona: PersonaSettings::default(),
+            voice: VoiceSettings::default(),
         }
     }
 }
@@ -147,8 +152,10 @@ pub(crate) struct LunaConfig {
     window_positions: Mutex<WindowPositions>,
     llm: ArcSwap<LlmSettings>,
     persona: ArcSwap<PersonaSettings>,
+    voice: ArcSwap<VoiceSettings>,
     llm_request_revision: AtomicU64,
     persona_request_revision: AtomicU64,
+    voice_request_revision: AtomicU64,
     model_request_revision: AtomicU64,
     frame_rate_request_revision: AtomicU64,
     model_window_size_request_revision: AtomicU64,
@@ -201,8 +208,10 @@ impl LunaConfig {
             window_positions: Mutex::new(loaded.window_positions),
             llm: ArcSwap::from_pointee(loaded.llm),
             persona: ArcSwap::from_pointee(loaded.persona),
+            voice: ArcSwap::from_pointee(loaded.voice),
             llm_request_revision: AtomicU64::new(0),
             persona_request_revision: AtomicU64::new(0),
+            voice_request_revision: AtomicU64::new(0),
             model_request_revision: AtomicU64::new(0),
             frame_rate_request_revision: AtomicU64::new(0),
             model_window_size_request_revision: AtomicU64::new(0),
@@ -337,6 +346,11 @@ impl LunaConfig {
     /// 返回一次性发布的人格目录与当前人格快照。
     pub(crate) fn persona_settings(&self) -> SharedPersonaSettings {
         self.persona.load_full()
+    }
+
+    /// 返回一次性发布的本地语音配置快照。
+    pub(crate) fn voice_settings(&self) -> SharedVoiceSettings {
+        self.voice.load_full()
     }
 
     /// 只替换进程内已发布的 LLM 快照，不触碰配置文件。
@@ -845,6 +859,31 @@ impl LunaConfig {
             return Ok(None);
         }
         self.persona.store(settings.clone());
+        Ok(Some(settings))
+    }
+
+    /// 为一份完整语音配置分配单调 revision。
+    pub(crate) fn reserve_voice_settings_revision(&self) -> u64 {
+        self.reserve_request_revision(&self.voice_request_revision)
+    }
+
+    /// 校验、持久化并一次性发布仍为最新请求的语音配置。
+    pub(crate) fn set_voice_settings_at_revision(
+        &self,
+        settings: VoiceSettings,
+        revision: u64,
+    ) -> Result<Option<SharedVoiceSettings>, ConfigWriteError> {
+        let settings = Arc::new(settings.normalized()?);
+        let _guard = self.write_lock.lock();
+        if !revision_is_current(&self.voice_request_revision, revision) {
+            return Ok(None);
+        }
+        self.edit_document_locked(|document| write_voice_settings(document, &settings))?;
+        let _revision_guard = self.revision_lock.lock();
+        if !revision_is_current(&self.voice_request_revision, revision) {
+            return Ok(None);
+        }
+        self.voice.store(settings.clone());
         Ok(Some(settings))
     }
 

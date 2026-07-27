@@ -39,12 +39,22 @@ impl SettingsWindowView {
             }
             cache_window_position(window, ConfigWindow::Settings);
         });
-        let config_subscription = cx.subscribe(&config, |this, _, event: &SettingsEvent, cx| {
-            if matches!(event, SettingsEvent::WindowPositionsReset) {
-                this.position_controller.request_reset();
-                cx.notify();
-            }
-        });
+        let config_subscription = cx.subscribe_in(
+            &config,
+            window,
+            |this, config, event: &SettingsEvent, window, cx| match event {
+                SettingsEvent::AgentChanged => {
+                    config.update(cx, |config, cx| {
+                        config.refresh_persona_providers(window, cx);
+                    });
+                }
+                SettingsEvent::WindowPositionsReset => {
+                    this.position_controller.request_reset();
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
         cx.on_release(|this, cx| {
             this.config
                 .update(cx, |config, cx| config.deactivate_window(cx));

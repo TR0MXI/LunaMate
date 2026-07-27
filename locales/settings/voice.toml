@@ -1,0 +1,127 @@
+_version = 2
+
+[settings.voice]
+"zh-CN" = "语音"
+"zh-TW" = "語音"
+"en" = "Voice"
+"ja" = "音声"
+
+[voice.title]
+"zh-CN" = "语音设置"
+"zh-TW" = "語音設定"
+"en" = "Voice Settings"
+"ja" = "音声設定"
+
+[voice.input]
+"zh-CN" = "输入"
+"zh-TW" = "輸入"
+"en" = "Input"
+"ja" = "入力"
+
+[voice.mode]
+"zh-CN" = "录音模式"
+"zh-TW" = "錄音模式"
+"en" = "Recording mode"
+"ja" = "録音モード"
+
+[voice.mode_off]
+"zh-CN" = "关闭"
+"zh-TW" = "關閉"
+"en" = "Off"
+"ja" = "オフ"
+
+[voice.mode_auto]
+"zh-CN" = "自动"
+"zh-TW" = "自動"
+"en" = "Automatic"
+"ja" = "自動"
+
+[voice.mode_mixed]
+"zh-CN" = "混合"
+"zh-TW" = "混合"
+"en" = "Hybrid"
+"ja" = "ハイブリッド"
+
+[voice.mode_push_to_talk]
+"zh-CN" = "按住说话"
+"zh-TW" = "按住說話"
+"en" = "Push to talk"
+"ja" = "押して話す"
+
+[voice.push_to_talk]
+"zh-CN" = "按住说话"
+"zh-TW" = "按住說話"
+"en" = "Push to talk"
+"ja" = "押して話す"
+
+[voice.models]
+"zh-CN" = "本地模型"
+"zh-TW" = "本機模型"
+"en" = "Local Models"
+"ja" = "ローカルモデル"
+
+[voice.whisper_model]
+"zh-CN" = "Whisper 模型"
+"zh-TW" = "Whisper 模型"
+"en" = "Whisper model"
+"ja" = "Whisper モデル"
+
+[voice.vad_model]
+"zh-CN" = "Silero VAD 模型"
+"zh-TW" = "Silero VAD 模型"
+"en" = "Silero VAD model"
+"ja" = "Silero VAD モデル"
+
+[voice.model_downloads]
+"zh-CN" = "模型下载"
+"zh-TW" = "模型下載"
+"en" = "Model downloads"
+"ja" = "モデルのダウンロード"
+
+[voice.model_download_notice]
+"zh-CN" = "LunaMate 不会自动下载模型，请从以下官方列表获取兼容的 GGML 文件。"
+"zh-TW" = "LunaMate 不會自動下載模型，請從以下官方清單取得相容的 GGML 檔案。"
+"en" = "LunaMate does not download models automatically. Get compatible GGML files from these official lists."
+"ja" = "LunaMate はモデルを自動的にダウンロードしません。互換性のある GGML ファイルは、次の公式一覧から入手してください。"
+
+[voice.whisper_model_list]
+"zh-CN" = "Whisper GGML 模型列表"
+"zh-TW" = "Whisper GGML 模型清單"
+"en" = "Whisper GGML model list"
+"ja" = "Whisper GGML モデル一覧"
+
+[voice.vad_model_list]
+"zh-CN" = "Silero VAD GGML 模型列表"
+"zh-TW" = "Silero VAD GGML 模型清單"
+"en" = "Silero VAD GGML model list"
+"ja" = "Silero VAD GGML モデル一覧"
+
+[voice.inference]
+"zh-CN" = "推理"
+"zh-TW" = "推理"
+"en" = "Inference"
+"ja" = "推論"
+
+[voice.gpu_acceleration]
+"zh-CN" = "GPU 加速"
+"zh-TW" = "GPU 加速"
+"en" = "GPU acceleration"
+"ja" = "GPU アクセラレーション"
+
+[voice.select_model]
+"zh-CN" = "选择模型"
+"zh-TW" = "選擇模型"
+"en" = "Select model"
+"ja" = "モデルを選択"
+
+[voice.saved]
+"zh-CN" = "语音设置已保存"
+"zh-TW" = "語音設定已儲存"
+"en" = "Voice settings saved"
+"ja" = "音声設定を保存しました"
+
+[voice.picker_failed]
+"zh-CN" = "无法打开模型选择器"
+"zh-TW" = "無法開啟模型選擇器"
+"en" = "Could not open the model picker"
+"ja" = "モデル選択画面を開けませんでした"

@@ -166,6 +166,21 @@ GPUI 点击
 - [ ] 对话表情、点击表情和系统预览使用明确的优先级规则。
 - [ ] 日志不得记录完整对话或未脱敏的用户内容。
 
+## 本地语音交互
+
+- [x] 使用 CPAL 无锁采集默认麦克风，并在专用 worker 重采样为 16 kHz 单声道 `f32`。
+- [x] 使用安全滚动窗口 Silero VAD、500 ms 预录、迟滞阈值和 900 ms 静音自动划分 utterance。
+- [x] 在独立 OS 线程复用 Whisper context，限制单段录音为 30 秒并拒绝迟到转写结果。
+- [x] 提供关闭、自动、主窗口按住说话和两者混合四种模式，语音模型与 GPU 偏好原子持久化。
+- [x] 录音时显示底部音量波形，并在用户说话时打断流式回复、保留带标注的部分上下文。
+- [x] 通用构建固定包含 macOS Metal 或 Windows/Linux Vulkan，运行时按偏好启用并在失败时回退 CPU。
+- [x] 移除本地 `whisper-rs-sys` patch，VAD 只通过 whisper-rs 公开安全接口推理。
+- [ ] whisper-rs 修复 safe abort callback 的 trampoline 类型与所有权后，移除 `raw-api`
+  和本地 abort FFI。
+- [ ] 增加失焦后可用的系统级按住说话热键，并分别实现 Windows、macOS、Wayland 与 X11 适配。
+- [ ] 在真实麦克风上验证 44.1/48 kHz 重采样、设备断开、噪声、旁人声音和扬声器回授。
+- [ ] 在真实 Metal 及 NVIDIA、AMD、Intel Vulkan 环境验证设备选择和 CPU 回退。
+
 ## 数据与 Agent 记忆
 
 - [x] 使用 SurrealKV 作为生产嵌入式数据库，并仅在测试中启用 Mem 后端。

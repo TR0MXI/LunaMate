@@ -231,5 +231,25 @@ fn core_settings_text_exists_in_every_supported_language() {
             rust_i18n::t!("tools.outfit_change_notice", locale = locale),
             "tools.outfit_change_notice"
         );
+        assert_ne!(
+            rust_i18n::t!("voice.model_downloads", locale = locale),
+            "voice.model_downloads"
+        );
+        assert_ne!(
+            rust_i18n::t!("voice.mode_mixed", locale = locale),
+            "voice.mode_mixed"
+        );
+        assert_ne!(
+            rust_i18n::t!("voice.model_download_notice", locale = locale),
+            "voice.model_download_notice"
+        );
+        assert_ne!(
+            rust_i18n::t!("voice.whisper_model_list", locale = locale),
+            "voice.whisper_model_list"
+        );
+        assert_ne!(
+            rust_i18n::t!("voice.vad_model_list", locale = locale),
+            "voice.vad_model_list"
+        );
     }
 }

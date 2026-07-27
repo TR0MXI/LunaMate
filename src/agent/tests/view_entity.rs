@@ -17,7 +17,7 @@ use crate::{
         store::ChatSessionStore,
         view::AgentView,
     },
-    config::{CONFIG, DEFAULT_PERSONA_ID, LlmSettings},
+    config::{AppLanguage, CONFIG, DEFAULT_PERSONA_ID, LlmSettings},
 };
 
 /// 永不产出事件的 fake backend；保证测试不会发起任何网络请求。
@@ -141,6 +141,40 @@ fn replacing_the_outfit_snapshot_rejects_an_older_tool_request(cx: &mut TestAppC
 
         view.set_available_outfits(vec!["默认服装".to_owned(), "女仆".to_owned()]);
         assert!(!view.outfit_request_is_current(&request));
+    });
+}
+
+#[gpui::test]
+fn only_the_latest_voice_utterance_can_be_cancelled_or_submitted(cx: &mut TestAppContext) {
+    let _config = config_without_model();
+    let (view, cx) = mount(cx, Arc::new(SilentBackend), None);
+
+    view.update(cx, |view, cx| {
+        view.voice_speech_started(10, AppLanguage::SimplifiedChinese, cx);
+        view.voice_speech_started(11, AppLanguage::SimplifiedChinese, cx);
+        assert_eq!(view.pending_voice_for_test(), Some(11));
+
+        view.voice_utterance_cancelled(10);
+        assert_eq!(view.pending_voice_for_test(), Some(11));
+        view.voice_utterance_cancelled(11);
+        assert_eq!(view.pending_voice_for_test(), None);
+    });
+}
+
+#[gpui::test]
+fn a_voice_transcript_is_rejected_after_agent_configuration_changes(cx: &mut TestAppContext) {
+    let _config = config_without_model();
+    let (view, cx) = mount(cx, Arc::new(SilentBackend), None);
+
+    view.update(cx, |view, cx| {
+        view.voice_speech_started(21, AppLanguage::English, cx);
+        assert_eq!(view.pending_voice_for_test(), Some(21));
+
+        // 即使内容相同，新发布的 Arc 也代表一个新的配置 generation。
+        CONFIG.publish_llm_settings_for_test(LlmSettings::default());
+        assert!(!view.send_voice_transcript(21, "hello".to_owned(), cx));
+        assert_eq!(view.pending_voice_for_test(), None);
+        assert_eq!(view.message_count_for_test(), 0);
     });
 }
 

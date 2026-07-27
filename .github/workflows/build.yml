@@ -75,7 +75,6 @@ jobs:
             libssl-dev \
             libstdc++-12-dev \
             libva-dev \
-            libvulkan1 \
             libwayland-dev \
             libx11-xcb-dev \
             libxkbcommon-x11-dev \
@@ -85,6 +84,21 @@ jobs:
             pkg-config
           echo "CC=clang" >> "$GITHUB_ENV"
           echo "CXX=clang++" >> "$GITHUB_ENV"
+
+      - name: 安装 Linux Vulkan SDK
+        if: runner.os == 'Linux'
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa # v1.6.0
+        with:
+          vulkan_version: 1.4.350.1
+          cache: true
+
+      - name: 安装 Windows Vulkan SDK
+        if: runner.os == 'Windows'
+        uses: jakoch/install-vulkan-sdk-action@37effcfa045411f8bfbbda26df2fd1b3bf3436fa # v1.6.0
+        with:
+          vulkan_version: 1.4.350.0
+          install_runtime: true
+          cache: true
 
       - name: 启用 sccache
         uses: mozilla-actions/sccache-action@v0.0.10

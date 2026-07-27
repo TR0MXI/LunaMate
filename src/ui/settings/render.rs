@@ -29,6 +29,11 @@ impl SettingsView {
                 ConfigSection::Persona,
             ),
             (
+                "section-voice",
+                t!("settings.voice").to_string(),
+                ConfigSection::Voice,
+            ),
+            (
                 "section-tool",
                 t!("settings.tool").to_string(),
                 ConfigSection::Tool,
@@ -110,6 +115,7 @@ impl Render for SettingsView {
                             .clone()
                             .map(embedded_page)
                             .unwrap_or_else(|| uninitialized_page(palette)),
+                        ConfigSection::Voice => self.render_voice_page(cx),
                         ConfigSection::Tool => self.render_tool_page(cx),
                         ConfigSection::System => self.render_system_page(cx),
                         ConfigSection::Debug => self.render_debug_page(cx),

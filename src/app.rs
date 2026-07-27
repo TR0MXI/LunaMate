@@ -32,11 +32,13 @@ use crate::{
         DesktopPetView, SettingsView, apply, apply_language, desktop_pet_window_min_size,
         desktop_pet_window_size, raster_dimensions_for_window, restored_window_bounds,
     },
+    voice::{VoiceController, VoiceShutdown},
 };
 
 const MODELS_DIRECTORY: &str = "models";
 const ASYNC_WORKER_THREADS: usize = 2;
 const FINAL_AGENT_SAVE_TIMEOUT: Duration = Duration::from_secs(5);
+const VOICE_SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 type FinalAgentSave = Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>;
 
@@ -59,6 +61,7 @@ const APP_ASSETS: &[(&str, &[u8])] = app_assets![
     "folder-open.svg",
     "image-plus.svg",
     "message-circle.svg",
+    "mic.svg",
     "move.svg",
     "play.svg",
     "plus.svg",
@@ -266,6 +269,15 @@ pub(super) fn run() {
     let final_agent_save: FinalAgentSave = Arc::new(Mutex::new(None));
     let final_agent_save_for_app = final_agent_save.clone();
     let async_handle_for_app = async_handle.clone();
+    let (voice_controller, voice_shutdown): (Option<VoiceController>, Option<VoiceShutdown>) =
+        match VoiceController::start(CONFIG.voice_settings()) {
+            Ok((controller, shutdown)) => (Some(controller), Some(shutdown)),
+            Err(error) => {
+                log::error!("无法启动语音服务：{error}");
+                (None, None)
+            }
+        };
+    let voice_for_app = voice_controller.clone();
 
     application()
         .with_assets(AppAssets)
@@ -287,6 +299,7 @@ pub(super) fn run() {
             let window_min_size = desktop_pet_window_min_size(display_width, display_height);
             let final_agent_save = final_agent_save_for_app.clone();
             let async_handle = async_handle_for_app.clone();
+            let voice = voice_for_app.clone();
 
             let result = cx.open_window(
                 WindowOptions {
@@ -367,6 +380,7 @@ pub(super) fn run() {
                         DesktopPetView::new(
                             config.clone(),
                             agent_view,
+                            voice,
                             None,
                             raster_dimensions,
                             system_tray.as_ref().map(|(tray, _)| Rc::clone(tray)),
@@ -418,6 +432,12 @@ pub(super) fn run() {
                 cx.quit();
             }
         });
+
+    if let Some(voice_shutdown) = voice_shutdown
+        && !voice_shutdown.shutdown(VOICE_SHUTDOWN_WAIT_TIMEOUT)
+    {
+        log::warn!("等待语音工作线程退出超时");
+    }
 
     let final_save = final_agent_save.lock().take();
     if let Some(final_save) = final_save {

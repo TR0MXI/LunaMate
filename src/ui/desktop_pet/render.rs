@@ -5,10 +5,11 @@ use gpui::{
     StyleRefinement, StyledImage, Window, WindowControlArea, div, img, prelude::*, px, svg,
 };
 use gpui_component::StyledExt as _;
+use gpui_component::tooltip::Tooltip;
 use rust_i18n::t;
 
 use super::DesktopPetView;
-use crate::ui::UiPalette;
+use crate::{ui::UiPalette, voice::VoicePhase};
 
 impl Render for DesktopPetView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -35,6 +36,8 @@ impl Render for DesktopPetView {
         let model_generation = self.model_generation;
         let show_fps = self.show_fps;
         let actual_fps = self.actual_fps;
+        let voice_mode = self.voice_mode;
+        let voice_activity = self.voice_activity;
         let diagnostics_top = if show_fps { px(42.0) } else { px(12.0) };
 
         div()
@@ -169,6 +172,100 @@ impl Render for DesktopPetView {
                         gpui::AnyView::from(chat).cached(StyleRefinement::default().size_full()),
                     ),
             )
+            .when(voice_activity.phase == VoicePhase::Recording, |this| {
+                let level = voice_activity.level.max(0.08);
+                let factors = [0.42_f32, 0.68, 0.9, 1.0, 0.82, 0.58, 0.36];
+                this.child(
+                    div()
+                        .id("voice-recording-indicator")
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_3()
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .w(px(76.0))
+                                .h(px(32.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(3.0))
+                                .rounded_md()
+                                .border_1()
+                                .border_color(palette.primary.opacity(0.7))
+                                .bg(palette.popover.opacity(0.9))
+                                .shadow_md()
+                                .children(factors.map(|factor| {
+                                    div()
+                                        .w(px(4.0))
+                                        .h(px((4.0 + 18.0 * level * factor).clamp(4.0, 22.0)))
+                                        .rounded_full()
+                                        .bg(palette.primary)
+                                })),
+                        ),
+                )
+            })
+            .when(voice_mode.supports_push_to_talk(), |this| {
+                let recording = voice_activity.phase == VoicePhase::Recording;
+                let tooltip = t!("voice.push_to_talk").to_string();
+                this.child(
+                    div()
+                        .id("push-to-talk")
+                        .absolute()
+                        .left_3()
+                        .bottom(px(if chat_input_open { 104.0 } else { 56.0 }))
+                        .flex()
+                        .size_9()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(if recording {
+                            palette.primary
+                        } else {
+                            palette.border
+                        })
+                        .bg(if recording {
+                            palette.primary
+                        } else {
+                            control_background
+                        })
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(control_hover))
+                        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                this.set_push_to_talk(true);
+                            }),
+                        )
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.set_push_to_talk(false);
+                            }),
+                        )
+                        .on_mouse_up_out(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, _| this.set_push_to_talk(false)),
+                        )
+                        .child(
+                            svg()
+                                .path("icons/mic.svg")
+                                .size_4()
+                                .text_color(if recording {
+                                    palette.primary_foreground
+                                } else {
+                                    palette.foreground
+                                }),
+                        ),
+                )
+            })
             .child(
                 div()
                     .id("close-window")

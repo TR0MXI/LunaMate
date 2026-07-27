@@ -1,0 +1,45 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+use crate::{
+    config::VoiceSettings,
+    voice::transcribe::{TranscriptionJob, TranscriptionQueue},
+};
+
+fn job(revision: u64, utterance_id: u64) -> TranscriptionJob {
+    TranscriptionJob {
+        revision,
+        utterance_id,
+        samples: vec![0.0; 512],
+        settings: Arc::new(VoiceSettings::default()),
+    }
+}
+
+#[test]
+fn pending_transcription_is_a_latest_value_slot() {
+    let desired_revision = Arc::new(AtomicU64::new(1));
+    let queue = TranscriptionQueue::new(desired_revision);
+
+    assert!(queue.submit(job(1, 10)));
+    assert!(queue.submit(job(1, 11)));
+
+    let pending = queue
+        .take_pending_for_test()
+        .expect("最新 utterance 应当保留在等待槽");
+    assert_eq!(pending.utterance_id, 11);
+}
+
+#[test]
+fn stale_or_shutdown_transcription_cannot_enter_the_queue() {
+    let desired_revision = Arc::new(AtomicU64::new(1));
+    let queue = TranscriptionQueue::new(desired_revision.clone());
+    desired_revision.store(2, Ordering::Release);
+
+    assert!(!queue.submit(job(1, 10)));
+    assert!(queue.take_pending_for_test().is_none());
+
+    queue.shutdown();
+    assert!(!queue.submit(job(2, 11)));
+}

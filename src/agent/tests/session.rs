@@ -96,6 +96,101 @@ fn failed_turn_is_not_replayed_in_next_context() {
 }
 
 #[test]
+fn voice_interruption_is_marked_and_replayed_in_next_context() {
+    let mut session = ChatSession::default();
+    let interrupted = session.start_turn("first").expect("第一轮应当可开始");
+    session
+        .append_response(interrupted.response_id, "partial response")
+        .expect("部分回复应当可写入");
+
+    assert!(session.interrupt_response_by_voice(interrupted.response_id));
+    let assistant = &session.messages()[1];
+    assert_eq!(assistant.visible_content(), "partial response");
+    assert_eq!(assistant.state(), &ChatMessageState::InterruptedByVoice);
+
+    let next = session.start_turn("second").expect("打断后应当可继续");
+    assert_eq!(next.context.len(), 3);
+    assert_eq!(next.context[0].content, "first");
+    assert!(next.context[1].content.ends_with(VOICE_INTERRUPTION_MARKER));
+    assert_eq!(next.context[2].content, "second");
+}
+
+#[test]
+fn voice_interruption_truncates_utf8_at_a_character_boundary() {
+    let marker_bytes = VOICE_INTERRUPTION_MARKER.len();
+    let mut session = ChatSession::new(ChatLimits {
+        max_messages: 4,
+        max_bytes: marker_bytes + "问题".len() + "回答回答".len() - 1,
+    })
+    .expect("测试限制应当有效");
+    let interrupted = session.start_turn("问题").expect("第一轮应当可开始");
+    session
+        .append_response(interrupted.response_id, "回答回答")
+        .expect("部分回复应当可写入");
+
+    assert!(session.interrupt_response_by_voice(interrupted.response_id));
+    let content = session.messages()[1].content();
+    assert!(content.is_char_boundary(content.len()));
+    assert!(content.ends_with(VOICE_INTERRUPTION_MARKER));
+    assert!(session.usage().bytes <= session.usage().max_bytes);
+}
+
+#[test]
+fn next_request_keeps_interruption_semantics_after_history_trimming() {
+    let mut session = ChatSession::new(ChatLimits {
+        max_messages: 4,
+        max_bytes: VOICE_INTERRUPTION_MARKER.len() + 2,
+    })
+    .expect("测试限制应当有效");
+    let interrupted = session.start_turn("a").expect("第一轮应当可开始");
+    session
+        .append_response(interrupted.response_id, "b")
+        .expect("部分回复应当可写入");
+    assert!(session.interrupt_response_by_voice(interrupted.response_id));
+
+    let next = session
+        .start_turn("next")
+        .expect("旧轮次应当被裁剪以容纳新消息");
+
+    assert_eq!(next.context.len(), 1);
+    assert!(
+        next.context[0]
+            .content
+            .starts_with(VOICE_INTERRUPTION_MARKER)
+    );
+    assert!(next.context[0].content.ends_with("next"));
+    assert_eq!(session.messages()[0].content(), "next");
+}
+
+#[test]
+fn no_room_voice_interruption_survives_snapshot_restore() {
+    let limits = ChatLimits {
+        max_messages: 4,
+        max_bytes: 4,
+    };
+    let mut session = ChatSession::new(limits).expect("测试限制应当有效");
+    let interrupted = session.start_turn("a").expect("第一轮应当可开始");
+    session
+        .append_response(interrupted.response_id, "b")
+        .expect("部分回复应当可写入");
+    assert!(session.interrupt_response_by_voice(interrupted.response_id));
+    assert_eq!(
+        session.messages()[1].state(),
+        &ChatMessageState::InterruptedByVoice
+    );
+
+    let snapshot = session.snapshot(1);
+    let mut restored = ChatSession::from_snapshot(snapshot, limits).expect("快照应当可以恢复");
+    let next = restored.start_turn("c").expect("恢复后应当可继续对话");
+
+    assert!(
+        next.context
+            .last()
+            .is_some_and(|message| message.content.starts_with(VOICE_INTERRUPTION_MARKER))
+    );
+}
+
+#[test]
 fn restoring_streaming_response_marks_it_interrupted() {
     let mut session = ChatSession::default();
     let started = session.start_turn("hello").expect("测试轮次应当可开始");
