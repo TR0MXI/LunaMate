@@ -23,6 +23,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
     env:
+      CARGO_TARGET_DIR: ${{ matrix.cargo_target_dir }}
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
     strategy:
@@ -33,18 +34,21 @@ jobs:
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             rust_targets: x86_64-unknown-linux-gnu
+            cargo_target_dir: target
             artifact: lunamate-linux-x86_64
             archive: dist/lunamate-linux-x86_64.tar.gz
           - name: Windows x86_64
             os: windows-2022
             target: x86_64-pc-windows-msvc
             rust_targets: x86_64-pc-windows-msvc
+            cargo_target_dir: 'D:\t'
             artifact: lunamate-windows-x86_64
             archive: dist/lunamate-windows-x86_64.zip
           - name: macOS Apple Silicon
             os: macos-14
             target: aarch64-apple-darwin
             rust_targets: aarch64-apple-darwin
+            cargo_target_dir: target
             artifact: lunamate-macos-aarch64
             archive: dist/lunamate-macos-aarch64.zip
 
@@ -75,6 +79,7 @@ jobs:
             libssl-dev \
             libstdc++-12-dev \
             libva-dev \
+            libvulkan-dev \
             libwayland-dev \
             libx11-xcb-dev \
             libxkbcommon-x11-dev \
@@ -134,7 +139,7 @@ jobs:
         run: |
           package="dist/lunamate-linux-x86_64"
           mkdir -p "$package"
-          install -m 755 "target/${{ matrix.target }}/release/lunamate" "$package/lunamate"
+          install -m 755 "${CARGO_TARGET_DIR}/${{ matrix.target }}/release/lunamate" "$package/lunamate"
           install -m 644 README.md LICENSE "$package/"
           tar -C dist -czf "${{ matrix.archive }}" lunamate-linux-x86_64
 
@@ -144,7 +149,7 @@ jobs:
         run: |
           $package = "dist/lunamate-windows-x86_64"
           New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/lunamate.exe" "$package/LunaMate.exe"
+          Copy-Item "$env:CARGO_TARGET_DIR/${{ matrix.target }}/release/lunamate.exe" "$package/LunaMate.exe"
           Copy-Item README.md, LICENSE -Destination $package
           Compress-Archive -Path $package -DestinationPath "${{ matrix.archive }}" -CompressionLevel Optimal
 
@@ -161,7 +166,7 @@ jobs:
         run: |
           app="dist/LunaMate.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-          install -m 755 "target/${{ matrix.target }}/release/lunamate" "$app/Contents/MacOS/LunaMate"
+          install -m 755 "${CARGO_TARGET_DIR}/${{ matrix.target }}/release/lunamate" "$app/Contents/MacOS/LunaMate"
           cp README.md LICENSE "$app/Contents/Resources/"
           plutil -create xml1 "$app/Contents/Info.plist"
           plutil -insert CFBundleDisplayName -string LunaMate "$app/Contents/Info.plist"
