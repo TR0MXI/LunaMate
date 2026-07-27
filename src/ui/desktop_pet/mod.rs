@@ -13,9 +13,9 @@ use std::{
 };
 
 use gpui::{
-    AnyWindowHandle, App, AppContext, Context, Entity, Hsla, RenderImage, SharedString, Styled,
-    Subscription, Task, Window, WindowBackgroundAppearance, WindowDecorations, WindowKind,
-    WindowOptions, px, size, transparent_black,
+    AnyWindowHandle, App, AppContext, Context, Entity, Hsla, Pixels, Point, RenderImage,
+    SharedString, Size, Styled, Subscription, Task, Window, WindowBackgroundAppearance,
+    WindowDecorations, WindowKind, WindowOptions, px, size, transparent_black,
 };
 use gpui_component::Root;
 use parking_lot::{Condvar, Mutex};
@@ -33,8 +33,9 @@ use crate::{
         RenderedModelFrame,
     },
     platform::{
-        NativeTrayMenuWindow, SystemTray, TrayIconStyle, TrayMenuAnchor, WindowMover,
-        WindowPositionController, configure_settings_window, configure_tray_menu_window,
+        GlobalCursorTracker, NativeTrayMenuWindow, SystemTray, TrayIconStyle, TrayMenuAnchor,
+        WindowMover, WindowPositionController, configure_settings_window,
+        configure_tray_menu_window,
     },
     voice::{VoiceActivitySnapshot, VoiceController, VoiceEvent, VoicePhase},
 };
@@ -48,6 +49,7 @@ use super::{
 
 const FPS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const VOICE_LEVEL_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
+const CURSOR_TRACKING_INTERVAL: Duration = Duration::from_millis(16);
 /// 合成器钳制窗口尺寸时放弃重试并接受实际 viewport，避免每帧重复请求 resize。
 const MAX_WINDOW_RESIZE_ATTEMPTS: u32 = 8;
 /// 退出时同步等待 GPU worker 的上限；驱动卡死时不应无限阻塞主线程。
@@ -105,6 +107,18 @@ fn localized_diagnostics_warning(diagnostics: &ModelLoadDiagnostics) -> Option<S
     })
 }
 
+pub(in crate::ui) fn look_target_for_position(
+    position: Point<Pixels>,
+    viewport: Size<Pixels>,
+) -> [f32; 2] {
+    let width = f32::from(viewport.width).max(1.0);
+    let height = f32::from(viewport.height).max(1.0);
+    [
+        (f32::from(position.x) / width * 2.0 - 1.0).clamp(-1.0, 1.0),
+        (1.0 - f32::from(position.y) / height * 2.0).clamp(-1.0, 1.0),
+    ]
+}
+
 #[derive(Default)]
 struct GpuShutdownCompletion {
     completed: Mutex<bool>,
@@ -140,6 +154,8 @@ pub(crate) struct DesktopPetView {
     current_rendered_image: Option<Arc<RenderImage>>,
     previous_rendered_image: Option<Arc<RenderImage>>,
     look_target: Arc<Mutex<[f32; 2]>>,
+    global_cursor_tracker: Option<GlobalCursorTracker>,
+    cursor_tracking_task: Option<Task<()>>,
     eye_tracking_enabled: bool,
     show_fps: bool,
     desktop_pet_visible: bool,
@@ -242,6 +258,7 @@ impl DesktopPetView {
         .detach();
 
         let look_target = Arc::new(Mutex::new([0.0, 0.0]));
+        let global_cursor_tracker = GlobalCursorTracker::new(window);
         let gpu_underlay_size = gpu_underlay_size_for_window(window);
         let gpu_underlay = match GpuUnderlay::attach(window) {
             Ok(underlay) => underlay,
@@ -290,6 +307,7 @@ impl DesktopPetView {
                     if !*enabled {
                         this.reset_look_target();
                     }
+                    this.sync_cursor_tracking_task(cx);
                     cx.notify();
                 }
                 SettingsEvent::ShowFpsChanged(show) => this.set_show_fps(*show, cx),
@@ -394,6 +412,8 @@ impl DesktopPetView {
             current_rendered_image: None,
             previous_rendered_image: None,
             look_target,
+            global_cursor_tracker,
+            cursor_tracking_task: None,
             eye_tracking_enabled: CONFIG.eye_tracking(),
             show_fps: CONFIG.show_fps(),
             desktop_pet_visible: true,
@@ -490,6 +510,7 @@ impl DesktopPetView {
             }));
         }
         view.load_model(initial_model, cx);
+        view.sync_cursor_tracking_task(cx);
         view
     }
 
@@ -604,17 +625,11 @@ impl DesktopPetView {
         }
     }
 
-    fn update_look_target(&self, position: gpui::Point<gpui::Pixels>, window: &Window) {
+    fn update_look_target(&self, position: Point<Pixels>, window: &Window) {
         if !self.eye_tracking_enabled || self.frame.is_none() || self.chat_input_open {
             return;
         }
-        let viewport = window.viewport_size();
-        let width = f32::from(viewport.width).max(1.0);
-        let height = f32::from(viewport.height).max(1.0);
-        let look = [
-            (f32::from(position.x) / width * 2.0 - 1.0).clamp(-1.0, 1.0),
-            (1.0 - f32::from(position.y) / height * 2.0).clamp(-1.0, 1.0),
-        ];
+        let look = look_target_for_position(position, window.viewport_size());
         let mut target = self.look_target.lock();
         if *target == look {
             return;
@@ -622,6 +637,62 @@ impl DesktopPetView {
         *target = look;
         drop(target);
         self.wake_model();
+    }
+
+    fn update_global_cursor_target(&self, window: &Window) {
+        let position = self
+            .global_cursor_tracker
+            .as_ref()
+            .and_then(|tracker| tracker.position(window));
+        if let Some(position) = position {
+            self.update_look_target(position, window);
+        } else {
+            self.reset_look_target();
+        }
+    }
+
+    fn handle_mouse_exit(&self, window: &Window) {
+        self.update_global_cursor_target(window);
+    }
+
+    fn should_track_global_cursor(&self) -> bool {
+        self.global_cursor_tracker.is_some()
+            && self.eye_tracking_enabled
+            && self.desktop_pet_visible
+            && !self.chat_input_open
+            && self.frame.is_some()
+            && !self.close_after_gpu_shutdown
+            && !self.quitting
+            && !self.gpu_shutdown_pending
+    }
+
+    fn sync_cursor_tracking_task(&mut self, cx: &mut Context<Self>) {
+        if !self.should_track_global_cursor() {
+            self.cursor_tracking_task = None;
+            return;
+        }
+        if self.cursor_tracking_task.is_some() {
+            return;
+        }
+
+        let background = cx.background_executor().clone();
+        self.cursor_tracking_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                background.timer(CURSOR_TRACKING_INTERVAL).await;
+                let keep_running = this
+                    .update_in(cx, |this, window, _| {
+                        if !this.should_track_global_cursor() {
+                            return false;
+                        }
+                        this.update_global_cursor_target(window);
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep_running {
+                    break;
+                }
+            }
+        }));
     }
 
     fn reset_look_target(&self) {
@@ -776,6 +847,7 @@ impl DesktopPetView {
                     self.frame = Some(Arc::new(frame));
                 }
                 self.model_state = ModelLoadState::ready(diagnostics);
+                self.sync_cursor_tracking_task(cx);
                 self.config.update(cx, |config, cx| {
                     config.set_preview_capabilities(capabilities, cx);
                 });
@@ -798,6 +870,7 @@ impl DesktopPetView {
                     self.frame = Some(Arc::new(frame));
                     self.record_gpu_presented_frames(presented_at, presented_frames);
                     if needs_notify {
+                        self.sync_cursor_tracking_task(cx);
                         cx.notify();
                     }
                 }
@@ -815,6 +888,7 @@ impl DesktopPetView {
                     t!("model_state.load_failed", name = model_name, error = error).to_string(),
                 );
                 self.frame = None;
+                self.sync_cursor_tracking_task(cx);
                 self.config.update(cx, |config, cx| {
                     config.set_preview_capabilities(ModelPreviewCapabilities::default(), cx);
                 });
@@ -884,6 +958,7 @@ impl DesktopPetView {
         });
         self.gpu_shutdown_restart_cpu = false;
         self.close_after_gpu_shutdown = true;
+        self.sync_cursor_tracking_task(cx);
         if let Some(cancellation) = self.model_cancellation.take() {
             cancellation.cancel();
         }
@@ -912,6 +987,7 @@ impl DesktopPetView {
         self.gpu_shutdown_restart_cpu = false;
         // 退出后 GPUI 禁止再向前台执行器投递任务；后续 GPU 事件必须同步收尾。
         self.quitting = true;
+        self.cursor_tracking_task = None;
         if self.gpu_shutdown_pending {
             if let Some(completion) = &self.gpu_shutdown_completion
                 && !completion.wait_with_timeout(GPU_SHUTDOWN_WAIT_TIMEOUT)
@@ -950,6 +1026,7 @@ impl DesktopPetView {
         let worker = underlay.request_shutdown();
         let completion = Arc::new(GpuShutdownCompletion::default());
         self.gpu_shutdown_pending = true;
+        self.sync_cursor_tracking_task(cx);
         self.gpu_shutdown_completion = Some(completion.clone());
 
         // 立即提交后台 join：退出时 quit observer 先于前台执行器运行，延迟提交会让
@@ -1069,6 +1146,7 @@ impl DesktopPetView {
             self.fps_task = None;
             self.release_rendered_images(window);
         }
+        self.sync_cursor_tracking_task(cx);
         cx.notify();
     }
 
@@ -1181,6 +1259,7 @@ impl DesktopPetView {
         if self.chat_input_open {
             self.reset_look_target();
         }
+        self.sync_cursor_tracking_task(cx);
         self.chat.update(cx, |chat, cx| {
             chat.set_input_visible(self.chat_input_open, window, cx);
         });

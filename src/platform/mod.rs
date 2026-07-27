@@ -13,6 +13,7 @@ pub(crate) use underlay::{
     UnderlaySize, attach as attach_underlay,
 };
 pub(crate) use window::{
-    NativeTrayMenuWindow, WindowMover, WindowPositionController, configure_desktop_pet_window,
-    configure_settings_window, configure_tray_menu_window, set_desktop_pet_window_visible,
+    GlobalCursorTracker, NativeTrayMenuWindow, WindowMover, WindowPositionController,
+    configure_desktop_pet_window, configure_settings_window, configure_tray_menu_window,
+    set_desktop_pet_window_visible,
 };

@@ -131,6 +131,7 @@ impl DesktopPetView {
         }
         self.selected_model = model_path.clone();
         self.frame = None;
+        self.sync_cursor_tracking_task(cx);
         self.frame_rate_meter.reset();
         self.actual_fps = 0.0;
         self.model_commands = None;
@@ -236,6 +237,7 @@ impl DesktopPetView {
                             });
                             this.clear_agent_outfits(cx);
                             this.frame = None;
+                            this.sync_cursor_tracking_task(cx);
                             this.model_commands = None;
                             this.model_cancellation = None;
                             if let Some(wake) = this.model_wake.take() {
@@ -263,6 +265,7 @@ impl DesktopPetView {
                     }
                     if this.desktop_pet_visible {
                         this.frame = Some(Arc::new(frame));
+                        this.sync_cursor_tracking_task(cx);
                     }
                     this.model_state = ModelLoadState::ready(diagnostics);
                     this.config.update(cx, |config, cx| {
@@ -417,7 +420,11 @@ impl DesktopPetView {
                         match frame {
                             Ok(frame) => {
                                 if this.desktop_pet_visible {
+                                    let first_visible_frame = this.frame.is_none();
                                     this.frame = Some(Arc::new(frame));
+                                    if first_visible_frame {
+                                        this.sync_cursor_tracking_task(cx);
+                                    }
                                     cx.notify();
                                 }
                                 true
@@ -426,6 +433,7 @@ impl DesktopPetView {
                             Err(error) => {
                                 log::error!("{}", t!("log.frame_render_stopped", error = error));
                                 this.frame = None;
+                                this.sync_cursor_tracking_task(cx);
                                 this.config.update(cx, |config, cx| {
                                     config.set_preview_capabilities(
                                         ModelPreviewCapabilities::default(),

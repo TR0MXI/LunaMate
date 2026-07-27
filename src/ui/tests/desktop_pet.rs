@@ -1,8 +1,9 @@
+use gpui::{point, px, size};
 use rust_i18n::t;
 
 use crate::{
     model::{ModelDiagnosticCategory, ModelLoadDiagnostic, ModelLoadDiagnostics},
-    ui::desktop_pet::ModelLoadState,
+    ui::desktop_pet::{ModelLoadState, look_target_for_position},
 };
 
 #[test]
@@ -42,5 +43,29 @@ fn ready_state_keeps_partial_capability_failures_non_fatal() {
     assert_eq!(
         state.diagnostics_message().as_deref(),
         Some(expected.as_str())
+    );
+}
+
+#[test]
+fn look_target_maps_the_window_center_to_neutral() {
+    let viewport = size(px(200.0), px(100.0));
+
+    assert_eq!(
+        look_target_for_position(point(px(100.0), px(50.0)), viewport),
+        [0.0, 0.0]
+    );
+}
+
+#[test]
+fn look_target_clamps_cursor_positions_outside_the_window() {
+    let viewport = size(px(200.0), px(100.0));
+
+    assert_eq!(
+        look_target_for_position(point(px(-80.0), px(-40.0)), viewport),
+        [-1.0, 1.0]
+    );
+    assert_eq!(
+        look_target_for_position(point(px(320.0), px(180.0)), viewport),
+        [1.0, -1.0]
     );
 }

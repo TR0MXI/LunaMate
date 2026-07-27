@@ -46,7 +46,7 @@ impl Render for DesktopPetView {
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _| {
                 this.update_look_target(event.position, window);
             }))
-            .on_mouse_exit(cx.listener(|this, _, _, _| this.reset_look_target()))
+            .on_mouse_exit(cx.listener(|this, _, window, _| this.handle_mouse_exit(window)))
             .when_some(frame, |this, frame| {
                 let painted_frame = frame.clone();
                 let uses_native_surface = frame.image().is_none();
