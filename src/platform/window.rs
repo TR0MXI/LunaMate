@@ -446,8 +446,46 @@ impl WindowMover {
     }
 }
 
-/// 非 Windows 平台暂不追加原生样式；具体置顶语义由当前窗口后端决定。
-#[cfg(not(target_os = "windows"))]
+/// 将 macOS 桌宠窗口修正为真正的无边框透明面板。
+#[cfg(target_os = "macos")]
+pub(crate) fn configure_desktop_pet_window(window: &Window) -> Result<(), String> {
+    use cocoa::{
+        appkit::{NSColor, NSWindow, NSWindowStyleMask},
+        base::{NO, id, nil},
+    };
+    use objc::{msg_send, runtime::Object, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window)
+        .map_err(|error| format!("无法取得桌宠 AppKit 窗口句柄：{error}"))?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return Err("桌宠窗口没有 AppKit 原生句柄".to_owned());
+    };
+    let native_view = handle.ns_view.as_ptr().cast::<Object>();
+
+    // SAFETY: NSView 来自当前主线程中仍存活的 GPUI 窗口；样式和外观修改均同步发生在
+    // AppKit 主线程。保留 GPUI 设置的 NonactivatingPanel 位，只移除会生成系统窗口框的位。
+    unsafe {
+        let native_window: id = msg_send![native_view, window];
+        if native_window.is_null() {
+            return Err("桌宠 NSView 尚未绑定 NSWindow".to_owned());
+        }
+        let existing_style = NSWindow::styleMask(native_window);
+        let framed_style = NSWindowStyleMask::NSTitledWindowMask
+            | NSWindowStyleMask::NSClosableWindowMask
+            | NSWindowStyleMask::NSMiniaturizableWindowMask
+            | NSWindowStyleMask::NSResizableWindowMask
+            | NSWindowStyleMask::NSFullSizeContentViewWindowMask;
+        NSWindow::setStyleMask_(native_window, existing_style & !framed_style);
+        NSWindow::setHasShadow_(native_window, NO);
+        NSWindow::setOpaque_(native_window, NO);
+        NSWindow::setBackgroundColor_(native_window, NSColor::clearColor(nil));
+    }
+    Ok(())
+}
+
+/// 其他非 Windows 平台暂不追加原生样式；具体置顶语义由当前窗口后端决定。
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub(crate) fn configure_desktop_pet_window(_window: &Window) -> Result<(), String> {
     Ok(())
 }
