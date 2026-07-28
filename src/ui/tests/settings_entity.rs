@@ -13,7 +13,8 @@ use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
 
 use crate::{
     agent::AgentMemoryAccess,
-    model::{ModelCatalog, ModelPreviewCapabilities},
+    config::{ModelExpressionCategory, ModelResourceKind},
+    model::{ModelCatalog, ModelPreviewCapabilities, ModelPreviewExpression, ModelPreviewResource},
     ui::settings::{AgentOutfitAction, SettingsView},
 };
 
@@ -156,21 +157,31 @@ fn preview_capabilities_replace_the_previous_generation_snapshot(cx: &mut TestAp
     view.update(cx, |view, cx| {
         view.set_preview_capabilities(
             ModelPreviewCapabilities::new_for_test(
-                vec!["侦探".to_owned()],
-                vec!["Idle".to_owned(), "Tap".to_owned()],
-                vec!["Smile".to_owned()],
+                vec![
+                    ModelPreviewResource::new_for_test("Idle", "Idle"),
+                    ModelPreviewResource::new_for_test("Tap", "Tap"),
+                ],
+                vec![
+                    ModelPreviewExpression::new_for_test("external:侦探.exp3.json", "侦探", true),
+                    ModelPreviewExpression::new_for_test("Smile", "Smile", false),
+                ],
             ),
             cx,
         );
         let capabilities = view.preview_capabilities_for_test();
-        assert_eq!(capabilities.outfits(), ["侦探"]);
-        assert_eq!(capabilities.motions(), ["Idle", "Tap"]);
-        assert_eq!(capabilities.expressions(), ["Smile"]);
+        assert_eq!(capabilities.motions().len(), 2);
+        assert_eq!(capabilities.motions()[1].runtime_id(), "Tap");
+        assert_eq!(capabilities.expressions().len(), 2);
+        assert!(capabilities.expressions()[0].movable_to_outfit());
 
         // 模型切换后旧 generation 的能力必须被整体替换，不能残留。
         view.set_preview_capabilities(ModelPreviewCapabilities::default(), cx);
         assert!(view.preview_capabilities_for_test().motions().is_empty());
-        assert!(view.preview_capabilities_for_test().outfits().is_empty());
+        assert!(
+            view.preview_capabilities_for_test()
+                .expressions()
+                .is_empty()
+        );
     });
 }
 
@@ -185,9 +196,11 @@ fn every_configuration_section_renders_without_panicking(cx: &mut TestAppContext
         view.activate_window(window, cx);
         view.set_preview_capabilities(
             ModelPreviewCapabilities::new_for_test(
-                vec!["侦探".to_owned()],
-                vec!["Idle".to_owned()],
-                vec!["Smile".to_owned()],
+                vec![ModelPreviewResource::new_for_test("Idle", "Idle")],
+                vec![
+                    ModelPreviewExpression::new_for_test("external:侦探.exp3.json", "侦探", true),
+                    ModelPreviewExpression::new_for_test("Smile", "Smile", false),
+                ],
             ),
             cx,
         );
@@ -264,25 +277,50 @@ async fn a_scan_discovers_models_written_after_the_view_was_created(cx: &mut Tes
     });
 
     wait_for(&view, cx, "扫描发现新模型", |view| {
-        !view.is_refreshing_for_test() && view.catalog_counts_for_test() == (1, 2)
+        !view.is_refreshing_for_test() && view.catalog_counts_for_test() == (1, 1)
     });
 
     view.update(cx, |view, cx| {
         view.set_agent_outfit_tool_enabled_for_test(true);
         view.set_preview_capabilities(
-            ModelPreviewCapabilities::new_for_test(vec!["侦探".to_owned()], Vec::new(), Vec::new()),
+            ModelPreviewCapabilities::new_for_test(
+                Vec::new(),
+                vec![ModelPreviewExpression::new_for_test(
+                    "external:侦探.exp3.json",
+                    "侦探",
+                    true,
+                )],
+            ),
             cx,
+        );
+        view.set_expression_category_for_test(
+            "external:侦探.exp3.json",
+            ModelExpressionCategory::Outfit,
+        );
+        view.set_model_resource_name_for_test(
+            ModelResourceKind::Expression,
+            "external:侦探.exp3.json",
+            "侦探套装",
+        );
+        view.set_model_resource_name_for_test(
+            ModelResourceKind::Variant,
+            "luna/luna.model3.json",
+            "基础套装",
         );
         let outfits = view.available_agent_outfits();
         assert_eq!(outfits.len(), 2);
-        assert!(outfits.iter().any(|outfit| outfit == "侦探"));
+        assert!(outfits.iter().any(|outfit| outfit == "基础套装"));
+        assert!(outfits.iter().any(|outfit| outfit == "侦探套装"));
         assert_eq!(
-            view.resolve_agent_outfit("侦探"),
-            Some(AgentOutfitAction::PreviewExpression("侦探".to_owned()))
+            view.resolve_agent_outfit("侦探套装"),
+            Some(AgentOutfitAction::PreviewExpression(
+                "external:侦探.exp3.json".to_owned()
+            ))
         );
+        assert!(view.resolve_agent_outfit("侦探").is_none());
 
         view.set_agent_outfit_tool_enabled_for_test(false);
         assert!(view.available_agent_outfits().is_empty());
-        assert!(view.resolve_agent_outfit("侦探").is_none());
+        assert!(view.resolve_agent_outfit("侦探套装").is_none());
     });
 }

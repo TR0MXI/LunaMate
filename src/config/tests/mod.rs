@@ -3,6 +3,7 @@
 mod appearance;
 mod config;
 mod llm;
+mod model;
 mod persona;
 mod shortcut;
 mod types;

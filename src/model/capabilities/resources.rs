@@ -13,9 +13,13 @@ use super::ModelDiagnosticCategory;
 pub(crate) const MAX_AUXILIARY_RESOURCE_BYTES: u64 = 8 * 1024 * 1024;
 /// 单个模型 generation 的全部动作和表情允许读取的累计字节数。
 pub(crate) const MAX_AUXILIARY_GENERATION_BYTES: u64 = 64 * 1024 * 1024;
+/// 单个模型目录最多发现的外部动作数量。
+pub(crate) const MAX_EXTERNAL_MOTION_COUNT: usize = 256;
 /// 单个模型目录最多发现的外部表情数量。
 pub(crate) const MAX_EXTERNAL_EXPRESSION_COUNT: usize = 128;
-const MAX_EXTERNAL_EXPRESSION_SCAN_ENTRIES: usize = 4_096;
+const MAX_EXTERNAL_RESOURCE_SCAN_ENTRIES_PER_DIRECTORY: usize = 4_096;
+const MOTION_DIRECTORY: &str = "motions";
+const EXPRESSION_DIRECTORY: &str = "expressions";
 
 /// 跟踪动作和表情跨控制器共享的 generation 读取预算。
 #[derive(Debug)]
@@ -52,11 +56,36 @@ impl Default for AuxiliaryResourceBudget {
     }
 }
 
-/// 与模型清单同目录、但未必写入清单的外部表情资源。
+/// 未写入模型清单、但位于允许扫描位置的外部动作资源。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ExternalMotionReference {
+    name: String,
+    reference: String,
+}
+
+impl ExternalMotionReference {
+    /// 返回不含 `.motion3.json` 后缀的默认显示名。
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// 返回不会与清单动作组混淆的稳定运行时 ID。
+    pub(crate) fn runtime_id(&self) -> String {
+        external_runtime_id(&self.reference)
+    }
+
+    /// 返回相对于模型清单目录的安全候选引用。
+    pub(crate) fn reference(&self) -> &str {
+        &self.reference
+    }
+}
+
+/// 未写入模型清单、但位于允许扫描位置的外部表情资源。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ExternalExpressionReference {
     name: String,
     reference: String,
+    movable_to_outfit: bool,
 }
 
 impl ExternalExpressionReference {
@@ -65,10 +94,24 @@ impl ExternalExpressionReference {
         &self.name
     }
 
+    /// 返回不会与清单表情名称混淆的稳定运行时 ID。
+    pub(crate) fn runtime_id(&self) -> String {
+        external_runtime_id(&self.reference)
+    }
+
     /// 返回相对于模型清单目录的安全候选引用。
     pub(crate) fn reference(&self) -> &str {
         &self.reference
     }
+
+    /// 根目录表达式可由用户分类为服装，专属目录表达式固定为普通表情。
+    pub(crate) fn movable_to_outfit(&self) -> bool {
+        self.movable_to_outfit
+    }
+}
+
+fn external_runtime_id(reference: &str) -> String {
+    format!("external:{reference}")
 }
 
 /// 在必需资源预检后安全解析模型目录内引用。
@@ -306,10 +349,36 @@ impl ModelResourceResolver {
         })
     }
 
-    /// 发现模型目录直属的外部 `.exp3.json` 文件。
+    /// 发现模型目录根层及 `motions/` 直属的外部 `.motion3.json` 文件。
+    pub(crate) fn discover_external_motions(&self) -> Vec<ExternalMotionReference> {
+        self.try_discover_external_motions().unwrap_or_default()
+    }
+
+    /// 发现外部动作，并保留无法读取模型根目录时的诊断。
     ///
-    /// VTube Studio 等工具允许热键引用未写入 `.model3.json` 的服装表达式。这里只返回
-    /// 文件名候选，真正读取时仍会经过 [`Self::read_text_with_budget_and_checkpoint`] 的路径和大小校验。
+    /// # Errors
+    ///
+    /// 模型根目录在解析器创建后变得不可读时返回错误。
+    pub(crate) fn try_discover_external_motions(
+        &self,
+    ) -> Result<Vec<ExternalMotionReference>, ResourceResolutionError> {
+        self.try_discover_external_resources(
+            ".motion3.json",
+            MOTION_DIRECTORY,
+            MAX_EXTERNAL_MOTION_COUNT,
+        )
+        .map(|resources| {
+            resources
+                .into_iter()
+                .map(|resource| ExternalMotionReference {
+                    name: resource.name,
+                    reference: resource.reference,
+                })
+                .collect()
+        })
+    }
+
+    /// 发现模型目录根层及 `expressions/` 直属的外部 `.exp3.json` 文件。
     pub(crate) fn discover_external_expressions(&self) -> Vec<ExternalExpressionReference> {
         self.try_discover_external_expressions().unwrap_or_default()
     }
@@ -322,42 +391,119 @@ impl ModelResourceResolver {
     pub(crate) fn try_discover_external_expressions(
         &self,
     ) -> Result<Vec<ExternalExpressionReference>, ResourceResolutionError> {
-        let entries = fs::read_dir(&self.canonical_model_dir)
-            .map_err(|error| ResourceResolutionError::from_io(&self.canonical_model_dir, &error))?;
-        let mut candidates = entries
-            .take(MAX_EXTERNAL_EXPRESSION_SCAN_ENTRIES)
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|reference| {
-                reference
-                    .strip_suffix(".exp3.json")
-                    .is_some_and(|name| !name.is_empty())
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_unstable();
+        self.try_discover_external_resources(
+            ".exp3.json",
+            EXPRESSION_DIRECTORY,
+            MAX_EXTERNAL_EXPRESSION_COUNT,
+        )
+        .map(|resources| {
+            resources
+                .into_iter()
+                .map(|resource| ExternalExpressionReference {
+                    name: resource.name,
+                    movable_to_outfit: resource.in_model_root,
+                    reference: resource.reference,
+                })
+                .collect()
+        })
+    }
 
-        let mut expressions =
-            Vec::with_capacity(candidates.len().min(MAX_EXTERNAL_EXPRESSION_COUNT));
-        for reference in candidates {
-            if self
-                .resolve_file(&reference, MAX_AUXILIARY_RESOURCE_BYTES)
-                .is_err()
-            {
-                continue;
-            }
-            let Some(name) = reference.strip_suffix(".exp3.json") else {
+    fn try_discover_external_resources(
+        &self,
+        suffix: &str,
+        dedicated_directory: &str,
+        maximum_count: usize,
+    ) -> Result<Vec<DiscoveredResource>, ResourceResolutionError> {
+        let mut candidates = Vec::new();
+        self.scan_external_directory(None, suffix, true, &mut candidates)?;
+        self.scan_external_directory(Some(dedicated_directory), suffix, false, &mut candidates)?;
+        // 同一真实文件可通过目录内符号链接出现多次；根目录候选优先保留其可分类语义。
+        candidates.sort_unstable_by(|left, right| {
+            right
+                .in_model_root
+                .cmp(&left.in_model_root)
+                .then_with(|| left.reference.cmp(&right.reference))
+        });
+
+        let mut canonical_files = std::collections::BTreeSet::new();
+        let mut resources = Vec::with_capacity(candidates.len().min(maximum_count));
+        for candidate in candidates {
+            let Ok(canonical_path) =
+                self.resolve_file(&candidate.reference, MAX_AUXILIARY_RESOURCE_BYTES)
+            else {
                 continue;
             };
-            expressions.push(ExternalExpressionReference {
-                name: name.to_owned(),
-                reference,
-            });
-            if expressions.len() == MAX_EXTERNAL_EXPRESSION_COUNT {
+            if !canonical_files.insert(canonical_path) {
+                continue;
+            }
+            resources.push(candidate);
+            if resources.len() == maximum_count {
                 break;
             }
         }
-        Ok(expressions)
+        resources.sort_unstable_by(|left, right| left.reference.cmp(&right.reference));
+        Ok(resources)
     }
+
+    fn scan_external_directory(
+        &self,
+        relative_directory: Option<&str>,
+        suffix: &str,
+        in_model_root: bool,
+        candidates: &mut Vec<DiscoveredResource>,
+    ) -> Result<(), ResourceResolutionError> {
+        let directory = relative_directory
+            .map(|relative| self.canonical_model_dir.join(relative))
+            .unwrap_or_else(|| self.canonical_model_dir.clone());
+        if relative_directory.is_some() {
+            let canonical_directory = match fs::canonicalize(&directory) {
+                Ok(directory) => directory,
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(_) => return Ok(()),
+            };
+            if !canonical_directory.starts_with(&self.canonical_model_dir)
+                || !canonical_directory.is_dir()
+            {
+                return Ok(());
+            }
+        }
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) if relative_directory.is_some() => return Ok(()),
+            Err(error) => return Err(ResourceResolutionError::from_io(&directory, &error)),
+        };
+        for entry in entries.take(MAX_EXTERNAL_RESOURCE_SCAN_ENTRIES_PER_DIRECTORY) {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let Ok(file_name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Some(name) = file_name
+                .strip_suffix(suffix)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let reference = relative_directory
+                .map(|directory| format!("{directory}/{file_name}"))
+                .unwrap_or(file_name);
+            candidates.push(DiscoveredResource {
+                name,
+                reference,
+                in_model_root,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DiscoveredResource {
+    name: String,
+    reference: String,
+    in_model_root: bool,
 }
 
 /// 描述单个模型引用未通过安全解析的原因。

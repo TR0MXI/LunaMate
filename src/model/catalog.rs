@@ -1,14 +1,12 @@
 //! 扫描本地模型目录，并把同一模型的多个清单组织为服装变体。
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     error::Error,
     ffi::OsStr,
     fmt, fs, io,
     path::{Path, PathBuf},
 };
-
-use super::capabilities::ModelResourceResolver;
 
 const MODEL_FILE_SUFFIX: &str = ".model3.json";
 pub(in crate::model) const MAX_DISCOVERY_DEPTH: usize = 16;
@@ -37,31 +35,11 @@ impl ModelVariant {
     }
 }
 
-/// 表示与模型清单同目录、由外部表达式提供的服装预设。
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ModelOutfit {
-    expression_name: String,
-    relative_path: PathBuf,
-}
-
-impl ModelOutfit {
-    /// 返回用于服装选择器展示的名称。
-    pub(crate) fn display_name(&self) -> &str {
-        &self.expression_name
-    }
-
-    /// 返回表达式控制器使用的稳定名称。
-    pub(crate) fn expression_name(&self) -> &str {
-        &self.expression_name
-    }
-}
-
 /// 表示模型目录中的一个模型及其全部服装变体。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ModelFamily {
     display_name: String,
     variants: Vec<ModelVariant>,
-    outfits: Vec<ModelOutfit>,
 }
 
 impl ModelFamily {
@@ -75,14 +53,9 @@ impl ModelFamily {
         &self.variants
     }
 
-    /// 返回该模型目录中发现的外部服装表达式。
-    pub(crate) fn outfits(&self) -> &[ModelOutfit] {
-        &self.outfits
-    }
-
-    /// 返回模型清单和外部表达式组成的服装总数。
+    /// 返回模型清单提供的服装变体数量。
     pub(crate) fn outfit_count(&self) -> usize {
-        self.variants.len().saturating_add(self.outfits.len())
+        self.variants.len()
     }
 
     /// 返回当前家族是否包含指定相对清单路径。
@@ -230,9 +203,6 @@ impl ModelCatalog {
 
 fn discover_models(root: &Path) -> Result<(Vec<ModelFamily>, Option<String>), ModelCatalogError> {
     let mut grouped = BTreeMap::<String, Vec<ModelVariant>>::new();
-    let mut outfit_groups = BTreeMap::<String, Vec<ModelOutfit>>::new();
-    let mut outfits_by_directory = BTreeMap::<PathBuf, Vec<ModelOutfit>>::new();
-    let mut linked_outfit_directories = BTreeSet::<(String, PathBuf)>::new();
     let mut warning = None;
     let mut directories = vec![(root.to_path_buf(), 0_usize)];
 
@@ -325,18 +295,6 @@ fn discover_models(root: &Path) -> Result<(Vec<ModelFamily>, Option<String>), Mo
                     display_name: variant_name,
                     relative_path: relative_path.to_path_buf(),
                 });
-            if let Some(parent) = path.parent() {
-                let link_key = (family_name.clone(), parent.to_path_buf());
-                if linked_outfit_directories.insert(link_key) {
-                    let outfits = outfits_by_directory
-                        .entry(parent.to_path_buf())
-                        .or_insert_with(|| discover_external_outfits(root, parent, &mut warning));
-                    outfit_groups
-                        .entry(family_name)
-                        .or_default()
-                        .extend(outfits.iter().cloned());
-                }
-            }
         }
     }
 
@@ -344,64 +302,13 @@ fn discover_models(root: &Path) -> Result<(Vec<ModelFamily>, Option<String>), Mo
         .into_iter()
         .map(|(display_name, mut variants)| {
             variants.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-            let outfits =
-                deduplicate_outfits(outfit_groups.remove(&display_name).unwrap_or_default());
             ModelFamily {
                 display_name,
                 variants,
-                outfits,
             }
         })
         .collect();
     Ok((families, warning))
-}
-
-fn discover_external_outfits(
-    root: &Path,
-    directory: &Path,
-    warning: &mut Option<String>,
-) -> Vec<ModelOutfit> {
-    let resolver = match ModelResourceResolver::for_manifest(&directory.join("catalog.model3.json"))
-    {
-        Ok(resolver) => resolver,
-        Err(error) => {
-            append_warning(
-                warning,
-                format!("跳过无法解析的服装目录 {}：{error}", directory.display()),
-            );
-            return Vec::new();
-        }
-    };
-    let expressions = match resolver.try_discover_external_expressions() {
-        Ok(expressions) => expressions,
-        Err(error) => {
-            append_warning(
-                warning,
-                format!("跳过无法扫描的服装目录 {}：{error}", directory.display()),
-            );
-            return Vec::new();
-        }
-    };
-
-    expressions
-        .into_iter()
-        .filter_map(|reference| {
-            let path = directory.join(reference.reference());
-            let relative_path = path.strip_prefix(root).ok()?.to_path_buf();
-            let expression_name = reference.name().to_owned();
-            Some(ModelOutfit {
-                expression_name,
-                relative_path,
-            })
-        })
-        .collect()
-}
-
-fn deduplicate_outfits(outfits: Vec<ModelOutfit>) -> Vec<ModelOutfit> {
-    let mut outfits = outfits;
-    outfits.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    outfits.dedup_by(|left, right| left.relative_path == right.relative_path);
-    outfits
 }
 
 fn is_model_manifest(path: &Path) -> bool {

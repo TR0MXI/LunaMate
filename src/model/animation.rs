@@ -2,7 +2,7 @@
 //!
 //! 上层只通过本模块暴露的控制器驱动动作，不直接依赖 Mocari 的播放器细节。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mocari::{
     ModelRuntime,
@@ -16,7 +16,7 @@ use super::{
         AuxiliaryResourceBudget, MAX_AUXILIARY_RESOURCE_BYTES, ModelDiagnosticCategory,
         ModelLoadDiagnostic, ModelLoadDiagnostics, ModelResourceResolver,
     },
-    live2d::RenderCancellation,
+    live2d::{ModelPreviewResource, RenderCancellation},
 };
 
 const DEFAULT_MOTION_GROUP: &str = "Idle";
@@ -50,6 +50,7 @@ struct ActiveMotion {
 
 struct MotionGroup {
     declared_count: usize,
+    default_name: String,
     motions: Vec<MotionPlayer>,
     next_index: usize,
 }
@@ -109,26 +110,52 @@ impl AnimationController {
         cancellation: &RenderCancellation,
     ) -> (AnimationController, ModelLoadDiagnostics) {
         let references = model.motions();
-        let group_indices = references
+        let mut group_indices = references
             .iter()
             .enumerate()
             .map(|(index, (group, _))| (group.clone(), index))
-            .collect();
+            .collect::<BTreeMap<String, usize>>();
         let mut groups = references
-            .values()
-            .map(|references| MotionGroup {
+            .iter()
+            .map(|(group, references)| MotionGroup {
                 declared_count: references.len(),
+                default_name: group.clone(),
                 motions: Vec::new(),
                 next_index: 0,
             })
             .collect::<Vec<_>>();
-        let total_count = references
+        let declared_files = references
+            .values()
+            .flatten()
+            .filter_map(|reference| {
+                resolver
+                    .resolve_file(reference.file(), MAX_AUXILIARY_RESOURCE_BYTES)
+                    .ok()
+            })
+            .collect::<BTreeSet<_>>();
+        let declared_count = references
             .values()
             .fold(0_usize, |count, group| count.saturating_add(group.len()));
+        let external = if cancellation.is_cancelled() || declared_count >= MAX_MOTION_COUNT {
+            Vec::new()
+        } else {
+            resolver
+                .discover_external_motions()
+                .into_iter()
+                .filter(|reference| {
+                    resolver
+                        .resolve_file(reference.reference(), MAX_AUXILIARY_RESOURCE_BYTES)
+                        .ok()
+                        .is_some_and(|path| !declared_files.contains(&path))
+                })
+                .collect::<Vec<_>>()
+        };
+        let total_count = declared_count.saturating_add(external.len());
         let omitted_count = total_count.saturating_sub(MAX_MOTION_COUNT);
         let mut diagnostics = ModelLoadDiagnostics::default();
         let mut processed_count = 0_usize;
         let mut reported_limit = false;
+        let mut resource_budget_exhausted = false;
 
         'groups: for (group_index, (group, group_references)) in references.iter().enumerate() {
             if cancellation.is_cancelled() {
@@ -151,7 +178,7 @@ impl AnimationController {
                                 reference.file(),
                                 ModelDiagnosticCategory::LimitExceeded,
                                 format!(
-                                    "动作声明总数为 {total_count}，仅处理前 {MAX_MOTION_COUNT} 项"
+                                    "动作声明与外部动作总数为 {total_count}，仅处理前 {MAX_MOTION_COUNT} 项"
                                 ),
                             )
                             .with_affected_count(omitted_count),
@@ -175,6 +202,7 @@ impl AnimationController {
                         }
                         budget_exhausted =
                             error.category() == ModelDiagnosticCategory::LimitExceeded;
+                        resource_budget_exhausted |= budget_exhausted;
                         diagnostics.push(ModelLoadDiagnostic::motion(
                             group,
                             index,
@@ -228,6 +256,100 @@ impl AnimationController {
             }
         }
 
+        if !cancellation.is_cancelled() && !resource_budget_exhausted {
+            for reference in external {
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                if processed_count >= MAX_MOTION_COUNT {
+                    if !reported_limit {
+                        diagnostics.push(
+                            ModelLoadDiagnostic::motion(
+                                reference.name(),
+                                0,
+                                reference.reference(),
+                                ModelDiagnosticCategory::LimitExceeded,
+                                format!(
+                                    "动作声明与外部动作总数为 {total_count}，仅处理前 {MAX_MOTION_COUNT} 项"
+                                ),
+                            )
+                            .with_affected_count(omitted_count),
+                        );
+                        reported_limit = true;
+                    }
+                    continue;
+                }
+                processed_count += 1;
+                let runtime_id = unique_external_runtime_id(reference.runtime_id(), &group_indices);
+                let group_index = groups.len();
+                group_indices.insert(runtime_id.clone(), group_index);
+                groups.push(MotionGroup {
+                    declared_count: 1,
+                    default_name: reference.name().to_owned(),
+                    motions: Vec::new(),
+                    next_index: 0,
+                });
+
+                let source = match resolver.read_text_with_budget_and_checkpoint(
+                    reference.reference(),
+                    MAX_AUXILIARY_RESOURCE_BYTES,
+                    budget,
+                    || cancellation.is_cancelled(),
+                ) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        if cancellation.is_cancelled() {
+                            break;
+                        }
+                        diagnostics.push(ModelLoadDiagnostic::motion(
+                            reference.name(),
+                            0,
+                            reference.reference(),
+                            error.category(),
+                            error.message(),
+                        ));
+                        if error.category() == ModelDiagnosticCategory::LimitExceeded {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                let motion = match Motion3::from_json_str(&source) {
+                    Ok(motion) => motion,
+                    Err(error) => {
+                        diagnostics.push(ModelLoadDiagnostic::motion(
+                            reference.name(),
+                            0,
+                            reference.reference(),
+                            ModelDiagnosticCategory::Parse,
+                            format!("动作 JSON 内容无效或版本不受支持：{error}"),
+                        ));
+                        continue;
+                    }
+                };
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                let duration = motion.meta().duration();
+                if !duration.is_finite() || duration <= 0.0 {
+                    diagnostics.push(ModelLoadDiagnostic::motion(
+                        reference.name(),
+                        0,
+                        reference.reference(),
+                        ModelDiagnosticCategory::InvalidDuration,
+                        format!("动作时长必须是有限正数，当前值为 {duration}"),
+                    ));
+                    continue;
+                }
+                groups[group_index]
+                    .motions
+                    .push(MotionPlayer::with_looping(motion, false));
+            }
+        }
+
         let mut controller = Self {
             group_indices,
             groups,
@@ -243,12 +365,17 @@ impl AnimationController {
         self.start_next(group)
     }
 
-    /// 返回至少包含一个成功加载动作的动作组名称。
-    pub(crate) fn available_groups(&self) -> Vec<String> {
+    /// 返回至少包含一个成功加载动作的稳定 ID 与默认显示名。
+    pub(crate) fn available_resources(&self) -> Vec<ModelPreviewResource> {
         self.group_indices
             .iter()
             .filter(|(_, index)| !self.groups[**index].motions.is_empty())
-            .map(|(group, _)| group.clone())
+            .map(|(runtime_id, index)| {
+                ModelPreviewResource::new(
+                    runtime_id.clone(),
+                    self.groups[*index].default_name.clone(),
+                )
+            })
             .collect()
     }
 
@@ -342,4 +469,17 @@ impl AnimationController {
             .get(group)
             .map(|index| self.groups[*index].motions.len())
     }
+}
+
+fn unique_external_runtime_id(base: String, occupied: &BTreeMap<String, usize>) -> String {
+    if !occupied.contains_key(&base) {
+        return base;
+    }
+    for suffix in 2_u32.. {
+        let candidate = format!("{base}#{suffix}");
+        if !occupied.contains_key(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("无界递增后缀必须能生成唯一动作 ID")
 }

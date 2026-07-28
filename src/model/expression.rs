@@ -16,7 +16,7 @@ use super::{
         AuxiliaryResourceBudget, ExternalExpressionReference, MAX_AUXILIARY_RESOURCE_BYTES,
         ModelDiagnosticCategory, ModelLoadDiagnostic, ModelLoadDiagnostics, ModelResourceResolver,
     },
-    live2d::RenderCancellation,
+    live2d::{ModelPreviewExpression, RenderCancellation},
 };
 
 const DEFAULT_EXPRESSION_NAMES: [&str; 2] = ["Default", "Idle"];
@@ -36,7 +36,7 @@ pub(crate) fn load(
 /// 保存模型声明的表情，并负责表情切换和混合。
 pub(crate) struct ExpressionController {
     expressions: BTreeMap<String, Expression3>,
-    outfits: Vec<String>,
+    resources: BTreeMap<String, ModelPreviewExpression>,
     default_expression: Option<String>,
     pub(in crate::model) manager: ExpressionManager,
 }
@@ -71,7 +71,8 @@ impl ExpressionController {
         model: &Model3,
         resolver: &ModelResourceResolver,
     ) -> (ExpressionController, ModelLoadDiagnostics) {
-        Self::load_manifest_with_external(model, resolver, &[])
+        let external = resolver.discover_external_expressions();
+        Self::load_manifest_with_external(model, resolver, &external)
     }
 
     #[cfg(test)]
@@ -111,7 +112,7 @@ impl ExpressionController {
     ) -> (ExpressionController, ModelLoadDiagnostics) {
         let references = model.expressions();
         let mut expressions = BTreeMap::new();
-        let mut outfits = Vec::new();
+        let mut resources = BTreeMap::new();
         let mut diagnostics = ModelLoadDiagnostics::default();
 
         for (index, reference) in references.iter().take(MAX_EXPRESSION_COUNT).enumerate() {
@@ -148,6 +149,10 @@ impl ExpressionController {
                     "已使用后声明的成功表情覆盖此前同名成功项",
                 ));
             }
+            resources.insert(
+                reference.name().to_owned(),
+                ModelPreviewExpression::new(reference.name(), reference.name(), false),
+            );
         }
 
         if let Some(reference) = references.get(MAX_EXPRESSION_COUNT) {
@@ -173,27 +178,28 @@ impl ExpressionController {
 
         let declared_files = references
             .iter()
-            .map(|reference| reference.file())
+            .filter_map(|reference| {
+                resolver
+                    .resolve_file(reference.file(), MAX_AUXILIARY_RESOURCE_BYTES)
+                    .ok()
+            })
             .collect::<BTreeSet<_>>();
         let remaining_capacity = MAX_EXPRESSION_COUNT.saturating_sub(references.len());
         let external = external
             .iter()
-            .filter(|reference| !declared_files.contains(reference.reference()));
-        for (offset, reference) in external.clone().take(remaining_capacity).enumerate() {
+            .filter(|reference| {
+                resolver
+                    .resolve_file(reference.reference(), MAX_AUXILIARY_RESOURCE_BYTES)
+                    .ok()
+                    .is_some_and(|path| !declared_files.contains(&path))
+            })
+            .collect::<Vec<_>>();
+        for (offset, reference) in external.iter().take(remaining_capacity).enumerate() {
             if cancellation.is_cancelled() {
                 break;
             }
             let index = references.len().saturating_add(offset);
-            if expressions.contains_key(reference.name()) {
-                diagnostics.push(ModelLoadDiagnostic::expression(
-                    reference.name(),
-                    index,
-                    reference.reference(),
-                    ModelDiagnosticCategory::DuplicateName,
-                    "外部表情与模型清单中的名称重复，已保留清单声明",
-                ));
-                continue;
-            }
+            let runtime_id = unique_external_runtime_id(reference.runtime_id(), &expressions);
             let Some(expression) = load_expression(
                 reference.name(),
                 index,
@@ -212,12 +218,19 @@ impl ExpressionController {
                 }
                 continue;
             };
-            expressions.insert(reference.name().to_owned(), expression);
-            outfits.push(reference.name().to_owned());
+            expressions.insert(runtime_id.clone(), expression);
+            resources.insert(
+                runtime_id.clone(),
+                ModelPreviewExpression::new(
+                    runtime_id,
+                    reference.name(),
+                    reference.movable_to_outfit(),
+                ),
+            );
         }
-        let external_count = external.clone().count();
+        let external_count = external.len();
         if external_count > remaining_capacity
-            && let Some(reference) = external.clone().nth(remaining_capacity)
+            && let Some(reference) = external.get(remaining_capacity)
         {
             diagnostics.push(
                 ModelLoadDiagnostic::expression(
@@ -235,7 +248,7 @@ impl ExpressionController {
 
         let mut controller = Self {
             expressions,
-            outfits,
+            resources,
             default_expression,
             manager: ExpressionManager::new(),
         };
@@ -251,7 +264,7 @@ impl ExpressionController {
         (
             Self {
                 expressions: BTreeMap::new(),
-                outfits: Vec::new(),
+                resources: BTreeMap::new(),
                 default_expression: None,
                 manager: ExpressionManager::new(),
             },
@@ -280,14 +293,9 @@ impl ExpressionController {
         true
     }
 
-    /// 返回全部成功加载且可供预览的表情名称。
-    pub(crate) fn available_names(&self) -> Vec<String> {
-        self.expressions.keys().cloned().collect()
-    }
-
-    /// 返回从模型目录外部表达式发现的服装名称。
-    pub(crate) fn available_outfits(&self) -> Vec<String> {
-        self.outfits.clone()
+    /// 返回全部成功加载表情的稳定 ID、默认显示名与分类约束。
+    pub(crate) fn available_resources(&self) -> Vec<ModelPreviewExpression> {
+        self.resources.values().cloned().collect()
     }
 
     /// 推进表情淡入淡出并把混合结果应用到模型参数。
@@ -317,6 +325,19 @@ impl ExpressionController {
             .and_then(|expression| expression.parameters().first())
             .map(|parameter| parameter.value())
     }
+}
+
+fn unique_external_runtime_id(base: String, occupied: &BTreeMap<String, Expression3>) -> String {
+    if !occupied.contains_key(&base) {
+        return base;
+    }
+    for suffix in 2_u32.. {
+        let candidate = format!("{base}#{suffix}");
+        if !occupied.contains_key(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("无界递增后缀必须能生成唯一表情 ID")
 }
 
 fn load_expression(

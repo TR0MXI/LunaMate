@@ -53,6 +53,25 @@ The optimized executable is written to `target/release/lunamate`, or
 Live2D models are not distributed with this repository. Place a properly licensed model that
 contains a `.model3.json` manifest under `models/`, then select it in the settings window.
 
+### External Motions, Expressions, and Parameter Outfits
+
+In addition to resources declared by `.model3.json`, LunaMate checks direct files beside the
+manifest and direct files in the following dedicated directories. It does not recurse below them:
+
+- `*.motion3.json` files beside the manifest or under `motions/` are loaded as individual motions.
+  Cubism 3 motions recorded by VTube Studio can be placed there directly. External motions play
+  once for preview and then return to `Idle`.
+- `*.exp3.json` files beside the manifest or under `expressions/` are loaded as expressions. Files
+  under `expressions/` stay in the expression section. Files beside the manifest start there but
+  can be dragged into the outfit section for VTube Studio-style parameter outfits, or dragged back.
+
+Choose **Rescan** on the Model Settings page after adding files. Motions, expressions, parameter
+outfits, and complete `.model3.json` outfit variants can all be renamed there. Aliases are stored
+only in LunaMate's `config.toml`; model files and filenames are never changed. Outfit aliases are
+also published to the Agent's `change_outfit` tool. Playback continues to use stable internal IDs,
+so aliases do not change the actual target. Motions and expressions remain model-specific: a file
+using parameter IDs from another model may parse successfully without producing the expected look.
+
 ## Voice Input
 
 Voice input is disabled by default. Select a whisper.cpp GGML Whisper model and a compatible

@@ -6,6 +6,7 @@
 mod appearance;
 mod document;
 mod llm;
+mod model;
 mod persona;
 mod shortcut;
 mod types;
@@ -42,6 +43,11 @@ pub(crate) use llm::{
     TOP_P_MAX, TOP_P_MIN,
 };
 use llm::{parse_llm_settings, write_llm_settings};
+pub(crate) use model::{
+    ModelExpressionCategory, ModelResourceKey, ModelResourceKind, ModelResourceSettings,
+    SharedModelResourceSettings,
+};
+use model::{parse_model_resource_settings, write_model_resource_settings};
 pub(crate) use persona::{
     CONTEXT_KIB_MAX, CONTEXT_KIB_MIN, CONTEXT_MESSAGES_MAX, CONTEXT_MESSAGES_MIN,
     DEFAULT_CONTEXT_KIB, DEFAULT_CONTEXT_MESSAGES, DEFAULT_PERSONA_ID, MAX_PERSONAS, PersonaConfig,
@@ -110,6 +116,7 @@ struct LoadedConfig {
     persona: PersonaSettings,
     shortcuts: ShortcutSettings,
     voice: VoiceSettings,
+    model_resources: ModelResourceSettings,
 }
 
 impl Default for LoadedConfig {
@@ -131,6 +138,7 @@ impl Default for LoadedConfig {
             persona: PersonaSettings::default(),
             shortcuts: ShortcutSettings::default(),
             voice: VoiceSettings::default(),
+            model_resources: ModelResourceSettings::default(),
         }
     }
 }
@@ -158,11 +166,13 @@ pub(crate) struct LunaConfig {
     persona: ArcSwap<PersonaSettings>,
     shortcuts: ArcSwap<ShortcutSettings>,
     voice: ArcSwap<VoiceSettings>,
+    model_resources: ArcSwap<ModelResourceSettings>,
     llm_request_revision: AtomicU64,
     persona_request_revision: AtomicU64,
     shortcut_request_revision: AtomicU64,
     voice_request_revision: AtomicU64,
     model_request_revision: AtomicU64,
+    model_resources_request_revision: AtomicU64,
     frame_rate_request_revision: AtomicU64,
     model_window_size_request_revision: AtomicU64,
     remember_positions_request_revision: AtomicU64,
@@ -212,11 +222,13 @@ impl LunaConfig {
             persona: ArcSwap::from_pointee(loaded.persona),
             shortcuts: ArcSwap::from_pointee(loaded.shortcuts),
             voice: ArcSwap::from_pointee(loaded.voice),
+            model_resources: ArcSwap::from_pointee(loaded.model_resources),
             llm_request_revision: AtomicU64::new(0),
             persona_request_revision: AtomicU64::new(0),
             shortcut_request_revision: AtomicU64::new(0),
             voice_request_revision: AtomicU64::new(0),
             model_request_revision: AtomicU64::new(0),
+            model_resources_request_revision: AtomicU64::new(0),
             frame_rate_request_revision: AtomicU64::new(0),
             model_window_size_request_revision: AtomicU64::new(0),
             remember_positions_request_revision: AtomicU64::new(0),
@@ -351,6 +363,11 @@ impl LunaConfig {
     /// 返回当前模型清单的相对路径快照。
     pub(crate) fn selected_model(&self) -> Option<PathBuf> {
         self.snapshot.load().selected_model.clone()
+    }
+
+    /// 返回模型动作、表情与服装的显示名和分类覆盖快照。
+    pub(crate) fn model_resource_settings(&self) -> SharedModelResourceSettings {
+        self.model_resources.load_full()
     }
 
     /// 返回一次性发布的界面语言和主题配置快照。
@@ -850,6 +867,30 @@ impl LunaConfig {
             },
         )?;
         Ok(applied.then_some(()))
+    }
+
+    /// 为完整模型资源覆盖写入分配单调 revision。
+    pub(crate) fn reserve_model_resource_settings_revision(&self) -> u64 {
+        self.reserve_request_revision(&self.model_resources_request_revision)
+    }
+
+    /// 原子持久化并发布仍是最新请求的模型资源覆盖。
+    pub(crate) fn set_model_resource_settings_at_revision(
+        &self,
+        settings: ModelResourceSettings,
+        revision: u64,
+    ) -> Result<Option<SharedModelResourceSettings>, ConfigWriteError> {
+        let settings = Arc::new(settings);
+        let published = settings.clone();
+        let persisted = settings.clone();
+        let applied = self.edit_config_at_revision(
+            &self.model_resources_request_revision,
+            revision,
+            "model.resources",
+            move || self.model_resources.store(published),
+            move |document| write_model_resource_settings(document, &persisted),
+        )?;
+        Ok(applied.then_some(settings))
     }
 
     /// 为一份由 Agent 设置编辑器提交的草稿分配单调 revision。

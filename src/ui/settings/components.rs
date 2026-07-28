@@ -76,37 +76,6 @@ pub(super) fn empty_control_text(text: String, palette: UiPalette) -> gpui::Div 
         .child(text)
 }
 
-pub(super) fn option_button(
-    id: impl Into<gpui::ElementId>,
-    label: String,
-    selected: bool,
-    palette: UiPalette,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .max_w_full()
-        .rounded_md()
-        .border_1()
-        .border_color(if selected {
-            palette.primary
-        } else {
-            palette.border
-        })
-        .bg(if selected {
-            palette.accent
-        } else {
-            palette.background
-        })
-        .px_2()
-        .py_1()
-        .text_xs()
-        .overflow_hidden()
-        .text_ellipsis()
-        .cursor_pointer()
-        .hover(move |style| style.bg(palette.secondary))
-        .child(label)
-}
-
 pub(super) fn system_section_label(title: String, palette: UiPalette) -> gpui::Div {
     div()
         .pt_7()

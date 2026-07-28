@@ -3,7 +3,7 @@ use serde::Deserialize;
 use crate::{Error, Result};
 
 const FORMAT: &str = "motion3.json";
-const SUPPORTED_VERSION: u32 = 3;
+const SUPPORTED_VERSIONS: [u32; 2] = [0, 3];
 
 #[derive(Debug, Clone, PartialEq)]
 /// Parsed Cubism `motion3.json` data.
@@ -21,7 +21,8 @@ impl Motion3 {
             message: error.to_string(),
         })?;
 
-        if raw.version != SUPPORTED_VERSION {
+        // VTube Studio motion recording exports use the Cubism 3 layout with Version 0.
+        if !SUPPORTED_VERSIONS.contains(&raw.version) {
             return Err(Error::UnsupportedVersion {
                 format: FORMAT,
                 version: raw.version,
@@ -42,7 +43,7 @@ impl Motion3 {
         })
     }
 
-    /// Returns the supported motion format version.
+    /// Returns the parsed motion format version.
     pub fn version(&self) -> u32 {
         self.version
     }

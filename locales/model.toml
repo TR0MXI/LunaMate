@@ -83,3 +83,45 @@ _version = 2
 "zh-TW" = "預覽會直接顯示在桌寵主視窗"
 "en" = "Previews are shown directly in the desktop pet window"
 "ja" = "プレビューはデスクトップペットのウィンドウに直接表示されます"
+
+[model.rename]
+"zh-CN" = "重命名"
+"zh-TW" = "重新命名"
+"en" = "Rename"
+"ja" = "名前を変更"
+
+[model.restore_name]
+"zh-CN" = "恢复原始名称"
+"zh-TW" = "還原原始名稱"
+"en" = "Restore original name"
+"ja" = "元の名前に戻す"
+
+[model.save_name]
+"zh-CN" = "保存名称"
+"zh-TW" = "儲存名稱"
+"en" = "Save name"
+"ja" = "名前を保存"
+
+[model.move_expression]
+"zh-CN" = "拖动到表情或服装区域"
+"zh-TW" = "拖曳到表情或服裝區域"
+"en" = "Drag to expressions or outfits"
+"ja" = "表情または衣装エリアへドラッグ"
+
+[model.play_motion]
+"zh-CN" = "播放动作"
+"zh-TW" = "播放動作"
+"en" = "Play motion"
+"ja" = "モーションを再生"
+
+[model.preview_expression]
+"zh-CN" = "预览表情"
+"zh-TW" = "預覽表情"
+"en" = "Preview expression"
+"ja" = "表情をプレビュー"
+
+[model.apply_outfit]
+"zh-CN" = "应用服装"
+"zh-TW" = "套用服裝"
+"en" = "Apply outfit"
+"ja" = "衣装を適用"

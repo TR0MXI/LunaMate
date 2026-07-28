@@ -297,12 +297,16 @@ impl DesktopPetView {
                         this.sync_cursor_tracking_task(cx);
                     }
                     let diagnostic_count = diagnostics.entries().len();
-                    let outfit_count = capabilities.outfits().len();
+                    let movable_expression_count = capabilities
+                        .expressions()
+                        .iter()
+                        .filter(|expression| expression.movable_to_outfit())
+                        .count();
                     let motion_count = capabilities.motions().len();
                     let expression_count = capabilities.expressions().len();
                     this.model_state = ModelLoadState::ready(diagnostics);
                     log::info!(
-                        "Live2D 模型已就绪：generation={generation}, renderer=cpu, outfits={outfit_count}, motions={motion_count}, expressions={expression_count}, diagnostics={diagnostic_count}"
+                        "Live2D 模型已就绪：generation={generation}, renderer=cpu, movable_expressions={movable_expression_count}, motions={motion_count}, expressions={expression_count}, diagnostics={diagnostic_count}"
                     );
                     if diagnostic_count > 0 {
                         log::warn!(

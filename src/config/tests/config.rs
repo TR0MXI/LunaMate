@@ -90,6 +90,35 @@ fn shortcut_settings_publish_and_round_trip() {
 }
 
 #[test]
+fn model_resource_overrides_publish_and_round_trip() {
+    let directory = TestDirectory::new();
+    let config = LunaConfig::load_from(directory.config_path());
+    let key = ModelResourceKey::new(
+        PathBuf::from("luna/runtime/luna.model3.json"),
+        ModelResourceKind::Motion,
+        "external:motions/wave.motion3.json",
+    );
+    let settings = ModelResourceSettings::default()
+        .with_name(key.clone(), Some("挥手"))
+        .expect("测试动作名称应当有效");
+
+    let revision = config.reserve_model_resource_settings_revision();
+    let published = config
+        .set_model_resource_settings_at_revision(settings.clone(), revision)
+        .expect("模型资源配置应当可以持久化")
+        .expect("最新模型资源配置应当发布");
+
+    assert_eq!(published.as_ref(), &settings);
+    assert_eq!(config.model_resource_settings().name(&key), Some("挥手"));
+    assert_eq!(
+        LunaConfig::load_from(directory.config_path())
+            .model_resource_settings()
+            .name(&key),
+        Some("挥手")
+    );
+}
+
+#[test]
 fn malformed_config_warning_does_not_expose_api_key() {
     let directory = TestDirectory::new();
     let secret = "local-secret-must-not-appear";

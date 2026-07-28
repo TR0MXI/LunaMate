@@ -54,7 +54,7 @@ fn manifests_under_one_model_directory_become_outfits() {
 }
 
 #[test]
-fn external_expression_files_become_outfit_presets() {
+fn external_expression_files_do_not_become_manifest_variants() {
     let directory = TestDirectory::new();
     let model_directory = directory.path().join("20260614");
     fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
@@ -67,39 +67,8 @@ fn external_expression_files_become_outfit_presets() {
         ModelCatalog::load(directory.path().to_path_buf(), None).expect("测试模型目录应当可以扫描");
     let family = &catalog.families()[0];
 
-    assert_eq!(family.outfit_count(), 3);
-    assert_eq!(family.outfits().len(), 2);
-    assert!(
-        family
-            .outfits()
-            .iter()
-            .any(|outfit| outfit.expression_name() == "侦探")
-    );
-    assert!(
-        family
-            .outfits()
-            .iter()
-            .any(|outfit| outfit.expression_name() == "女仆")
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn external_outfit_symlink_outside_model_directory_is_not_catalogued() {
-    use std::os::unix::fs::symlink;
-
-    let directory = TestDirectory::new();
-    let model_directory = directory.path().join("luna");
-    fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
-    fs::write(model_directory.join("luna.model3.json"), "{}").expect("测试模型清单应当可以创建");
-    let outside = directory.path().join("outside.exp3.json");
-    fs::write(&outside, "{}").expect("测试越界表情应当可以创建");
-    symlink(&outside, model_directory.join("linked.exp3.json")).expect("测试符号链接应当可以创建");
-
-    let catalog =
-        ModelCatalog::load(directory.path().to_path_buf(), None).expect("测试模型目录应当可以扫描");
-
-    assert!(catalog.families()[0].outfits().is_empty());
+    // 参数服装必须等模型成功加载后再由设置分类，目录扫描只统计完整模型清单。
+    assert_eq!(family.outfit_count(), 1);
 }
 
 #[test]
@@ -356,7 +325,7 @@ fn manifests_without_a_stem_fall_back_to_a_placeholder_name() {
 }
 
 #[test]
-fn duplicate_outfit_expressions_across_variants_are_deduplicated() {
+fn expression_files_do_not_change_variant_count() {
     let directory = TestDirectory::new();
     let model_directory = directory.path().join("luna");
     fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
@@ -371,7 +340,5 @@ fn duplicate_outfit_expressions_across_variants_are_deduplicated() {
     let family = &catalog.families()[0];
 
     assert_eq!(family.variants().len(), 2);
-    assert_eq!(family.outfits().len(), 1);
-    assert_eq!(family.outfits()[0].display_name(), "女仆");
-    assert_eq!(family.outfit_count(), 3);
+    assert_eq!(family.outfit_count(), 2);
 }

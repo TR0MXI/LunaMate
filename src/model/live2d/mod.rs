@@ -27,39 +27,100 @@ use self::resources::{ResourceValidationError, validate_model_resources};
 /// 设置窗口可以向用户展示并触发的已加载模型能力。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ModelPreviewCapabilities {
-    outfits: Vec<String>,
-    motions: Vec<String>,
-    expressions: Vec<String>,
+    motions: Vec<ModelPreviewResource>,
+    expressions: Vec<ModelPreviewExpression>,
 }
 
 impl ModelPreviewCapabilities {
     /// 构造不依赖真实模型的能力快照，供设置界面状态测试使用。
     #[cfg(test)]
     pub(crate) fn new_for_test(
-        outfits: Vec<String>,
-        motions: Vec<String>,
-        expressions: Vec<String>,
+        motions: Vec<ModelPreviewResource>,
+        expressions: Vec<ModelPreviewExpression>,
     ) -> Self {
         Self {
-            outfits,
             motions,
             expressions,
         }
     }
 
-    /// 返回从模型目录外部表达式发现的服装名称。
-    pub(crate) fn outfits(&self) -> &[String] {
-        &self.outfits
-    }
-
     /// 返回至少包含一个有效动作的动作组。
-    pub(crate) fn motions(&self) -> &[String] {
+    pub(crate) fn motions(&self) -> &[ModelPreviewResource] {
         &self.motions
     }
 
-    /// 返回全部有效表情名称。
-    pub(crate) fn expressions(&self) -> &[String] {
+    /// 返回全部有效表情及其是否允许作为服装分类。
+    pub(crate) fn expressions(&self) -> &[ModelPreviewExpression] {
         &self.expressions
+    }
+}
+
+/// 设置界面使用的稳定运行时资源 ID 与模型原始显示名。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ModelPreviewResource {
+    runtime_id: String,
+    default_name: String,
+}
+
+impl ModelPreviewResource {
+    pub(in crate::model) fn new(
+        runtime_id: impl Into<String>,
+        default_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            runtime_id: runtime_id.into(),
+            default_name: default_name.into(),
+        }
+    }
+
+    pub(crate) fn runtime_id(&self) -> &str {
+        &self.runtime_id
+    }
+
+    pub(crate) fn default_name(&self) -> &str {
+        &self.default_name
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(runtime_id: &str, default_name: &str) -> Self {
+        Self::new(runtime_id, default_name)
+    }
+}
+
+/// 一个可预览表情及其分类约束。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ModelPreviewExpression {
+    resource: ModelPreviewResource,
+    movable_to_outfit: bool,
+}
+
+impl ModelPreviewExpression {
+    pub(in crate::model) fn new(
+        runtime_id: impl Into<String>,
+        default_name: impl Into<String>,
+        movable_to_outfit: bool,
+    ) -> Self {
+        Self {
+            resource: ModelPreviewResource::new(runtime_id, default_name),
+            movable_to_outfit,
+        }
+    }
+
+    pub(crate) fn resource(&self) -> &ModelPreviewResource {
+        &self.resource
+    }
+
+    pub(crate) fn movable_to_outfit(&self) -> bool {
+        self.movable_to_outfit
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        runtime_id: &str,
+        default_name: &str,
+        movable_to_outfit: bool,
+    ) -> Self {
+        Self::new(runtime_id, default_name, movable_to_outfit)
     }
 }
 
@@ -260,9 +321,8 @@ impl AnimatedModel {
     /// 返回设置窗口可实际触发的动作与表情名称。
     pub(crate) fn preview_capabilities(&self) -> ModelPreviewCapabilities {
         ModelPreviewCapabilities {
-            outfits: self.expression.available_outfits(),
-            motions: self.animation.available_groups(),
-            expressions: self.expression.available_names(),
+            motions: self.animation.available_resources(),
+            expressions: self.expression.available_resources(),
         }
     }
 

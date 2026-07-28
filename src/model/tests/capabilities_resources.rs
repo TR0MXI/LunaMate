@@ -263,6 +263,59 @@ fn external_expression_discovery_is_sorted_and_skips_unusable_entries() {
     // 候选按文件名字节序排序，保证服装列表在不同文件系统上顺序稳定。
     assert_eq!(names, ["Default", "侦探", "女仆"]);
     assert_eq!(discovered[0].reference(), "Default.exp3.json");
+    assert!(
+        discovered
+            .iter()
+            .all(|reference| reference.movable_to_outfit())
+    );
+}
+
+#[test]
+fn dedicated_directories_are_scanned_without_recursing() {
+    let directory = TestDirectory::new();
+    fs::create_dir_all(directory.path().join("motions/nested")).expect("测试动作目录应当可以创建");
+    fs::create_dir_all(directory.path().join("expressions/nested"))
+        .expect("测试表情目录应当可以创建");
+    for reference in [
+        "root.motion3.json",
+        "motions/dedicated.motion3.json",
+        "motions/nested/ignored.motion3.json",
+    ] {
+        fs::write(directory.path().join(reference), "{}").expect("测试动作候选应当可以创建");
+    }
+    for reference in [
+        "root.exp3.json",
+        "expressions/dedicated.exp3.json",
+        "expressions/nested/ignored.exp3.json",
+    ] {
+        fs::write(directory.path().join(reference), "{}").expect("测试表情候选应当可以创建");
+    }
+    let resolver = ModelResourceResolver::for_manifest(&directory.path().join("model.model3.json"))
+        .expect("测试模型目录应当可以解析");
+
+    let motions = resolver.discover_external_motions();
+    assert_eq!(
+        motions
+            .iter()
+            .map(|reference| reference.reference())
+            .collect::<Vec<_>>(),
+        ["motions/dedicated.motion3.json", "root.motion3.json"]
+    );
+    assert_eq!(
+        motions[0].runtime_id(),
+        "external:motions/dedicated.motion3.json"
+    );
+
+    let expressions = resolver.discover_external_expressions();
+    assert_eq!(
+        expressions
+            .iter()
+            .map(|reference| reference.reference())
+            .collect::<Vec<_>>(),
+        ["expressions/dedicated.exp3.json", "root.exp3.json"]
+    );
+    assert!(!expressions[0].movable_to_outfit());
+    assert!(expressions[1].movable_to_outfit());
 }
 
 #[test]
@@ -303,4 +356,22 @@ fn rejects_symbolic_link_to_file_outside_model_directory() {
         .expect_err("指向目录外的符号链接必须被拒绝");
 
     assert_eq!(error.category(), ModelDiagnosticCategory::InvalidReference);
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_skips_dedicated_directory_symlinks_outside_model_root() {
+    use std::os::unix::fs::symlink;
+
+    let directory = TestDirectory::new();
+    let model_dir = directory.path().join("runtime");
+    let outside = directory.path().join("outside-motions");
+    fs::create_dir(&model_dir).expect("测试模型目录应当可以创建");
+    fs::create_dir(&outside).expect("测试外部目录应当可以创建");
+    fs::write(outside.join("wave.motion3.json"), "{}").expect("测试外部动作应当可以创建");
+    symlink(&outside, model_dir.join("motions")).expect("测试目录符号链接应当可以创建");
+    let resolver = ModelResourceResolver::for_manifest(&model_dir.join("model.model3.json"))
+        .expect("测试模型目录应当可以解析");
+
+    assert!(resolver.discover_external_motions().is_empty());
 }

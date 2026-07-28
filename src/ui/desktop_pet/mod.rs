@@ -336,7 +336,6 @@ impl DesktopPetView {
                 SettingsEvent::ModelChanged(model_path) => {
                     this.load_model(model_path.clone(), cx);
                 }
-                SettingsEvent::ModelCatalogChanged => this.sync_agent_outfits(cx),
                 SettingsEvent::FrameRateChanged => this.wake_frame_rate_scheduler(),
                 SettingsEvent::EyeTrackingChanged(enabled) => {
                     this.eye_tracking_enabled = *enabled;
@@ -401,6 +400,7 @@ impl DesktopPetView {
                         this.clear_agent_outfits(cx);
                     }
                 }
+                SettingsEvent::ModelResourcesChanged => this.sync_agent_outfits(cx),
                 SettingsEvent::PersonaContextCleared(persona) => {
                     this.chat.update(cx, |chat, cx| {
                         chat.clear_persona_context(persona, cx);
@@ -1042,12 +1042,16 @@ impl DesktopPetView {
                     self.frame = Some(Arc::new(frame));
                 }
                 let diagnostic_count = diagnostics.entries().len();
-                let outfit_count = capabilities.outfits().len();
+                let movable_expression_count = capabilities
+                    .expressions()
+                    .iter()
+                    .filter(|expression| expression.movable_to_outfit())
+                    .count();
                 let motion_count = capabilities.motions().len();
                 let expression_count = capabilities.expressions().len();
                 self.model_state = ModelLoadState::ready(diagnostics);
                 log::info!(
-                    "Live2D 模型已就绪：generation={generation}, renderer=gpu, outfits={outfit_count}, motions={motion_count}, expressions={expression_count}, diagnostics={diagnostic_count}"
+                    "Live2D 模型已就绪：generation={generation}, renderer=gpu, movable_expressions={movable_expression_count}, motions={motion_count}, expressions={expression_count}, diagnostics={diagnostic_count}"
                 );
                 if diagnostic_count > 0 {
                     log::warn!(

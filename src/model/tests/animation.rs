@@ -48,10 +48,14 @@ impl Drop for TestDirectory {
 }
 
 fn write_motion(path: &Path, duration: f32) {
+    write_motion_with_loop(path, duration, false);
+}
+
+fn write_motion_with_loop(path: &Path, duration: f32, looping: bool) {
     fs::write(
         path,
         format!(
-            r#"{{"Version":3,"Meta":{{"Duration":{duration},"Fps":30,"Loop":false}},"Curves":[]}}"#
+            r#"{{"Version":3,"Meta":{{"Duration":{duration},"Fps":60,"Loop":{looping}}},"Curves":[]}}"#
         ),
     )
     .expect("测试动作应当可以创建");
@@ -277,7 +281,137 @@ fn available_groups_only_report_groups_with_usable_clips() {
         AnimationController::load_manifest(&model, &directory.resolver());
 
     // 名称按 BTreeMap 顺序返回，只暴露真正可播放的动作组。
-    assert_eq!(controller.available_groups(), ["Idle", "Tap"]);
+    let resources = controller.available_resources();
+    assert_eq!(
+        resources
+            .iter()
+            .map(|resource| resource.runtime_id())
+            .collect::<Vec<_>>(),
+        ["Idle", "Tap"]
+    );
+}
+
+#[test]
+fn external_motions_from_root_and_dedicated_directory_load_as_individual_actions() {
+    let directory = TestDirectory::new();
+    fs::create_dir(directory.path().join("motions")).expect("动作专属目录应当可以创建");
+    write_motion(&directory.path().join("declared.motion3.json"), 1.0);
+    write_motion_with_loop(&directory.path().join("wave.motion3.json"), 1.0, true);
+    write_motion(&directory.path().join("motions/dance.motion3.json"), 1.0);
+    let model = parse_model(r#"{"Tap":[{"File":"declared.motion3.json"}]}"#);
+
+    let (mut controller, diagnostics) =
+        AnimationController::load_manifest(&model, &directory.resolver());
+
+    assert!(diagnostics.entries().is_empty());
+    let resources = controller.available_resources();
+    assert_eq!(
+        resources
+            .iter()
+            .map(|resource| (resource.runtime_id(), resource.default_name()))
+            .collect::<Vec<_>>(),
+        [
+            ("Tap", "Tap"),
+            ("external:motions/dance.motion3.json", "dance"),
+            ("external:wave.motion3.json", "wave"),
+        ]
+    );
+    assert_eq!(
+        controller.play_interaction("external:wave.motion3.json"),
+        MotionPlayResult::Started
+    );
+    // 外部动作始终保持预览的一次性语义，不采用 VTS 文件中的 Loop 标记。
+    assert_eq!(controller.active_is_looping(), Some(false));
+}
+
+#[test]
+fn vts_version_zero_external_motion_loads_as_one_shot_action() {
+    let directory = TestDirectory::new();
+    fs::write(
+        directory.path().join("standby.motion3.json"),
+        r#"{
+            "Version": 0,
+            "Meta": {
+                "Duration": 29.986647,
+                "Fps": 60,
+                "Loop": true,
+                "CurveCount": 1,
+                "TotalSegmentCount": 1,
+                "TotalPointCount": 2,
+                "UserDataCount": 0,
+                "TotalUserDataSize": 0
+            },
+            "Curves": [{
+                "Target": "Parameter",
+                "Id": "ParamAngleX",
+                "Segments": [0, 0, 0, 29.986647, 1]
+            }]
+        }"#,
+    )
+    .expect("VTS Version 0 测试动作应当可以创建");
+    let model = parse_model("{}");
+
+    let (mut controller, diagnostics) =
+        AnimationController::load_manifest(&model, &directory.resolver());
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(
+        controller
+            .available_resources()
+            .iter()
+            .map(|resource| (resource.runtime_id(), resource.default_name()))
+            .collect::<Vec<_>>(),
+        [("external:standby.motion3.json", "standby")]
+    );
+    assert_eq!(
+        controller.play_interaction("external:standby.motion3.json"),
+        MotionPlayResult::Started
+    );
+    assert_eq!(controller.active_is_looping(), Some(false));
+}
+
+#[test]
+fn same_stem_external_motions_keep_distinct_runtime_ids() {
+    let directory = TestDirectory::new();
+    fs::create_dir(directory.path().join("motions")).expect("动作专属目录应当可以创建");
+    write_motion(&directory.path().join("wave.motion3.json"), 1.0);
+    write_motion(&directory.path().join("motions/wave.motion3.json"), 1.0);
+    let model = parse_model("{}");
+
+    let (controller, diagnostics) =
+        AnimationController::load_manifest(&model, &directory.resolver());
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(controller.available_resources().len(), 2);
+    assert_eq!(
+        controller
+            .available_resources()
+            .iter()
+            .map(|resource| resource.default_name())
+            .collect::<Vec<_>>(),
+        ["wave", "wave"]
+    );
+}
+
+#[test]
+fn manifest_group_wins_when_it_matches_an_external_runtime_id() {
+    let directory = TestDirectory::new();
+    write_motion(&directory.path().join("declared.motion3.json"), 1.0);
+    write_motion(&directory.path().join("wave.motion3.json"), 1.0);
+    let model = parse_model(r#"{"external:wave.motion3.json":[{"File":"declared.motion3.json"}]}"#);
+
+    let (controller, diagnostics) =
+        AnimationController::load_manifest(&model, &directory.resolver());
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(
+        controller
+            .available_resources()
+            .iter()
+            .map(|resource| resource.runtime_id())
+            .collect::<Vec<_>>(),
+        ["external:wave.motion3.json", "external:wave.motion3.json#2"]
+    );
 }
 
 #[test]
@@ -303,7 +437,7 @@ fn cancellation_before_loading_skips_every_motion_declaration() {
 
     assert!(diagnostics.entries().is_empty());
     assert_eq!(controller.loaded_motion_count("Idle"), Some(0));
-    assert!(controller.available_groups().is_empty());
+    assert!(controller.available_resources().is_empty());
     assert!(!controller.needs_continuous_frames());
     assert_eq!(
         controller.play_interaction("Idle"),

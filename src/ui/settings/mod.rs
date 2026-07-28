@@ -12,6 +12,7 @@ mod window;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -30,10 +31,14 @@ use crate::{
     config::{
         AppLanguage, AppearanceSettings, CONFIG, CUSTOM_FRAME_RATE_MAX, CUSTOM_FRAME_RATE_MIN,
         ConfigWriteError, FrameRate, LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES,
-        LOGGING_MIN_FILE_SIZE_MB, LOGGING_MIN_KEEP_FILES, LoggingSettings, ModelWindowSize,
-        ShortcutAction, ShortcutSettings, ThemePreset, VoiceMode, VoiceSettings,
+        LOGGING_MIN_FILE_SIZE_MB, LOGGING_MIN_KEEP_FILES, LoggingSettings, ModelExpressionCategory,
+        ModelResourceKey, ModelResourceKind, ModelResourceSettings, ModelWindowSize,
+        SharedModelResourceSettings, ShortcutAction, ShortcutSettings, ThemePreset, VoiceMode,
+        VoiceSettings,
     },
-    model::{ModelCatalog, ModelPreviewCapabilities, ensure_model_directory},
+    model::{
+        ModelCatalog, ModelPreviewCapabilities, ModelPreviewExpression, ensure_model_directory,
+    },
     shortcut::{ShortcutRuntimeBinding, shortcut_from_keybinding},
 };
 
@@ -49,8 +54,6 @@ pub(crate) use window::SettingsWindowView;
 pub(crate) enum SettingsEvent {
     /// 当前模型或服装清单发生变化。
     ModelChanged(Option<PathBuf>),
-    /// 当前模型路径未变，但重新扫描后的可用服装集合发生变化。
-    ModelCatalogChanged,
     /// 渲染帧率已更新，后台调度器应尽快重新读取原子配置。
     FrameRateChanged,
     /// 眼部跟随开关已更新。
@@ -71,6 +74,8 @@ pub(crate) enum SettingsEvent {
     AgentChanged,
     /// Agent 换装工具开关已更新，当前服装快照应立即发布或撤销。
     AgentOutfitToolChanged(bool),
+    /// 模型资源显示名或表达式分类已经持久化发布。
+    ModelResourcesChanged,
     /// 指定人格的短期上下文需要由持有会话的视图清除。
     PersonaContextCleared(String),
     /// 外观设置已经发布，所有窗口应刷新主题和语言。
@@ -103,6 +108,20 @@ enum AgentOutfitTarget {
 struct AgentOutfitCandidate {
     name: String,
     target: AgentOutfitTarget,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EditingModelResource {
+    key: ModelResourceKey,
+    default_name: String,
+}
+
+/// 设置页拖动根目录表达式时携带的稳定资源身份。
+#[derive(Clone, Debug)]
+pub(super) struct ModelExpressionDrag {
+    manifest: PathBuf,
+    runtime_id: String,
+    capabilities_revision: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,8 +161,11 @@ pub(crate) struct SettingsView {
     log_keep_files_input: Option<Entity<InputState>>,
     voice_whisper_model_input: Option<Entity<InputState>>,
     voice_vad_model_input: Option<Entity<InputState>>,
+    model_resource_name_input: Option<Entity<InputState>>,
     shortcut_focus: Option<FocusHandle>,
     preview_capabilities: ModelPreviewCapabilities,
+    model_resources: SharedModelResourceSettings,
+    editing_model_resource: Option<EditingModelResource>,
     active_outfit: Option<String>,
     section: ConfigSection,
     status: Option<String>,
@@ -177,6 +199,7 @@ pub(crate) struct SettingsView {
     custom_frame_rate_save_task: Option<Task<()>>,
     logging_input_subscriptions: Vec<Subscription>,
     voice_input_subscriptions: Vec<Subscription>,
+    model_resource_name_subscription: Option<Subscription>,
     shortcut_focus_subscription: Option<Subscription>,
     logging_input_revision: u64,
     logging_save_task: Option<Task<()>>,
@@ -187,6 +210,8 @@ pub(crate) struct SettingsView {
     shortcut_save_revision: u64,
     voice_picker_revision: u64,
     voice_picker_task: Option<Task<()>>,
+    model_resource_save_revision: u64,
+    capabilities_revision: u64,
 }
 
 impl SettingsView {
@@ -218,8 +243,11 @@ impl SettingsView {
             log_keep_files_input: None,
             voice_whisper_model_input: None,
             voice_vad_model_input: None,
+            model_resource_name_input: None,
             shortcut_focus: None,
             preview_capabilities: ModelPreviewCapabilities::default(),
+            model_resources: CONFIG.model_resource_settings(),
+            editing_model_resource: None,
             active_outfit: None,
             section: ConfigSection::Model,
             status: None,
@@ -254,6 +282,7 @@ impl SettingsView {
             custom_frame_rate_save_task: None,
             logging_input_subscriptions: Vec::new(),
             voice_input_subscriptions: Vec::new(),
+            model_resource_name_subscription: None,
             shortcut_focus_subscription: None,
             logging_input_revision: 0,
             logging_save_task: None,
@@ -264,6 +293,8 @@ impl SettingsView {
             shortcut_save_revision: 0,
             voice_picker_revision: 0,
             voice_picker_task: None,
+            model_resource_save_revision: 0,
+            capabilities_revision: 0,
         };
         if let Some(status) = status {
             view.set_status(status, cx);
@@ -390,6 +421,17 @@ impl SettingsView {
         });
         self.voice_whisper_model_input = Some(voice_whisper_model_input.clone());
         self.voice_vad_model_input = Some(voice_vad_model_input.clone());
+        let model_resource_name_input = cx.new(|cx| InputState::new(window, cx));
+        self.model_resource_name_subscription = Some(cx.subscribe_in(
+            &model_resource_name_input,
+            window,
+            |this, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    this.commit_model_resource_name(input, cx);
+                }
+            },
+        ));
+        self.model_resource_name_input = Some(model_resource_name_input);
         self.voice_input_subscriptions = vec![
             cx.subscribe(
                 &voice_whisper_model_input,
@@ -484,6 +526,9 @@ impl SettingsView {
         self.flush_custom_frame_rate_input(cx);
         self.flush_logging_inputs(cx);
         self.capture_voice_draft(cx);
+        if let Some(input) = self.model_resource_name_input.clone() {
+            self.commit_model_resource_name(&input, cx);
+        }
         self.custom_accent_input = None;
         self.custom_background_input = None;
         self.custom_frame_rate_input = None;
@@ -493,6 +538,9 @@ impl SettingsView {
         self.voice_input_subscriptions.clear();
         self.voice_whisper_model_input = None;
         self.voice_vad_model_input = None;
+        self.model_resource_name_input = None;
+        self.model_resource_name_subscription = None;
+        self.editing_model_resource = None;
         self.shortcut_focus = None;
         self.shortcut_focus_subscription = None;
         self.voice_picker_revision = self.voice_picker_revision.wrapping_add(1).max(1);
@@ -519,6 +567,9 @@ impl SettingsView {
     pub(crate) fn take_pending_write_tasks(&mut self, cx: &mut Context<Self>) -> Vec<Task<()>> {
         self.flush_custom_frame_rate_input(cx);
         self.flush_logging_inputs(cx);
+        if let Some(input) = self.model_resource_name_input.clone() {
+            self.commit_model_resource_name(&input, cx);
+        }
         if let Some(agent_settings_view) = &self.agent_settings_view {
             let agent_settings_view = agent_settings_view.clone();
             let (draft, pending) =
@@ -743,6 +794,7 @@ impl SettingsView {
             && self.custom_frame_rate_input.is_some()
             && self.voice_whisper_model_input.is_some()
             && self.voice_vad_model_input.is_some()
+            && self.model_resource_name_input.is_some()
             && self.shortcut_focus.is_some()
     }
 
@@ -756,6 +808,44 @@ impl SettingsView {
     #[cfg(test)]
     pub(in crate::ui) fn preview_capabilities_for_test(&self) -> &ModelPreviewCapabilities {
         &self.preview_capabilities
+    }
+
+    /// 只修改测试实体中的资源显示名，不写入用户配置。
+    #[cfg(test)]
+    pub(in crate::ui) fn set_model_resource_name_for_test(
+        &mut self,
+        kind: ModelResourceKind,
+        runtime_id: &str,
+        name: &str,
+    ) {
+        let key = if kind == ModelResourceKind::Variant {
+            Self::variant_resource_key(Path::new(runtime_id))
+        } else {
+            self.selected_resource_key(kind, runtime_id)
+                .expect("测试模型必须已经选择清单")
+        };
+        let settings = self
+            .model_resources
+            .with_name(key, Some(name))
+            .expect("测试资源名称必须有效");
+        self.model_resources = Arc::new(settings);
+    }
+
+    /// 只修改测试实体中的根目录表达式分类，不写入用户配置。
+    #[cfg(test)]
+    pub(in crate::ui) fn set_expression_category_for_test(
+        &mut self,
+        runtime_id: &str,
+        category: ModelExpressionCategory,
+    ) {
+        let key = self
+            .selected_resource_key(ModelResourceKind::Expression, runtime_id)
+            .expect("测试模型必须已经选择清单");
+        let settings = self
+            .model_resources
+            .with_expression_category(key, category)
+            .expect("测试表达式分类必须有效");
+        self.model_resources = Arc::new(settings);
     }
 
     /// 切换到指定配置分区，使对应页面在下一帧参与渲染。
@@ -791,7 +881,211 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         self.preview_capabilities = capabilities;
+        self.capabilities_revision = self.capabilities_revision.wrapping_add(1).max(1);
+        self.editing_model_resource = None;
         cx.notify();
+    }
+
+    fn variant_resource_key(relative_path: &Path) -> ModelResourceKey {
+        ModelResourceKey::new(
+            relative_path,
+            ModelResourceKind::Variant,
+            relative_path.to_string_lossy().into_owned(),
+        )
+    }
+
+    fn selected_resource_key(
+        &self,
+        kind: ModelResourceKind,
+        runtime_id: &str,
+    ) -> Option<ModelResourceKey> {
+        self.catalog
+            .selected_relative_path()
+            .map(|manifest| ModelResourceKey::new(manifest, kind, runtime_id))
+    }
+
+    fn model_resource_name(&self, key: &ModelResourceKey, default_name: &str) -> String {
+        self.model_resources
+            .name(key)
+            .unwrap_or(default_name)
+            .to_owned()
+    }
+
+    fn model_resource_is_renamed(&self, key: &ModelResourceKey) -> bool {
+        self.model_resources.name(key).is_some()
+    }
+
+    fn expression_category(&self, expression: &ModelPreviewExpression) -> ModelExpressionCategory {
+        if !expression.movable_to_outfit() {
+            return ModelExpressionCategory::Expression;
+        }
+        self.selected_resource_key(
+            ModelResourceKind::Expression,
+            expression.resource().runtime_id(),
+        )
+        .map(|key| self.model_resources.expression_category(&key))
+        .unwrap_or_default()
+    }
+
+    fn begin_model_resource_rename(
+        &mut self,
+        key: ModelResourceKey,
+        default_name: String,
+        current_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(input) = self.model_resource_name_input.clone() else {
+            return;
+        };
+        self.editing_model_resource = Some(EditingModelResource { key, default_name });
+        input.update(cx, |input, cx| {
+            input.set_value(current_name, window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn commit_model_resource_name(&mut self, input: &Entity<InputState>, cx: &mut Context<Self>) {
+        let Some(editing) = self.editing_model_resource.take() else {
+            return;
+        };
+        let value = input.read(cx).value().trim().to_owned();
+        let name = (value != editing.default_name).then_some(value.as_str());
+        match self.model_resources.with_name(editing.key.clone(), name) {
+            Ok(settings) => self.persist_model_resource_settings(settings, cx),
+            Err(error) => {
+                self.editing_model_resource = Some(editing);
+                self.set_status(
+                    t!(
+                        "status.model_resource_save_failed",
+                        error = error.to_string()
+                    )
+                    .to_string(),
+                    cx,
+                );
+            }
+        }
+    }
+
+    fn reset_model_resource_name(&mut self, key: ModelResourceKey, cx: &mut Context<Self>) {
+        match self.model_resources.with_name(key, None) {
+            Ok(settings) => self.persist_model_resource_settings(settings, cx),
+            Err(error) => self.set_status(
+                t!(
+                    "status.model_resource_save_failed",
+                    error = error.to_string()
+                )
+                .to_string(),
+                cx,
+            ),
+        }
+    }
+
+    fn expression_drag(&self, expression: &ModelPreviewExpression) -> Option<ModelExpressionDrag> {
+        let manifest = self.catalog.selected_relative_path()?.to_path_buf();
+        expression.movable_to_outfit().then(|| ModelExpressionDrag {
+            manifest,
+            runtime_id: expression.resource().runtime_id().to_owned(),
+            capabilities_revision: self.capabilities_revision,
+        })
+    }
+
+    fn move_expression_to_category(
+        &mut self,
+        drag: &ModelExpressionDrag,
+        category: ModelExpressionCategory,
+        cx: &mut Context<Self>,
+    ) {
+        if drag.capabilities_revision != self.capabilities_revision
+            || self.catalog.selected_relative_path() != Some(drag.manifest.as_path())
+            || !self
+                .preview_capabilities
+                .expressions()
+                .iter()
+                .any(|expression| {
+                    expression.movable_to_outfit()
+                        && expression.resource().runtime_id() == drag.runtime_id
+                })
+        {
+            return;
+        }
+        let key = ModelResourceKey::new(
+            &drag.manifest,
+            ModelResourceKind::Expression,
+            &drag.runtime_id,
+        );
+        match self.model_resources.with_expression_category(key, category) {
+            Ok(settings) => {
+                if category == ModelExpressionCategory::Expression
+                    && self.active_outfit.as_deref() == Some(drag.runtime_id.as_str())
+                {
+                    self.active_outfit = None;
+                }
+                self.persist_model_resource_settings(settings, cx);
+            }
+            Err(error) => self.set_status(
+                t!(
+                    "status.model_resource_save_failed",
+                    error = error.to_string()
+                )
+                .to_string(),
+                cx,
+            ),
+        }
+    }
+
+    fn persist_model_resource_settings(
+        &mut self,
+        settings: ModelResourceSettings,
+        cx: &mut Context<Self>,
+    ) {
+        if self.model_resources.as_ref() == &settings {
+            cx.notify();
+            return;
+        }
+        self.model_resources = Arc::new(settings.clone());
+        self.model_resource_save_revision =
+            self.model_resource_save_revision.wrapping_add(1).max(1);
+        let ui_revision = self.model_resource_save_revision;
+        let config_revision = CONFIG.reserve_model_resource_settings_revision();
+        let background = cx.background_executor().clone();
+        cx.notify();
+        let task = cx.spawn(async move |this, cx| {
+            let result = background
+                .spawn(async move {
+                    CONFIG.set_model_resource_settings_at_revision(settings, config_revision)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.model_resource_save_revision != ui_revision {
+                    return;
+                }
+                match result {
+                    Ok(Some(settings)) => {
+                        this.model_resources = settings;
+                        cx.emit(SettingsEvent::ModelResourcesChanged);
+                        this.set_status(t!("status.model_resource_saved").to_string(), cx);
+                    }
+                    Ok(None) => {
+                        this.model_resources = CONFIG.model_resource_settings();
+                        cx.notify();
+                    }
+                    Err(error) => {
+                        this.model_resources = CONFIG.model_resource_settings();
+                        this.set_status(
+                            t!(
+                                "status.model_resource_save_failed",
+                                error = error.to_string()
+                            )
+                            .to_string(),
+                            cx,
+                        );
+                    }
+                }
+            });
+        });
+        self.track_write_task(task);
     }
 
     /// 返回当前已加载模型可交给 Agent 选择的本地化服装名称。
@@ -875,32 +1169,34 @@ impl SettingsView {
         };
         let variants = family.variants();
         let default_outfit = variants.len() == 1;
-        let mut candidates = variants
-            .iter()
-            .map(|variant| AgentOutfitCandidate {
-                name: if default_outfit {
-                    t!("model.default_outfit").to_string()
-                } else {
-                    variant.display_name().to_owned()
-                },
+        let mut candidates = Vec::new();
+        for variant in variants {
+            let default_name = if default_outfit {
+                t!("model.default_outfit").to_string()
+            } else {
+                variant.display_name().to_owned()
+            };
+            let key = Self::variant_resource_key(variant.relative_path());
+            candidates.push(AgentOutfitCandidate {
+                name: self.model_resource_name(&key, &default_name),
                 target: AgentOutfitTarget::Variant(variant.relative_path().to_path_buf()),
-            })
-            .chain(
-                family
-                    .outfits()
-                    .iter()
-                    .filter(|outfit| {
-                        self.preview_capabilities
-                            .outfits()
-                            .iter()
-                            .any(|name| name == outfit.expression_name())
-                    })
-                    .map(|outfit| AgentOutfitCandidate {
-                        name: outfit.display_name().to_owned(),
-                        target: AgentOutfitTarget::Expression(outfit.expression_name().to_owned()),
-                    }),
-            )
-            .collect::<Vec<_>>();
+            });
+        }
+        for expression in self.preview_capabilities.expressions() {
+            if self.expression_category(expression) != ModelExpressionCategory::Outfit {
+                continue;
+            }
+            let resource = expression.resource();
+            let Some(key) =
+                self.selected_resource_key(ModelResourceKind::Expression, resource.runtime_id())
+            else {
+                continue;
+            };
+            candidates.push(AgentOutfitCandidate {
+                name: self.model_resource_name(&key, resource.default_name()),
+                target: AgentOutfitTarget::Expression(resource.runtime_id().to_owned()),
+            });
+        }
         let mut used_names = HashSet::with_capacity(candidates.len());
         for candidate in &mut candidates {
             candidate.name = unique_outfit_name(&candidate.name, &mut used_names);
@@ -977,6 +1273,9 @@ impl SettingsView {
     }
 
     fn commit_model_selection(&mut self, cx: &mut Context<Self>) {
+        if let Some(input) = self.model_resource_name_input.clone() {
+            self.commit_model_resource_name(&input, cx);
+        }
         self.revision = self.revision.wrapping_add(1);
         let revision = self.revision;
         self.model_revision = self.model_revision.wrapping_add(1);
@@ -1104,7 +1403,9 @@ impl SettingsView {
                         if new_path != old_path {
                             this.publish_model_selection(new_path, cx);
                         } else {
-                            cx.emit(SettingsEvent::ModelCatalogChanged);
+                            this.active_outfit = None;
+                            cx.emit(SettingsEvent::ModelChanged(new_path));
+                            cx.notify();
                         }
                     }
                     Err(error) => {
@@ -1664,18 +1965,36 @@ impl SettingsView {
         self.track_write_task(task);
     }
 
-    fn preview_outfit(&mut self, name: String, cx: &mut Context<Self>) {
-        self.active_outfit = Some(name.clone());
-        cx.emit(SettingsEvent::PreviewExpression(name));
+    fn preview_outfit(&mut self, runtime_id: String, display_name: String, cx: &mut Context<Self>) {
+        self.active_outfit = Some(runtime_id.clone());
+        cx.emit(SettingsEvent::PreviewExpression(runtime_id));
+        self.set_status(
+            t!("status.outfit_preview", name = display_name).to_string(),
+            cx,
+        );
         cx.notify();
     }
 
-    fn preview_motion(&mut self, name: String, cx: &mut Context<Self>) {
-        cx.emit(SettingsEvent::PreviewMotion(name));
+    fn preview_motion(&mut self, runtime_id: String, display_name: String, cx: &mut Context<Self>) {
+        cx.emit(SettingsEvent::PreviewMotion(runtime_id));
+        self.set_status(
+            t!("status.motion_preview", name = display_name).to_string(),
+            cx,
+        );
     }
 
-    fn preview_expression(&mut self, name: String, cx: &mut Context<Self>) {
-        cx.emit(SettingsEvent::PreviewExpression(name));
+    fn preview_expression(
+        &mut self,
+        runtime_id: String,
+        display_name: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.active_outfit = None;
+        cx.emit(SettingsEvent::PreviewExpression(runtime_id));
+        self.set_status(
+            t!("status.expression_preview", name = display_name).to_string(),
+            cx,
+        );
     }
 
     fn capture_custom_theme(&mut self, cx: &mut Context<Self>) {
