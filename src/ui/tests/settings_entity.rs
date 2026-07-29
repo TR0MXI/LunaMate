@@ -353,12 +353,13 @@ async fn a_scan_discovers_models_written_after_the_view_was_created(cx: &mut Tes
     fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
     fs::write(model_directory.join("luna.model3.json"), "{}").expect("测试模型清单应当可以创建");
     fs::write(model_directory.join("侦探.exp3.json"), "{}").expect("测试服装应当可以创建");
+    let relative_manifest = PathBuf::from("luna").join("luna.model3.json");
     let catalog = ModelCatalog::empty(directory.path().to_path_buf());
     let (view, cx) = mount(cx, catalog, None);
 
     cx.update_window_entity(&view, |view, window, cx| {
         assert_eq!(view.catalog_counts_for_test(), (0, 0));
-        view.start_initial_scan(Some(PathBuf::from("luna/luna.model3.json")), window, cx);
+        view.start_initial_scan(Some(relative_manifest.clone()), window, cx);
     });
 
     wait_for(&view, cx, "扫描发现新模型", |view| {
@@ -389,7 +390,7 @@ async fn a_scan_discovers_models_written_after_the_view_was_created(cx: &mut Tes
         );
         view.set_model_resource_name_for_test(
             ModelResourceKind::Variant,
-            "luna/luna.model3.json",
+            &relative_manifest.to_string_lossy(),
             "基础套装",
         );
         let outfits = view.available_agent_outfits();

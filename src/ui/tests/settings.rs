@@ -121,6 +121,11 @@ fn shortcut_recording_keeps_every_supported_modifier() {
     .expect("多修饰键组合应当可以录入")
     .expect("K 不是修饰键");
 
+    let alt = if cfg!(target_os = "macos") {
+        "Option"
+    } else {
+        "Alt"
+    };
     let platform = if cfg!(target_os = "macos") {
         "Cmd"
     } else if cfg!(target_os = "windows") {
@@ -130,6 +135,6 @@ fn shortcut_recording_keeps_every_supported_modifier() {
     };
     assert_eq!(
         shortcut_keycaps(shortcut),
-        ["Ctrl", "Alt", "Shift", platform, "K"]
+        ["Ctrl", alt, "Shift", platform, "K"]
     );
 }
