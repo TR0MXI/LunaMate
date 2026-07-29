@@ -13,9 +13,9 @@ use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
 
 use crate::{
     agent::AgentMemoryAccess,
-    config::{ModelExpressionCategory, ModelResourceKind},
+    config::{ConfigWriteError, ModelExpressionCategory, ModelResourceKind},
     model::{ModelCatalog, ModelPreviewCapabilities, ModelPreviewExpression, ModelPreviewResource},
-    ui::settings::{AgentOutfitAction, SettingsView},
+    ui::settings::{AgentOutfitAction, SettingsView, SettingsWindowView},
 };
 
 struct TestDirectory(PathBuf);
@@ -82,6 +82,28 @@ fn mount(
     cx.add_window_view(|_window, cx| {
         SettingsView::new(catalog, AgentMemoryAccess::default(), status, cx)
     })
+}
+
+fn mount_settings_window(
+    cx: &mut TestAppContext,
+    catalog: ModelCatalog,
+    status: Option<String>,
+) -> (
+    Entity<SettingsView>,
+    Entity<SettingsWindowView>,
+    &mut VisualTestContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        gpui_tokio::init(cx);
+    });
+    let view = cx.update(|cx| {
+        cx.new(|cx| SettingsView::new(catalog, AgentMemoryAccess::default(), status, cx))
+    });
+    let config = view.clone();
+    let (window, cx) =
+        cx.add_window_view(move |window, cx| SettingsWindowView::new(config, window, cx));
+    (view, window, cx)
 }
 
 #[gpui::test]
@@ -227,8 +249,8 @@ async fn scanning_an_empty_directory_reports_zero_models(cx: &mut TestAppContext
     let catalog = ModelCatalog::empty(directory.path().to_path_buf());
     let (view, cx) = mount(cx, catalog, None);
 
-    view.update(cx, |view, cx| {
-        view.start_initial_scan(None, cx);
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.start_initial_scan(None, window, cx);
         assert!(view.is_refreshing_for_test());
     });
 
@@ -248,17 +270,80 @@ async fn a_second_scan_is_ignored_while_one_is_already_running(cx: &mut TestAppC
     let catalog = ModelCatalog::empty(directory.path().to_path_buf());
     let (view, cx) = mount(cx, catalog, None);
 
-    view.update(cx, |view, cx| {
-        view.start_initial_scan(None, cx);
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.start_initial_scan(None, window, cx);
         assert!(view.is_refreshing_for_test());
         // 重复请求不得叠加后台任务，否则迟到结果会覆盖较新的扫描。
-        view.start_initial_scan(None, cx);
+        view.start_initial_scan(None, window, cx);
         assert!(view.is_refreshing_for_test());
     });
 
     wait_for(&view, cx, "重复扫描收敛", |view| {
         !view.is_refreshing_for_test()
     });
+}
+
+#[gpui::test]
+async fn cancelling_a_window_scan_allows_the_next_scan(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    let catalog = ModelCatalog::empty(directory.path().to_path_buf());
+    let (view, cx) = mount(cx, catalog, None);
+
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.refresh_models_for_test(window, cx);
+        assert!(view.is_refreshing_for_test());
+        view.deactivate_window(cx);
+        assert!(!view.is_refreshing_for_test());
+
+        view.refresh_models_for_test(window, cx);
+        assert!(view.is_refreshing_for_test());
+    });
+
+    wait_for(&view, cx, "窗口重建后的模型扫描结束", |view| {
+        !view.is_refreshing_for_test()
+    });
+}
+
+#[gpui::test]
+async fn closing_settings_does_not_cancel_the_desktop_startup_scan(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    let catalog = ModelCatalog::empty(directory.path().to_path_buf());
+    let (view, cx) = mount(cx, catalog, None);
+
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.start_initial_scan(None, window, cx);
+        assert!(view.is_refreshing_for_test());
+        view.deactivate_window(cx);
+        assert!(view.is_refreshing_for_test());
+    });
+
+    wait_for(&view, cx, "桌宠启动模型扫描结束", |view| {
+        !view.is_refreshing_for_test()
+    });
+}
+
+#[gpui::test]
+async fn startup_scan_refreshes_an_already_open_persona_editor(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    let model_directory = directory.path().join("luna");
+    fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+    fs::write(model_directory.join("luna.model3.json"), "{}").expect("测试模型清单应当可以创建");
+    let catalog = ModelCatalog::empty(directory.path().to_path_buf());
+    let (view, window_view, cx) = mount_settings_window(cx, catalog, None);
+
+    view.update(cx, |view, _cx| {
+        assert_eq!(view.persona_live2d_refresh_for_test(), (0, 0));
+    });
+    cx.update_window_entity(&window_view, |_window_view, window, cx| {
+        view.update(cx, |view, cx| view.start_initial_scan(None, window, cx));
+    });
+
+    wait_for(
+        &view,
+        cx,
+        "打开设置后的启动扫描与人格候选刷新",
+        |view| !view.is_refreshing_for_test() && view.persona_live2d_refresh_for_test() == (1, 1),
+    );
 }
 
 #[gpui::test]
@@ -271,9 +356,9 @@ async fn a_scan_discovers_models_written_after_the_view_was_created(cx: &mut Tes
     let catalog = ModelCatalog::empty(directory.path().to_path_buf());
     let (view, cx) = mount(cx, catalog, None);
 
-    view.update(cx, |view, cx| {
+    cx.update_window_entity(&view, |view, window, cx| {
         assert_eq!(view.catalog_counts_for_test(), (0, 0));
-        view.start_initial_scan(Some(PathBuf::from("luna/luna.model3.json")), cx);
+        view.start_initial_scan(Some(PathBuf::from("luna/luna.model3.json")), window, cx);
     });
 
     wait_for(&view, cx, "扫描发现新模型", |view| {
@@ -322,5 +407,259 @@ async fn a_scan_discovers_models_written_after_the_view_was_created(cx: &mut Tes
         view.set_agent_outfit_tool_enabled_for_test(false);
         assert!(view.available_agent_outfits().is_empty());
         assert!(view.resolve_agent_outfit("侦探套装").is_none());
+    });
+}
+
+#[gpui::test]
+async fn scan_fallback_does_not_replace_a_temporarily_missing_global_model(
+    cx: &mut TestAppContext,
+) {
+    let directory = TestDirectory::new();
+    let model_directory = directory.path().join("luna");
+    fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+    fs::write(model_directory.join("luna.model3.json"), "{}").expect("测试模型清单应当可以创建");
+    let missing = PathBuf::from("pending/missing.model3.json");
+    let catalog = ModelCatalog::empty(directory.path().to_path_buf());
+    let (view, cx) = mount(cx, catalog, None);
+
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.start_initial_scan(Some(missing.clone()), window, cx);
+    });
+    wait_for(
+        &view,
+        cx,
+        "缺失全局模型的回退扫描结束",
+        |view| !view.is_refreshing_for_test(),
+    );
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.global_model_selection_for_test(),
+            Some(missing.as_path())
+        );
+        assert!(
+            view.take_pending_write_tasks(cx).is_empty(),
+            "扫描回退只能影响运行时，不能静默持久化"
+        );
+    });
+}
+
+#[gpui::test]
+fn model_page_variants_follow_global_selection_when_runtime_differs(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    for (family, manifests) in [
+        (
+            "global",
+            ["global.model3.json", "global-alt.model3.json"].as_slice(),
+        ),
+        ("bound", ["bound.model3.json"].as_slice()),
+    ] {
+        let model_directory = directory.path().join(family);
+        fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+        for manifest in manifests {
+            fs::write(model_directory.join(manifest), "{}").expect("测试模型清单应当可以创建");
+        }
+    }
+    let global = PathBuf::from("global/global.model3.json");
+    let alternate = PathBuf::from("global/global-alt.model3.json");
+    let runtime = PathBuf::from("bound/bound.model3.json");
+    let catalog = ModelCatalog::load(directory.path().to_path_buf(), Some(&global))
+        .expect("测试模型目录应当可以扫描");
+    let (view, cx) = mount(cx, catalog, None);
+
+    view.update(cx, |view, cx| {
+        view.set_model_selections_for_test(global.clone(), runtime.clone(), Some("coat"));
+        let variants = view.global_model_variants_for_test();
+        assert_eq!(variants.len(), 2);
+        assert!(variants.contains(&global));
+        assert!(variants.contains(&alternate));
+        assert_eq!(
+            view.runtime_model_selection_for_test(),
+            Some(runtime.as_path())
+        );
+        assert_eq!(view.active_outfit_for_test(), Some("coat"));
+
+        // 全局回退模型变化不应触碰人格绑定的运行时变体或表达式服装。
+        view.stage_global_model_selection_for_test(alternate, cx);
+        assert_eq!(
+            view.runtime_model_selection_for_test(),
+            Some(runtime.as_path())
+        );
+        assert_eq!(view.active_outfit_for_test(), Some("coat"));
+    });
+}
+
+#[gpui::test]
+fn unrelated_catalog_revision_does_not_hide_latest_global_save_failure(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    let model_directory = directory.path().join("global");
+    fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+    for manifest in ["global.model3.json", "global-alt.model3.json"] {
+        fs::write(model_directory.join(manifest), "{}").expect("测试模型清单应当可以创建");
+    }
+    let initial = PathBuf::from("global/global.model3.json");
+    let alternate = PathBuf::from("global/global-alt.model3.json");
+    let catalog = ModelCatalog::load(directory.path().to_path_buf(), Some(&initial))
+        .expect("测试模型目录应当可以扫描");
+    let (view, cx) = mount(cx, catalog, None);
+
+    view.update(cx, |view, cx| {
+        let save_revision = view.stage_global_model_selection_for_test(alternate, cx);
+        view.invalidate_catalog_revision_for_test();
+        view.finish_global_model_selection_for_test(
+            save_revision,
+            Some(initial.clone()),
+            Err(ConfigWriteError::InvalidValue("模拟写入失败".to_owned())),
+            cx,
+        );
+        assert_eq!(
+            view.global_model_selection_for_test(),
+            Some(initial.as_path())
+        );
+        assert!(view.status_for_test().is_some());
+    });
+}
+
+#[gpui::test]
+fn an_older_global_save_failure_cannot_rollback_a_newer_selection(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    let model_directory = directory.path().join("global");
+    fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+    for manifest in [
+        "global.model3.json",
+        "global-alt.model3.json",
+        "global-new.model3.json",
+    ] {
+        fs::write(model_directory.join(manifest), "{}").expect("测试模型清单应当可以创建");
+    }
+    let initial = PathBuf::from("global/global.model3.json");
+    let alternate = PathBuf::from("global/global-alt.model3.json");
+    let newest = PathBuf::from("global/global-new.model3.json");
+    let catalog = ModelCatalog::load(directory.path().to_path_buf(), Some(&initial))
+        .expect("测试模型目录应当可以扫描");
+    let (view, cx) = mount(cx, catalog, None);
+
+    view.update(cx, |view, cx| {
+        let old_revision = view.stage_global_model_selection_for_test(alternate, cx);
+        view.stage_global_model_selection_for_test(newest.clone(), cx);
+        view.finish_global_model_selection_for_test(
+            old_revision,
+            Some(initial),
+            Err(ConfigWriteError::InvalidValue("旧写入失败".to_owned())),
+            cx,
+        );
+        assert_eq!(
+            view.global_model_selection_for_test(),
+            Some(newest.as_path())
+        );
+        assert_eq!(view.status_for_test(), None);
+    });
+}
+
+#[gpui::test]
+fn persona_live2d_binding_precedes_global_and_missing_binding_falls_back(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    for family in ["luna", "mate"] {
+        let model_directory = directory.path().join(family);
+        fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+        fs::write(model_directory.join(format!("{family}.model3.json")), "{}")
+            .expect("测试模型清单应当可以创建");
+    }
+    let global = PathBuf::from("mate/mate.model3.json");
+    let bound = PathBuf::from("luna/luna.model3.json");
+    let catalog = ModelCatalog::load(directory.path().to_path_buf(), Some(&global))
+        .expect("测试模型目录应当可以扫描");
+    let (view, cx) = mount(cx, catalog, None);
+
+    view.update(cx, |view, _| {
+        let (relative, path, warning) =
+            view.resolve_persona_live2d_model_for_test(Some(&bound), Some(&global));
+        assert_eq!(relative, Some(bound.clone()));
+        assert_eq!(path, Some(directory.path().join(&bound)));
+        assert!(!warning);
+
+        let missing = PathBuf::from("missing/missing.model3.json");
+        let (relative, path, warning) =
+            view.resolve_persona_live2d_model_for_test(Some(&missing), Some(&global));
+        assert_eq!(relative, Some(global.clone()));
+        assert_eq!(path, Some(directory.path().join(&global)));
+        assert!(warning);
+    });
+}
+
+#[gpui::test]
+fn bound_persona_outfit_change_does_not_schedule_a_global_model_write(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    let model_directory = directory.path().join("luna");
+    fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+    for manifest in ["luna.model3.json", "luna-alt.model3.json"] {
+        fs::write(model_directory.join(manifest), "{}").expect("测试模型清单应当可以创建");
+    }
+    let initial = PathBuf::from("luna/luna.model3.json");
+    let alternate = PathBuf::from("luna/luna-alt.model3.json");
+    let catalog = ModelCatalog::load(directory.path().to_path_buf(), Some(&initial))
+        .expect("测试模型目录应当可以扫描");
+    let (view, cx) = mount(cx, catalog, None);
+
+    view.update(cx, |view, cx| {
+        let loaded = view
+            .commit_agent_outfit_with_binding_for_test(
+                AgentOutfitAction::LoadVariant(alternate.clone()),
+                true,
+                cx,
+            )
+            .expect("人格绑定下的换装应成功")
+            .expect("清单换装应返回模型路径");
+        assert_eq!(loaded, directory.path().join(alternate));
+        assert!(
+            view.take_pending_write_tasks(cx).is_empty(),
+            "人格运行时换装不得派生全局模型配置写入"
+        );
+    });
+}
+
+#[gpui::test]
+fn unchanged_persona_model_reapply_preserves_the_active_expression_outfit(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    let model_directory = directory.path().join("luna");
+    fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+    fs::write(model_directory.join("luna.model3.json"), "{}").expect("测试模型清单应当可以创建");
+    let relative = PathBuf::from("luna/luna.model3.json");
+    let catalog = ModelCatalog::load(directory.path().to_path_buf(), Some(&relative))
+        .expect("测试模型目录应当可以扫描");
+    let (view, cx) = mount(cx, catalog, None);
+
+    view.update(cx, |view, cx| {
+        view.set_applied_persona_model_for_test(relative, "coat");
+        view.reapply_persona_model_for_test(cx);
+        assert_eq!(view.active_outfit_for_test(), Some("coat"));
+    });
+}
+
+#[gpui::test]
+async fn rescanning_the_same_runtime_model_clears_the_expression_outfit_marker(
+    cx: &mut TestAppContext,
+) {
+    let directory = TestDirectory::new();
+    let model_directory = directory.path().join("luna");
+    fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+    fs::write(model_directory.join("luna.model3.json"), "{}").expect("测试模型清单应当可以创建");
+    let relative = PathBuf::from("luna/luna.model3.json");
+    let catalog = ModelCatalog::load(directory.path().to_path_buf(), Some(&relative))
+        .expect("测试模型目录应当可以扫描");
+    let (view, cx) = mount(cx, catalog, None);
+
+    view.update(cx, |view, _cx| {
+        view.set_model_selections_for_test(relative.clone(), relative.clone(), Some("coat"));
+    });
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.refresh_models_for_test(window, cx);
+    });
+    wait_for(&view, cx, "同路径模型重扫完成", |view| {
+        !view.is_refreshing_for_test()
+    });
+
+    view.update(cx, |view, _cx| {
+        assert_eq!(view.active_outfit_for_test(), None);
     });
 }

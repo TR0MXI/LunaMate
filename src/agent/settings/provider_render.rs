@@ -10,7 +10,7 @@ use rust_i18n::t;
 
 use crate::{
     agent::palette::AgentPalette,
-    config::{MAX_OUTPUT_TOKENS_MAX, TEMPERATURE_MAX, TOP_P_MAX},
+    config::{MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, TEMPERATURE_MAX, TOP_P_MAX},
 };
 
 use super::{
@@ -428,7 +428,8 @@ impl AgentSettingsView {
         let palette = AgentPalette::from_app(cx);
         let expanded = self.advanced_expanded;
         let inputs = self.inputs();
-        let [max_output_tokens, temperature, top_p] = self.advanced_toggles();
+        let [context_window_tokens, max_output_tokens, temperature, top_p] =
+            self.advanced_toggles();
         let hint = t!("llm.advanced_default_hint").to_string();
         div()
             .w_full()
@@ -479,6 +480,18 @@ impl AgentSettingsView {
                         .child(
                             div().w_full().flex().gap_4().children([
                                 optional_field(
+                                    "toggle-context-window-tokens",
+                                    t!("llm.context_window_tokens").to_string(),
+                                    t!("llm.context_window_default_hint").to_string(),
+                                    context_window_tokens,
+                                    Input::new(inputs.context_window_tokens)
+                                        .disabled(disabled || !context_window_tokens),
+                                    palette,
+                                    cx.listener(|this, _, _, cx| {
+                                        this.toggle_context_window_tokens(cx);
+                                    }),
+                                ),
+                                optional_field(
                                     "toggle-max-output-tokens",
                                     t!("llm.max_output_tokens").to_string(),
                                     hint.clone(),
@@ -490,27 +503,28 @@ impl AgentSettingsView {
                                         this.toggle_max_output_tokens(cx);
                                     }),
                                 ),
-                                optional_field(
-                                    "toggle-temperature",
-                                    t!("llm.temperature").to_string(),
-                                    hint.clone(),
-                                    temperature,
-                                    Input::new(inputs.temperature)
-                                        .disabled(disabled || !temperature),
-                                    palette,
-                                    cx.listener(|this, _, _, cx| this.toggle_temperature(cx)),
-                                ),
-                                optional_field(
-                                    "toggle-top-p",
-                                    t!("llm.top_p").to_string(),
-                                    hint,
-                                    top_p,
-                                    Input::new(inputs.top_p).disabled(disabled || !top_p),
-                                    palette,
-                                    cx.listener(|this, _, _, cx| this.toggle_top_p(cx)),
-                                ),
                             ]),
                         )
+                        .child(div().w_full().flex().gap_4().children([
+                            optional_field(
+                                "toggle-temperature",
+                                t!("llm.temperature").to_string(),
+                                hint.clone(),
+                                temperature,
+                                Input::new(inputs.temperature).disabled(disabled || !temperature),
+                                palette,
+                                cx.listener(|this, _, _, cx| this.toggle_temperature(cx)),
+                            ),
+                            optional_field(
+                                "toggle-top-p",
+                                t!("llm.top_p").to_string(),
+                                hint,
+                                top_p,
+                                Input::new(inputs.top_p).disabled(disabled || !top_p),
+                                palette,
+                                cx.listener(|this, _, _, cx| this.toggle_top_p(cx)),
+                            ),
+                        ]))
                         .child(
                             div()
                                 .pt_3()
@@ -519,6 +533,7 @@ impl AgentSettingsView {
                                 .child(
                                     t!(
                                         "llm.advanced_range_hint",
+                                        context = MODEL_CONTEXT_TOKENS_MAX,
                                         tokens = MAX_OUTPUT_TOKENS_MAX,
                                         temperature = format!("{TEMPERATURE_MAX}"),
                                         top_p = format!("{TOP_P_MAX}")

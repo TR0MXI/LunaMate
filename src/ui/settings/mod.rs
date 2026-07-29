@@ -26,7 +26,7 @@ use rust_i18n::t;
 use crate::{
     agent::{
         AgentMemoryAccess, AgentSettingsDraft, AgentSettingsEvent, AgentSettingsView,
-        PersonaSettingsDraft, PersonaSettingsEvent, PersonaSettingsView,
+        ContextMutationCompletion, PersonaSettingsDraft, PersonaSettingsEvent, PersonaSettingsView,
     },
     config::{
         AppLanguage, AppearanceSettings, CONFIG, CUSTOM_FRAME_RATE_MAX, CUSTOM_FRAME_RATE_MIN,
@@ -54,6 +54,8 @@ pub(crate) use window::SettingsWindowView;
 pub(crate) enum SettingsEvent {
     /// 当前模型或服装清单发生变化。
     ModelChanged(Option<PathBuf>),
+    /// 模型目录扫描结果已经替换，窗口绑定的编辑器应刷新候选项。
+    ModelCatalogChanged,
     /// 渲染帧率已更新，后台调度器应尽快重新读取原子配置。
     FrameRateChanged,
     /// 眼部跟随开关已更新。
@@ -77,7 +79,23 @@ pub(crate) enum SettingsEvent {
     /// 模型资源显示名或表达式分类已经持久化发布。
     ModelResourcesChanged,
     /// 指定人格的短期上下文需要由持有会话的视图清除。
-    PersonaContextCleared(String),
+    PersonaContextCleared {
+        persona: String,
+        completion: Option<ContextMutationCompletion>,
+    },
+    /// 请求会话持有者修改指定人格的一条上下文消息。
+    PersonaContextMessageEdited {
+        persona: String,
+        message_id: u64,
+        content: String,
+        completion: Option<ContextMutationCompletion>,
+    },
+    /// 请求会话持有者原子删除指定人格的一组上下文消息。
+    PersonaContextMessagesDeleted {
+        persona: String,
+        message_ids: Vec<u64>,
+        completion: Option<ContextMutationCompletion>,
+    },
     /// 外观设置已经发布，所有窗口应刷新主题和语言。
     AppearanceChanged(AppearanceSettings),
     /// 本地语音配置已经持久化并发布。
@@ -167,6 +185,9 @@ pub(crate) struct SettingsView {
     model_resources: SharedModelResourceSettings,
     editing_model_resource: Option<EditingModelResource>,
     active_outfit: Option<String>,
+    global_model_selection: Option<PathBuf>,
+    applied_persona_id: Option<String>,
+    applied_persona_model: Option<PathBuf>,
     section: ConfigSection,
     status: Option<String>,
     frame_rate: FrameRate,
@@ -187,8 +208,10 @@ pub(crate) struct SettingsView {
     shortcut_runtime_bindings: HashMap<ShortcutAction, String>,
     is_refreshing: bool,
     revision: u64,
-    model_revision: u64,
+    catalog_revision: u64,
+    global_model_save_revision: u64,
     refresh_task: Option<Task<()>>,
+    refresh_window_scoped: bool,
     write_tasks: Vec<Task<()>>,
     agent_settings_subscription: Option<Subscription>,
     persona_settings_subscription: Option<Subscription>,
@@ -212,6 +235,10 @@ pub(crate) struct SettingsView {
     voice_picker_task: Option<Task<()>>,
     model_resource_save_revision: u64,
     capabilities_revision: u64,
+    #[cfg(test)]
+    persona_live2d_refresh_revision: u64,
+    #[cfg(test)]
+    persona_live2d_candidate_count: usize,
 }
 
 impl SettingsView {
@@ -249,6 +276,9 @@ impl SettingsView {
             model_resources: CONFIG.model_resource_settings(),
             editing_model_resource: None,
             active_outfit: None,
+            global_model_selection: CONFIG.selected_model(),
+            applied_persona_id: None,
+            applied_persona_model: None,
             section: ConfigSection::Model,
             status: None,
             frame_rate: CONFIG.frame_rate(),
@@ -270,8 +300,10 @@ impl SettingsView {
             shortcut_runtime_bindings: HashMap::new(),
             is_refreshing: false,
             revision: 0,
-            model_revision: 0,
+            catalog_revision: 0,
+            global_model_save_revision: 0,
             refresh_task: None,
+            refresh_window_scoped: false,
             write_tasks: Vec::new(),
             agent_settings_subscription: None,
             persona_settings_subscription: None,
@@ -295,11 +327,127 @@ impl SettingsView {
             voice_picker_task: None,
             model_resource_save_revision: 0,
             capabilities_revision: 0,
+            #[cfg(test)]
+            persona_live2d_refresh_revision: 0,
+            #[cfg(test)]
+            persona_live2d_candidate_count: 0,
         };
         if let Some(status) = status {
             view.set_status(status, cx);
         }
+        view.start_pending_persona_cleanup(cx);
         view
+    }
+
+    /// 启动时幂等清理持久化 tombstone，避免必须再次打开设置窗口才删除旧记忆。
+    fn start_pending_persona_cleanup(&mut self, cx: &mut Context<Self>) {
+        for persona in CONFIG.persona_settings().pending_deletions.clone() {
+            let memory = self.memory.clone();
+            if !memory.claim_deleted_persona_cleanup(&persona) {
+                continue;
+            }
+            let cleanup_memory = memory.clone();
+            let cleanup_persona = persona.clone();
+            let cleanup = gpui_tokio::Tokio::spawn(cx, async move {
+                cleanup_memory
+                    .cleanup_deleted_persona(&cleanup_persona)
+                    .await
+            });
+            let task = cx.spawn(async move |this, cx| match cleanup.await {
+                Ok(Ok(())) => {
+                    memory.complete_deleted_persona_cleanup(&persona);
+                    log::info!("启动时已完成待清理人格的幂等记忆删除");
+                    let _ = this.update(cx, |this, cx| {
+                        this.finish_deleted_persona_cleanup(persona, cx);
+                    });
+                }
+                Ok(Err(error)) => {
+                    memory.fail_deleted_persona_cleanup(&persona);
+                    log::error!("启动时清理已删除人格失败：{error}");
+                }
+                Err(error) => {
+                    memory.fail_deleted_persona_cleanup(&persona);
+                    log::error!("启动时人格清理任务异常结束：{error}");
+                }
+            });
+            self.write_tasks.push(task);
+        }
+    }
+
+    fn finish_deleted_persona_cleanup(&mut self, _persona: String, cx: &mut Context<Self>) {
+        let completed = self
+            .memory
+            .completed_deleted_persona_cleanups()
+            .into_iter()
+            .filter(|persona| {
+                CONFIG
+                    .persona_settings()
+                    .pending_deletions
+                    .contains(persona)
+            })
+            .collect::<Vec<_>>();
+        if let Some(active) = self.persona_settings_view.clone() {
+            active.update(cx, |active, cx| {
+                for persona in &completed {
+                    active.finish_persona_cleanup(persona, cx);
+                }
+            });
+            self.release_published_persona_cleanups(cx);
+            return;
+        }
+
+        let draft = self
+            .persona_settings_draft
+            .get_or_insert_with(PersonaSettingsDraft::current);
+        let mut changed = false;
+        for persona in &completed {
+            changed |= draft.finish_persona_cleanup(persona);
+        }
+        if !changed {
+            self.release_published_persona_cleanups(cx);
+            return;
+        }
+        let Some(write) = draft.prepare_write() else {
+            self.release_published_persona_cleanups(cx);
+            return;
+        };
+        let background = cx.background_executor().clone();
+        let task = cx.spawn(async move |this, cx| {
+            let result = background.spawn(async move { write.persist() }).await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(_) => this.release_published_persona_cleanups(cx),
+                Err(error) => log::error!("移除已清理人格 tombstone 失败：{error}"),
+            });
+        });
+        self.track_write_task(task);
+    }
+
+    fn release_published_persona_cleanups(&mut self, cx: &mut Context<Self>) {
+        let pending = CONFIG.persona_settings().pending_deletions.clone();
+        let published = self
+            .memory
+            .completed_deleted_persona_cleanups()
+            .into_iter()
+            .filter(|persona| !pending.contains(persona))
+            .collect::<Vec<_>>();
+        if published.is_empty() {
+            return;
+        }
+        if let Some(active) = self.persona_settings_view.clone() {
+            active.update(cx, |active, cx| {
+                for persona in &published {
+                    active.persona_cleanup_was_published(persona, cx);
+                }
+            });
+        }
+        if let Some(draft) = &mut self.persona_settings_draft {
+            for persona in &published {
+                draft.persona_cleanup_was_published(persona);
+            }
+        }
+        for persona in published {
+            self.memory.release_deleted_persona_cleanup(&persona);
+        }
     }
 
     /// 设置窗口打开时创建输入组件，并把当前外观同步到全局主题。
@@ -464,43 +612,245 @@ impl SettingsView {
     }
 
     fn activate_persona_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.write_tasks.retain(|task| !task.is_ready());
         let draft = self
             .persona_settings_draft
             .take()
             .unwrap_or_else(PersonaSettingsDraft::current);
         let memory = self.memory.clone();
-        let view = cx.new(|cx| PersonaSettingsView::new(draft, memory, window, cx));
+        let live2d_models = self.persona_live2d_models();
+        let view = cx.new(|cx| PersonaSettingsView::new(draft, memory, live2d_models, window, cx));
         self.persona_settings_subscription = Some(cx.subscribe(
             &view,
             |this, editor, event: &PersonaSettingsEvent, cx| match event {
                 PersonaSettingsEvent::Saved => {
-                    let editor_id = editor.entity_id();
-                    this.retired_persona_settings_editors
-                        .retain(|retired| retired.view.entity_id() != editor_id);
                     cx.emit(SettingsEvent::AgentChanged);
+                    this.apply_active_persona_live2d_model(cx);
                 }
                 PersonaSettingsEvent::SaveFinished => {
                     let editor_id = editor.entity_id();
                     this.retired_persona_settings_editors
                         .retain(|retired| retired.view.entity_id() != editor_id);
                 }
-                PersonaSettingsEvent::ClearContext(persona) => {
-                    cx.emit(SettingsEvent::PersonaContextCleared(persona.clone()));
+                PersonaSettingsEvent::CleanupFinished { persona } => {
+                    this.finish_deleted_persona_cleanup(persona.clone(), cx);
                 }
+                PersonaSettingsEvent::ClearContext {
+                    persona,
+                    completion,
+                } => cx.emit(SettingsEvent::PersonaContextCleared {
+                    persona: persona.clone(),
+                    completion: completion.clone(),
+                }),
+                PersonaSettingsEvent::EditContextMessage {
+                    persona,
+                    message_id,
+                    content,
+                    completion,
+                } => cx.emit(SettingsEvent::PersonaContextMessageEdited {
+                    persona: persona.clone(),
+                    message_id: *message_id,
+                    content: content.clone(),
+                    completion: completion.clone(),
+                }),
+                PersonaSettingsEvent::DeleteContextMessages {
+                    persona,
+                    message_ids,
+                    completion,
+                } => cx.emit(SettingsEvent::PersonaContextMessagesDeleted {
+                    persona: persona.clone(),
+                    message_ids: message_ids.clone(),
+                    completion: completion.clone(),
+                }),
             },
         ));
-        self.persona_settings_view = Some(view);
+        self.persona_settings_view = Some(view.clone());
+        let completed = CONFIG
+            .persona_settings()
+            .pending_deletions
+            .iter()
+            .filter(|persona| self.memory.deleted_persona_cleanup_is_completed(persona))
+            .cloned()
+            .collect::<Vec<_>>();
+        view.update(cx, |view, cx| {
+            for persona in completed {
+                view.finish_persona_cleanup(&persona, cx);
+            }
+            view.resume_pending_work(cx);
+        });
+        self.release_published_persona_cleanups(cx);
+    }
+
+    fn persona_live2d_models(&self) -> Vec<(String, PathBuf)> {
+        self.catalog
+            .families()
+            .iter()
+            .flat_map(|family| {
+                let variants = family.variants();
+                variants.iter().map(move |variant| {
+                    let default_name = if variants.len() == 1 {
+                        family.display_name()
+                    } else {
+                        variant.display_name()
+                    };
+                    let key = Self::variant_resource_key(variant.relative_path());
+                    let display_name = self.model_resource_name(&key, default_name);
+                    let label = if variants.len() == 1 {
+                        display_name
+                    } else {
+                        format!("{} / {display_name}", family.display_name())
+                    };
+                    (label, variant.relative_path().to_path_buf())
+                })
+            })
+            .collect()
+    }
+
+    fn refresh_persona_live2d_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let models = self.persona_live2d_models();
+        #[cfg(test)]
+        let candidate_count = models.len();
+        if let Some(persona) = &self.persona_settings_view {
+            persona.update(cx, |persona, cx| {
+                persona.refresh_live2d_models(models, window, cx);
+            });
+            #[cfg(test)]
+            {
+                self.persona_live2d_refresh_revision =
+                    self.persona_live2d_refresh_revision.wrapping_add(1).max(1);
+                self.persona_live2d_candidate_count = candidate_count;
+            }
+        }
+    }
+
+    fn global_live2d_fallback(
+        &self,
+        configured: Option<&Path>,
+    ) -> (Option<PathBuf>, Option<PathBuf>) {
+        if let Some(relative) = configured
+            && let Some(path) = self.catalog.model_path(relative)
+        {
+            return (Some(relative.to_path_buf()), Some(path));
+        }
+        let [family] = self.catalog.families() else {
+            return (None, None);
+        };
+        let Some(variant) = family.variants().first() else {
+            return (None, None);
+        };
+        let relative = variant.relative_path().to_path_buf();
+        let path = self.catalog.model_path(&relative);
+        (Some(relative), path)
+    }
+
+    fn resolve_persona_live2d_model(
+        &self,
+        bound: Option<&Path>,
+        global: Option<&Path>,
+    ) -> (Option<PathBuf>, Option<PathBuf>, Option<String>) {
+        if let Some(bound) = bound {
+            if let Some(path) = self.catalog.model_path(bound) {
+                return (Some(bound.to_path_buf()), Some(path), None);
+            }
+            let (fallback, path) = self.global_live2d_fallback(global);
+            let warning = if path.is_some() {
+                t!(
+                    "persona.live2d_fallback",
+                    path = bound.to_string_lossy().into_owned()
+                )
+                .to_string()
+            } else {
+                t!(
+                    "persona.live2d_missing",
+                    path = bound.to_string_lossy().into_owned()
+                )
+                .to_string()
+            };
+            return (fallback, path, Some(warning));
+        }
+        let (relative, path) = self.global_live2d_fallback(global);
+        (relative, path, None)
+    }
+
+    fn active_persona_live2d_model(&self) -> (Option<PathBuf>, Option<PathBuf>, Option<String>) {
+        let personas = CONFIG.persona_settings();
+        self.resolve_persona_live2d_model(
+            personas
+                .active()
+                .and_then(|persona| persona.live2d_model.as_deref()),
+            self.global_model_selection.as_deref(),
+        )
+    }
+
+    fn apply_active_persona_live2d_model(&mut self, cx: &mut Context<Self>) {
+        self.apply_active_persona_live2d_model_inner(false, cx);
+    }
+
+    fn apply_active_persona_live2d_model_after_scan(&mut self, cx: &mut Context<Self>) {
+        self.apply_active_persona_live2d_model_inner(true, cx);
+    }
+
+    fn apply_active_persona_live2d_model_inner(
+        &mut self,
+        force_runtime_selection: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let persona_id = CONFIG
+            .persona_settings()
+            .active()
+            .map(|persona| persona.id.clone());
+        let (relative, model_path, warning) = self.active_persona_live2d_model();
+        let persona_changed = self.applied_persona_id != persona_id;
+        let configured_model_changed = self.applied_persona_model != relative;
+        if !force_runtime_selection && !persona_changed && !configured_model_changed {
+            if let Some(warning) = warning {
+                self.set_status(warning, cx);
+            }
+            return;
+        }
+        let runtime_changed = self.catalog.selected_relative_path() != relative.as_deref();
+        if (force_runtime_selection || runtime_changed)
+            && let Err(error) = self.catalog.set_runtime_selection(relative.as_deref())
+        {
+            self.set_status(
+                t!("status.model_action_failed", error = error.to_string()).to_string(),
+                cx,
+            );
+            return;
+        }
+        self.applied_persona_id = persona_id;
+        self.applied_persona_model = relative;
+        if runtime_changed || configured_model_changed || force_runtime_selection {
+            self.active_outfit = None;
+            cx.emit(SettingsEvent::ModelChanged(model_path));
+            cx.notify();
+        } else if persona_changed || configured_model_changed {
+            if self.active_outfit.take().is_some() {
+                cx.emit(SettingsEvent::ResetExpression);
+            }
+            cx.notify();
+        }
+        if let Some(warning) = warning {
+            self.set_status(warning, cx);
+        }
     }
 
     /// 设置窗口关闭时丢弃绑定到旧窗口的输入状态。
     pub(crate) fn deactivate_window(&mut self, cx: &mut Context<Self>) {
         self.stop_shortcut_recording(cx);
+        if self.is_refreshing && self.refresh_window_scoped {
+            self.catalog_revision = self.catalog_revision.wrapping_add(1);
+            self.refresh_task = None;
+            self.is_refreshing = false;
+            self.refresh_window_scoped = false;
+        }
         if let Some(agent_settings_view) = self.agent_settings_view.take() {
             let (draft, pending) =
                 agent_settings_view.update(cx, |view, cx| view.take_window_state(cx));
             self.agent_settings_draft = Some(draft);
             let has_pending = pending.iter().any(|task| !task.is_ready());
-            if has_pending && let Some(subscription) = self.agent_settings_subscription.take() {
+            let subscription = self.agent_settings_subscription.take();
+            if has_pending && let Some(subscription) = subscription {
                 self.retired_agent_settings_editors
                     .push(RetiredAgentSettingsEditor {
                         view: agent_settings_view,
@@ -510,11 +860,12 @@ impl SettingsView {
             self.write_tasks.extend(pending);
         }
         if let Some(persona_settings_view) = self.persona_settings_view.take() {
-            let (draft, pending) =
+            let (draft, pending, retain_editor) =
                 persona_settings_view.update(cx, |view, cx| view.take_window_state(cx));
             self.persona_settings_draft = Some(draft);
-            let has_pending = pending.iter().any(|task| !task.is_ready());
-            if has_pending && let Some(subscription) = self.persona_settings_subscription.take() {
+            let has_pending = retain_editor && pending.iter().any(|task| !task.is_ready());
+            let subscription = self.persona_settings_subscription.take();
+            if has_pending && let Some(subscription) = subscription {
                 self.retired_persona_settings_editors
                     .push(RetiredPersonaSettingsEditor {
                         view: persona_settings_view,
@@ -579,10 +930,24 @@ impl SettingsView {
         }
         if let Some(persona_settings_view) = &self.persona_settings_view {
             let persona_settings_view = persona_settings_view.clone();
-            let (draft, pending) =
+            let (draft, pending, _) =
                 persona_settings_view.update(cx, |view, cx| view.take_window_state(cx));
             self.persona_settings_draft = Some(draft);
             self.write_tasks.extend(pending);
+        }
+        if let Some(write) = self
+            .persona_settings_draft
+            .as_ref()
+            .and_then(PersonaSettingsDraft::prepare_write)
+        {
+            let background = cx.background_executor().clone();
+            let task = cx.spawn(async move |_, _| {
+                let result = background.spawn(async move { write.persist() }).await;
+                if let Err(error) = result {
+                    log::error!("退出前保存人格草稿失败：{error}");
+                }
+            });
+            self.write_tasks.push(task);
         }
         std::mem::take(&mut self.write_tasks)
     }
@@ -780,6 +1145,80 @@ impl SettingsView {
         self.catalog.counts()
     }
 
+    #[cfg(test)]
+    pub(in crate::ui) fn global_model_selection_for_test(&self) -> Option<&Path> {
+        self.global_model_selection.as_deref()
+    }
+
+    /// 返回运行时模型清单，供模型绑定与全局选择隔离测试使用。
+    #[cfg(test)]
+    pub(in crate::ui) fn runtime_model_selection_for_test(&self) -> Option<&Path> {
+        self.catalog.selected_relative_path()
+    }
+
+    /// 返回设置窗口收到模型目录变化事件的次数与最近候选数量。
+    #[cfg(test)]
+    pub(in crate::ui) fn persona_live2d_refresh_for_test(&self) -> (u64, usize) {
+        (
+            self.persona_live2d_refresh_revision,
+            self.persona_live2d_candidate_count,
+        )
+    }
+
+    /// 在不启动配置写任务的情况下准备全局模型选择测试状态。
+    #[cfg(test)]
+    pub(in crate::ui) fn set_model_selections_for_test(
+        &mut self,
+        global: PathBuf,
+        runtime: PathBuf,
+        outfit: Option<&str>,
+    ) {
+        self.global_model_selection = Some(global);
+        self.catalog
+            .set_runtime_selection(Some(&runtime))
+            .expect("测试运行时模型必须属于目录扫描结果");
+        self.active_outfit = outfit.map(str::to_owned);
+    }
+
+    /// 准备一次全局模型写入，但不接触进程级配置，供异步结果测试使用。
+    #[cfg(test)]
+    pub(in crate::ui) fn stage_global_model_selection_for_test(
+        &mut self,
+        relative_path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        self.stage_model_selection(Some(relative_path), cx)
+    }
+
+    /// 模拟无关模型目录状态变化，验证其不会使全局保存结果过期。
+    #[cfg(test)]
+    pub(in crate::ui) fn invalidate_catalog_revision_for_test(&mut self) {
+        self.catalog_revision = self.catalog_revision.wrapping_add(1);
+    }
+
+    /// 注入全局模型写入完成结果，供不写用户配置的回归测试使用。
+    #[cfg(test)]
+    pub(in crate::ui) fn finish_global_model_selection_for_test(
+        &mut self,
+        save_revision: u64,
+        persisted_selection: Option<PathBuf>,
+        result: Result<Option<()>, ConfigWriteError>,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_model_selection_write(save_revision, result, persisted_selection, cx);
+    }
+
+    /// 解析测试提供的人格与全局绑定，不读取或修改进程级配置。
+    #[cfg(test)]
+    pub(in crate::ui) fn resolve_persona_live2d_model_for_test(
+        &self,
+        bound: Option<&Path>,
+        global: Option<&Path>,
+    ) -> (Option<PathBuf>, Option<PathBuf>, bool) {
+        let (relative, path, warning) = self.resolve_persona_live2d_model(bound, global);
+        (relative, path, warning.is_some())
+    }
+
     /// 只切换测试实体中的换装工具状态，不写入用户配置。
     #[cfg(test)]
     pub(in crate::ui) fn set_agent_outfit_tool_enabled_for_test(&mut self, enabled: bool) {
@@ -802,6 +1241,16 @@ impl SettingsView {
     #[cfg(test)]
     pub(in crate::ui) fn is_refreshing_for_test(&self) -> bool {
         self.is_refreshing
+    }
+
+    /// 发起绑定到当前设置窗口的手动扫描。
+    #[cfg(test)]
+    pub(in crate::ui) fn refresh_models_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.refresh_models(window, cx);
     }
 
     /// 返回当前主模型 generation 上报的可预览能力。
@@ -1124,10 +1573,20 @@ impl SettingsView {
         })
     }
 
-    /// 在桌宠已经受理对应模型命令后提交换装 UI 状态，并在清单变体切换时持久化选择。
+    /// 在桌宠受理模型命令后提交换装状态；仅跟随全局模型的人格会持久化清单变体。
     pub(in crate::ui) fn commit_agent_outfit(
         &mut self,
         action: AgentOutfitAction,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<PathBuf>, String> {
+        let active_has_binding = self.active_persona_has_live2d_binding();
+        self.commit_agent_outfit_with_binding(action, active_has_binding, cx)
+    }
+
+    fn commit_agent_outfit_with_binding(
+        &mut self,
+        action: AgentOutfitAction,
+        active_has_binding: bool,
         cx: &mut Context<Self>,
     ) -> Result<Option<PathBuf>, String> {
         match action {
@@ -1144,7 +1603,18 @@ impl SettingsView {
                         );
                         error
                     })?;
-                self.commit_model_selection(cx);
+                self.active_outfit = None;
+                if active_has_binding {
+                    self.catalog_revision = self.catalog_revision.wrapping_add(1);
+                    cx.notify();
+                } else {
+                    self.commit_model_selection(Some(relative_path.clone()), cx);
+                    self.applied_persona_id = CONFIG
+                        .persona_settings()
+                        .active()
+                        .map(|persona| persona.id.clone());
+                    self.applied_persona_model = Some(relative_path);
+                }
                 Ok(Some(model_path))
             }
             AgentOutfitAction::PreviewExpression(name) => {
@@ -1158,6 +1628,46 @@ impl SettingsView {
                 Ok(None)
             }
         }
+    }
+
+    /// 使用明确的人格绑定状态提交测试换装，避免测试写入进程级配置。
+    #[cfg(test)]
+    pub(in crate::ui) fn commit_agent_outfit_with_binding_for_test(
+        &mut self,
+        action: AgentOutfitAction,
+        active_has_binding: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<Option<PathBuf>, String> {
+        self.commit_agent_outfit_with_binding(action, active_has_binding, cx)
+    }
+
+    /// 准备已经应用的人格模型与表达式服装状态，供重复配置事件回归测试使用。
+    #[cfg(test)]
+    pub(in crate::ui) fn set_applied_persona_model_for_test(
+        &mut self,
+        relative_path: PathBuf,
+        outfit: &str,
+    ) {
+        self.global_model_selection = Some(relative_path.clone());
+        self.applied_persona_id = CONFIG
+            .persona_settings()
+            .active()
+            .map(|persona| persona.id.clone());
+        self.applied_persona_model = Some(relative_path.clone());
+        self.catalog
+            .set_runtime_selection(Some(&relative_path))
+            .expect("测试模型必须属于目录扫描结果");
+        self.active_outfit = Some(outfit.to_owned());
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn reapply_persona_model_for_test(&mut self, cx: &mut Context<Self>) {
+        self.apply_active_persona_live2d_model(cx);
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn active_outfit_for_test(&self) -> Option<&str> {
+        self.active_outfit.as_deref()
     }
 
     fn agent_outfit_candidates(&self) -> Vec<AgentOutfitCandidate> {
@@ -1224,64 +1734,91 @@ impl SettingsView {
     }
 
     fn select_family(&mut self, index: usize, cx: &mut Context<Self>) {
-        let model_path = match self.catalog.select_family(index) {
-            Ok(path) => path,
-            Err(error) => {
-                self.set_status(
-                    t!("status.model_action_failed", error = error.to_string()).to_string(),
-                    cx,
-                );
-                return;
-            }
+        let relative_path = self.catalog.families().get(index).and_then(|family| {
+            self.global_model_selection
+                .as_deref()
+                .filter(|selected| family.contains(selected))
+                .map(Path::to_path_buf)
+                .or_else(|| {
+                    family
+                        .variants()
+                        .first()
+                        .map(|variant| variant.relative_path().to_path_buf())
+                })
+        });
+        let Some(relative_path) = relative_path else {
+            self.set_status(
+                t!("status.model_action_failed", error = "模型家族没有可用清单").to_string(),
+                cx,
+            );
+            return;
         };
-        self.publish_model_selection(Some(model_path), cx);
+        self.select_global_model(relative_path, cx);
     }
 
     fn select_variant(&mut self, relative_path: PathBuf, cx: &mut Context<Self>) {
-        if self.catalog.selected_relative_path() == Some(relative_path.as_path()) {
-            if self.active_outfit.take().is_some() {
+        if self.global_model_selection.as_deref() == Some(relative_path.as_path()) {
+            if !self.active_persona_has_live2d_binding()
+                && self.catalog.selected_relative_path() == Some(relative_path.as_path())
+                && self.active_outfit.take().is_some()
+            {
                 cx.emit(SettingsEvent::ResetExpression);
                 cx.notify();
             }
             return;
         }
-        let model_path = match self.catalog.select_variant(&relative_path) {
-            Ok(path) => path,
-            Err(error) => {
-                self.set_status(
-                    t!("status.model_action_failed", error = error.to_string()).to_string(),
-                    cx,
-                );
-                return;
-            }
-        };
-        self.publish_model_selection(Some(model_path), cx);
+        self.select_global_model(relative_path, cx);
     }
 
     /// 在首窗建立后启动初始模型扫描，避免目录 I/O 阻塞 GPUI 初始化。
     pub(crate) fn start_initial_scan(
         &mut self,
         configured_selection: Option<PathBuf>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.refresh_models_with_selection(configured_selection, cx);
+        self.global_model_selection
+            .clone_from(&configured_selection);
+        self.refresh_models_with_selection(configured_selection, false, window, cx);
     }
 
-    fn publish_model_selection(&mut self, model_path: Option<PathBuf>, cx: &mut Context<Self>) {
-        self.commit_model_selection(cx);
-        cx.emit(SettingsEvent::ModelChanged(model_path));
+    fn select_global_model(&mut self, relative_path: PathBuf, cx: &mut Context<Self>) {
+        if self.catalog.model_path(&relative_path).is_none() {
+            self.set_status(
+                t!(
+                    "status.model_action_failed",
+                    error = format!("模型不在当前目录扫描结果中：{}", relative_path.display())
+                )
+                .to_string(),
+                cx,
+            );
+            return;
+        }
+        if !self.active_persona_has_live2d_binding()
+            && let Err(error) = self.catalog.set_runtime_selection(Some(&relative_path))
+        {
+            self.set_status(
+                t!("status.model_action_failed", error = error.to_string()).to_string(),
+                cx,
+            );
+            return;
+        }
+        self.commit_model_selection(Some(relative_path), cx);
+        self.apply_active_persona_live2d_model(cx);
     }
 
-    fn commit_model_selection(&mut self, cx: &mut Context<Self>) {
+    fn active_persona_has_live2d_binding(&self) -> bool {
+        CONFIG
+            .persona_settings()
+            .active()
+            .is_some_and(|persona| persona.live2d_model.is_some())
+    }
+
+    fn commit_model_selection(&mut self, relative_path: Option<PathBuf>, cx: &mut Context<Self>) {
         if let Some(input) = self.model_resource_name_input.clone() {
             self.commit_model_resource_name(&input, cx);
         }
-        self.revision = self.revision.wrapping_add(1);
-        let revision = self.revision;
-        self.model_revision = self.model_revision.wrapping_add(1);
-        self.active_outfit = None;
-        let relative_path = self.catalog.selected_relative_path().map(Path::to_path_buf);
-        cx.notify();
+        let global_model_save_revision = self.stage_model_selection(relative_path.clone(), cx);
 
         let config_revision = CONFIG.reserve_model_revision();
         let background = cx.background_executor().clone();
@@ -1292,24 +1829,68 @@ impl SettingsView {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.revision == revision {
-                    if let Err(error) = result {
-                        this.set_status(
-                            t!("status.model_save_failed", error = error.to_string()).to_string(),
-                            cx,
-                        );
-                    } else {
-                        cx.notify();
-                    }
-                }
+                let persisted_selection = CONFIG.selected_model();
+                this.finish_model_selection_write(
+                    global_model_save_revision,
+                    result,
+                    persisted_selection,
+                    cx,
+                );
             });
         });
         self.track_write_task(task);
     }
 
-    fn refresh_models(&mut self, cx: &mut Context<Self>) {
-        let previous_selection = self.catalog.selected_relative_path().map(Path::to_path_buf);
-        self.refresh_models_with_selection(previous_selection, cx);
+    fn stage_model_selection(
+        &mut self,
+        relative_path: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        self.revision = self.revision.wrapping_add(1);
+        self.catalog_revision = self.catalog_revision.wrapping_add(1);
+        self.global_model_save_revision = self.global_model_save_revision.wrapping_add(1).max(1);
+        self.global_model_selection = relative_path;
+        cx.notify();
+        self.global_model_save_revision
+    }
+
+    fn finish_model_selection_write(
+        &mut self,
+        save_revision: u64,
+        result: Result<Option<()>, ConfigWriteError>,
+        persisted_selection: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.global_model_save_revision != save_revision {
+            return;
+        }
+        match result {
+            Ok(Some(())) => cx.notify(),
+            Ok(None) => self.restore_global_model_selection(persisted_selection, cx),
+            Err(error) => {
+                self.restore_global_model_selection(persisted_selection, cx);
+                self.set_status(
+                    t!("status.model_save_failed", error = error.to_string()).to_string(),
+                    cx,
+                );
+            }
+        }
+    }
+
+    fn restore_global_model_selection(
+        &mut self,
+        persisted_selection: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.catalog_revision = self.catalog_revision.wrapping_add(1);
+        self.global_model_selection = persisted_selection;
+        self.apply_active_persona_live2d_model(cx);
+        cx.notify();
+    }
+
+    fn refresh_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let previous_selection = self.global_model_selection.clone();
+        self.refresh_models_with_selection(previous_selection, true, window, cx);
     }
 
     fn open_model_directory(&mut self, cx: &mut Context<Self>) {
@@ -1344,77 +1925,82 @@ impl SettingsView {
     fn refresh_models_with_selection(
         &mut self,
         previous_selection: Option<PathBuf>,
+        window_scoped: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.is_refreshing {
             return;
         }
         self.is_refreshing = true;
+        self.refresh_window_scoped = window_scoped;
         self.set_status(t!("status.scanning_models").to_string(), cx);
         let root = self.catalog.root().to_path_buf();
-        let model_revision = self.model_revision;
+        let catalog_revision = self.catalog_revision;
         let background = cx.background_executor().clone();
-        log::debug!("开始扫描 Live2D 模型目录：scan_revision={model_revision}");
+        log::debug!("开始扫描 Live2D 模型目录：scan_revision={catalog_revision}");
         cx.notify();
 
-        self.refresh_task = Some(cx.spawn(async move |this, cx| {
+        self.refresh_task = Some(cx.spawn_in(window, async move |this, cx| {
             let catalog = background
                 .spawn(async move {
                     ModelCatalog::load(root, previous_selection.as_deref())
                         .map_err(|error| error.to_string())
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
-                this.is_refreshing = false;
-                if this.model_revision != model_revision {
-                    this.set_status(t!("status.scan_stale").to_string(), cx);
-                    return;
-                }
-                match catalog {
-                    Ok(catalog) => {
-                        let old_path = this.catalog.selected_model_path();
-                        let new_path = catalog.selected_model_path();
-                        let (families, outfits) = catalog.counts();
-                        let warning = catalog.warning().map(str::to_owned);
-                        if warning.is_some() {
-                            log::warn!(
-                                "Live2D 模型扫描完成但存在可恢复问题：scan_revision={model_revision}, families={families}, outfits={outfits}"
-                            );
-                        } else {
-                            log::info!(
-                                "Live2D 模型扫描完成：scan_revision={model_revision}, families={families}, outfits={outfits}"
-                            );
-                        }
-                        this.catalog = catalog;
-                        let status = match warning {
-                            Some(warning) => t!(
-                                "status.scan_result_warning",
-                                families = families,
-                                outfits = outfits,
-                                warning = warning
-                            )
-                            .to_string(),
-                            None => {
-                                t!("status.scan_result", families = families, outfits = outfits)
-                                    .to_string()
+            let _ = cx.update(|_window, app| {
+                let _ = this.update(app, |this, cx| {
+                    this.is_refreshing = false;
+                    this.refresh_window_scoped = false;
+                    if this.catalog_revision != catalog_revision {
+                        this.set_status(t!("status.scan_stale").to_string(), cx);
+                        return;
+                    }
+                    match catalog {
+                        Ok(catalog) => {
+                            let (families, outfits) = catalog.counts();
+                            let warning = catalog.warning().map(str::to_owned);
+                            if warning.is_some() {
+                                log::warn!(
+                                    "Live2D 模型扫描完成但存在可恢复问题：scan_revision={catalog_revision}, families={families}, outfits={outfits}"
+                                );
+                            } else {
+                                log::info!(
+                                    "Live2D 模型扫描完成：scan_revision={catalog_revision}, families={families}, outfits={outfits}"
+                                );
                             }
-                        };
-                        this.set_status(status, cx);
-                        if new_path != old_path {
-                            this.publish_model_selection(new_path, cx);
-                        } else {
-                            this.active_outfit = None;
-                            cx.emit(SettingsEvent::ModelChanged(new_path));
-                            cx.notify();
+                            this.catalog = catalog;
+                            let status = match warning {
+                                Some(warning) => t!(
+                                    "status.scan_result_warning",
+                                    families = families,
+                                    outfits = outfits,
+                                    warning = warning
+                                )
+                                .to_string(),
+                                None => t!(
+                                    "status.scan_result",
+                                    families = families,
+                                    outfits = outfits
+                                )
+                                .to_string(),
+                            };
+                            this.set_status(status, cx);
+                            cx.emit(SettingsEvent::ModelCatalogChanged);
+
+                            this.apply_active_persona_live2d_model_after_scan(cx);
+                        }
+                        Err(error) => {
+                            log::warn!(
+                                "Live2D 模型扫描失败：scan_revision={catalog_revision}, stage=root_scan"
+                            );
+                            this.set_status(
+                                t!("status.scan_failed", error = error).to_string(),
+                                cx,
+                            );
                         }
                     }
-                    Err(error) => {
-                        log::warn!(
-                            "Live2D 模型扫描失败：scan_revision={model_revision}, stage=root_scan"
-                        );
-                        this.set_status(t!("status.scan_failed", error = error).to_string(), cx)
-                    }
-                }
+                });
             });
         }));
     }

@@ -334,8 +334,9 @@ impl DesktopPetView {
         let config_subscription =
             cx.subscribe(&config, |this, _, event: &SettingsEvent, cx| match event {
                 SettingsEvent::ModelChanged(model_path) => {
-                    this.load_model(model_path.clone(), cx);
+                    this.reload_model(model_path.clone(), cx);
                 }
+                SettingsEvent::ModelCatalogChanged => {}
                 SettingsEvent::FrameRateChanged => this.wake_frame_rate_scheduler(),
                 SettingsEvent::EyeTrackingChanged(enabled) => {
                     this.eye_tracking_enabled = *enabled;
@@ -378,10 +379,13 @@ impl DesktopPetView {
                     }
                 }
                 SettingsEvent::ResetExpression => {
-                    if let Some(sender) = &this.model_commands
-                        && sender.try_send(ModelCommand::ResetExpression).is_ok()
-                    {
+                    let sent = this.model_commands.as_ref().is_some_and(|sender| {
+                        sender.try_send(ModelCommand::ResetExpression).is_ok()
+                    });
+                    if sent {
                         this.wake_model();
+                    } else {
+                        this.reload_model(this.selected_model.clone(), cx);
                     }
                 }
                 SettingsEvent::AgentChanged => {
@@ -401,9 +405,42 @@ impl DesktopPetView {
                     }
                 }
                 SettingsEvent::ModelResourcesChanged => this.sync_agent_outfits(cx),
-                SettingsEvent::PersonaContextCleared(persona) => {
+                SettingsEvent::PersonaContextCleared {
+                    persona,
+                    completion,
+                } => {
                     this.chat.update(cx, |chat, cx| {
-                        chat.clear_persona_context(persona, cx);
+                        chat.clear_persona_context(persona, completion.clone(), cx);
+                    });
+                }
+                SettingsEvent::PersonaContextMessageEdited {
+                    persona,
+                    message_id,
+                    content,
+                    completion,
+                } => {
+                    this.chat.update(cx, |chat, cx| {
+                        chat.edit_persona_context_message(
+                            persona,
+                            *message_id,
+                            content.clone(),
+                            completion.clone(),
+                            cx,
+                        );
+                    });
+                }
+                SettingsEvent::PersonaContextMessagesDeleted {
+                    persona,
+                    message_ids,
+                    completion,
+                } => {
+                    this.chat.update(cx, |chat, cx| {
+                        chat.delete_persona_context_messages(
+                            persona,
+                            message_ids.clone(),
+                            completion.clone(),
+                            cx,
+                        );
                     });
                 }
                 SettingsEvent::WindowPositionsReset => {

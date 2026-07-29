@@ -55,13 +55,17 @@ const APP_ASSETS: &[(&str, &[u8])] = app_assets![
     "check.svg",
     "chevron-down.svg",
     "chevron-right.svg",
+    "copy.svg",
     "eye-off.svg",
     "folder-open.svg",
+    "grip-vertical.svg",
     "image-plus.svg",
     "keyboard.svg",
     "message-circle.svg",
     "mic.svg",
+    "minus.svg",
     "move.svg",
+    "pencil.svg",
     "play.svg",
     "plus.svg",
     "refresh-cw.svg",
@@ -400,7 +404,7 @@ pub(super) fn run() {
                         )
                     });
                     config.update(cx, |config, cx| {
-                        config.start_initial_scan(configured_model, cx);
+                        config.start_initial_scan(configured_model, window, cx);
                     });
                     let model_for_window_close = model_view.downgrade();
                     let final_agent_save_for_window_close = final_agent_save.clone();

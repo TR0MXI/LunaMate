@@ -4,7 +4,7 @@ use std::{
     error::Error,
     fmt,
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -104,14 +104,32 @@ impl Error for ModelGenerationLoadError {
 }
 
 impl DesktopPetView {
-    /// 用新 generation 替换当前模型，并选择 GPU underlay 或 CPU 后台循环。
+    /// 加载模型；已经就绪或正在加载的相同路径会复用当前 generation。
     pub(super) fn load_model(&mut self, model_path: Option<PathBuf>, cx: &mut Context<Self>) {
-        let already_active = self.selected_model == model_path
-            && matches!(
-                self.model_state,
-                ModelLoadState::Loading(_) | ModelLoadState::Ready { .. }
-            );
-        if already_active {
+        self.load_model_inner(model_path, false, cx);
+    }
+
+    /// 强制用新 generation 替换当前模型，供设置变更与资源重扫使用。
+    pub(super) fn reload_model(&mut self, model_path: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.load_model_inner(model_path, true, cx);
+    }
+
+    fn load_model_inner(
+        &mut self,
+        model_path: Option<PathBuf>,
+        force_reload: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let generation_active = matches!(
+            self.model_state,
+            ModelLoadState::Loading(_) | ModelLoadState::Ready { .. }
+        );
+        if model_generation_can_be_reused(
+            self.selected_model.as_deref(),
+            model_path.as_deref(),
+            generation_active,
+            force_reload,
+        ) {
             return;
         }
 
@@ -530,4 +548,14 @@ impl DesktopPetView {
             }
         }));
     }
+}
+
+/// 返回当前 generation 是否可以满足本次模型请求。
+pub(in crate::ui) fn model_generation_can_be_reused(
+    selected: Option<&Path>,
+    requested: Option<&Path>,
+    generation_active: bool,
+    force_reload: bool,
+) -> bool {
+    !force_reload && generation_active && selected == requested
 }

@@ -4,8 +4,8 @@ use toml_edit::DocumentMut;
 
 use crate::config::{
     LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
-    MAX_OUTPUT_TOKENS_MAX, REASONING_EFFORT_LEVELS, ReasoningEffort, TEMPERATURE_MAX,
-    llm::normalize_endpoint, parse_llm_settings, write_llm_settings,
+    MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, REASONING_EFFORT_LEVELS, ReasoningEffort,
+    TEMPERATURE_MAX, llm::normalize_endpoint, parse_llm_settings, write_llm_settings,
 };
 
 #[test]
@@ -391,6 +391,14 @@ fn advanced_options_outside_their_range_are_rejected() {
     }
     assert!(
         with_advanced(LlmAdvancedOptions {
+            context_window_tokens: Some(MODEL_CONTEXT_TOKENS_MAX + 1),
+            ..LlmAdvancedOptions::default()
+        })
+        .normalized()
+        .is_err()
+    );
+    assert!(
+        with_advanced(LlmAdvancedOptions {
             max_output_tokens: Some(0),
             ..LlmAdvancedOptions::default()
         })
@@ -400,6 +408,15 @@ fn advanced_options_outside_their_range_are_rejected() {
     assert!(
         with_advanced(LlmAdvancedOptions {
             max_output_tokens: Some(MAX_OUTPUT_TOKENS_MAX + 1),
+            ..LlmAdvancedOptions::default()
+        })
+        .normalized()
+        .is_err()
+    );
+    assert!(
+        with_advanced(LlmAdvancedOptions {
+            context_window_tokens: Some(4_600),
+            max_output_tokens: Some(4_096),
             ..LlmAdvancedOptions::default()
         })
         .normalized()
@@ -489,6 +506,7 @@ id = "good"
 label = "Good"
 provider = "openai"
 model = "gpt-5-mini"
+context_window_tokens = 128000
 reasoning_effort = "budget"
 reasoning_budget = 1024
 max_output_tokens = 256
@@ -510,6 +528,7 @@ top_p = 0.5
     assert_eq!(
         advanced,
         LlmAdvancedOptions {
+            context_window_tokens: Some(128_000),
             reasoning_effort: Some(ReasoningEffort::Budget(1_024)),
             max_output_tokens: Some(256),
             // 手写配置常把 1.0 写成整数 1，解析必须接受两种字面量。

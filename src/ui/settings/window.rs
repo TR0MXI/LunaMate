@@ -48,6 +48,11 @@ impl SettingsWindowView {
                         config.refresh_persona_providers(window, cx);
                     });
                 }
+                SettingsEvent::ModelCatalogChanged => {
+                    config.update(cx, |config, cx| {
+                        config.refresh_persona_live2d_models(window, cx);
+                    });
+                }
                 SettingsEvent::WindowPositionsReset => {
                     this.position_controller.request_reset();
                     cx.notify();

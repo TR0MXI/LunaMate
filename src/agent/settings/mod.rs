@@ -11,7 +11,9 @@ use gpui_component::input::InputState;
 
 use crate::config::LlmProvider;
 
-pub(crate) use persona::{PersonaSettingsDraft, PersonaSettingsEvent, PersonaSettingsView};
+pub(crate) use persona::{
+    ContextMutationCompletion, PersonaSettingsDraft, PersonaSettingsEvent, PersonaSettingsView,
+};
 pub(crate) use provider::{AgentSettingsDraft, AgentSettingsEvent, AgentSettingsView};
 
 /// 返回供应商图标资源路径；文件名使用与配置一致的稳定 Provider ID。

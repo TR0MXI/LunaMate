@@ -28,7 +28,8 @@ use crate::config::{
 };
 
 use super::{
-    AgentMemoryAccess, AgentOutfitRequest, AgentShutdown, AgentViewEvent, chat_limits,
+    AgentMemoryAccess, AgentOutfitRequest, AgentShutdown, AgentViewEvent,
+    ContextMutationCompletion, chat_limits,
     media::{ImageAttachment, load_image},
     palette::AgentPalette,
     service::{ChatBackend, ChatServiceRequest, ChatStreamEvent, GenaiChatBackend},
@@ -71,6 +72,9 @@ pub(crate) struct AgentView {
     agent_config_revision: u64,
     persona_swap_revision: u64,
     persona_swap_task: Option<Task<()>>,
+    persona_swap_failed: bool,
+    pending_context_mutations: usize,
+    deferred_persona_refresh: bool,
     backend: Arc<dyn ChatBackend>,
     available_outfits: Vec<String>,
     outfit_revision: u64,
@@ -117,6 +121,21 @@ struct ReplyDisplay {
     detail: Option<String>,
     waiting: bool,
     error: bool,
+}
+
+enum ContextMutation {
+    Edit { message_id: u64, content: String },
+    Delete { message_ids: Vec<u64> },
+}
+
+impl ContextMutation {
+    fn deletes_message(&self, message_id: u64) -> bool {
+        matches!(self, Self::Delete { message_ids } if message_ids.contains(&message_id))
+    }
+
+    const fn unchanged_is_success(&self) -> bool {
+        false
+    }
 }
 
 pub(super) struct AgentOverlayLayout {
@@ -274,8 +293,10 @@ impl AgentView {
             .personas
             .iter()
             .find(|candidate| candidate.id == active_persona)
-            .map_or_else(ChatLimits::default, chat_limits);
-        Self {
+            .map_or_else(ChatLimits::default, |persona| {
+                chat_limits(persona, &settings)
+            });
+        let view = Self {
             session,
             persist_revision: store.latest_revision(),
             shutdown_revision: None,
@@ -289,6 +310,9 @@ impl AgentView {
             agent_config_revision: 1,
             persona_swap_revision: 0,
             persona_swap_task: None,
+            persona_swap_failed: false,
+            pending_context_mutations: 0,
+            deferred_persona_refresh: false,
             backend: Arc::new(GenaiChatBackend::new()),
             available_outfits: Vec::new(),
             outfit_revision: 0,
@@ -307,7 +331,9 @@ impl AgentView {
             request_abort: None,
             pending_voice: None,
             _input_subscription: input_subscription,
-        }
+        };
+        view.publish_live_context();
+        view
     }
 
     /// 用 fake backend 替换真实 Provider，使流式生命周期可在测试中确定性验证。
@@ -345,12 +371,46 @@ impl AgentView {
         self.session.messages().len()
     }
 
+    /// 返回指定助手消息的展示详情，供实体事件绑定测试使用。
+    #[cfg(test)]
+    pub(super) fn message_trace_for_test(&self, message_id: u64) -> Option<super::AssistantTrace> {
+        self.session
+            .messages()
+            .iter()
+            .find(|message| message.id() == message_id)
+            .and_then(ChatMessage::trace)
+            .cloned()
+    }
+
+    /// 同步应用测试事件，避免无头 GPUI 测试依赖 Tokio runtime 的外部唤醒。
+    #[cfg(test)]
+    pub(super) fn apply_stream_event_for_test(
+        &mut self,
+        response_id: ResponseId,
+        event: ChatStreamEvent,
+        cx: &mut Context<Self>,
+    ) -> Option<(bool, bool)> {
+        self.apply_stream_event(response_id, event, cx)
+    }
+
     /// 返回测试可观察的待提交语音 ID。
     #[cfg(test)]
     pub(super) fn pending_voice_for_test(&self) -> Option<u64> {
         self.pending_voice
             .as_ref()
             .map(|pending| pending.utterance_id)
+    }
+
+    /// 模拟人格文档恢复失败，验证旧会话在失败边界上保持不可发送。
+    #[cfg(test)]
+    pub(super) fn mark_persona_swap_failed_for_test(&mut self) {
+        self.persona_swap_failed = true;
+    }
+
+    /// 返回人格恢复失败与延迟刷新状态，供迟到设置事件测试确认状态机未被卡住。
+    #[cfg(test)]
+    pub(super) fn persona_swap_state_for_test(&self) -> (bool, bool) {
+        (self.persona_swap_failed, self.deferred_persona_refresh)
     }
 
     /// 直接投递一条用户消息，跳过输入框与焦点管理。
@@ -377,8 +437,19 @@ impl AgentView {
             return;
         };
         let next_persona = active.id.clone();
-        let next_limits = chat_limits(active);
+        let next_limits = chat_limits(active, &self.settings);
+        if next_persona != self.active_persona && self.pending_context_mutations > 0 {
+            self.deferred_persona_refresh = true;
+            cx.notify();
+            return;
+        }
+        self.deferred_persona_refresh = false;
         if next_persona == self.active_persona && next_limits == self.active_limits {
+            if self.persona_swap_task.take().is_some() {
+                self.persona_swap_revision = self.persona_swap_revision.wrapping_add(1).max(1);
+                log::debug!("取消已不再需要的人格上下文切换任务");
+            }
+            self.persona_swap_failed = false;
             cx.notify();
             return;
         }
@@ -430,21 +501,45 @@ impl AgentView {
             "开始切换 Agent 人格上下文：revision={revision}, persistence_available={}",
             self.memory.database().is_some()
         );
-        self.active_persona = next_persona.clone();
-        self.active_limits = next_limits;
+        self.persona_swap_failed = false;
         let Some(database) = self.memory.database() else {
-            // 数据库不可用时无法恢复上下文；换入一个空会话仍然优于继续沿用旧人格的记忆。
-            self.session = ChatSession::new(next_limits).unwrap_or_default();
+            // 同一人格只更新预算；真正切换人格时必须换成空会话，不能沿用旧人格记忆。
+            let persona_changed = next_persona != self.active_persona;
+            if !persona_changed {
+                if self.session.update_limits(next_limits).is_err() {
+                    self.session = ChatSession::new(next_limits).unwrap_or_default();
+                }
+            } else {
+                self.session = ChatSession::new(next_limits).unwrap_or_default();
+                self.reply_message_id = None;
+                self.status = None;
+            }
+            if self.reply_message_id.is_some_and(|message_id| {
+                !self
+                    .session
+                    .messages()
+                    .iter()
+                    .any(|message| message.id() == message_id)
+            }) {
+                self.reply_message_id = None;
+                self.reply_lifecycle.hide();
+            }
+            self.active_persona = next_persona;
+            self.active_limits = next_limits;
             self.persona_swap_task = None;
+            self.publish_live_context();
+            let retained_messages = self.session.messages().len();
             log::info!(
-                "Agent 人格上下文切换完成：revision={revision}, persistence_available=false, restored_messages=0"
+                "Agent 人格上下文切换完成：revision={revision}, persistence_available=false, restored_messages={retained_messages}"
             );
             cx.notify();
             return;
         };
+        let document_lock = self.memory.session_document_lock();
+        let loading_persona = next_persona.clone();
 
         let load = Tokio::spawn(cx, async move {
-            ChatSessionStore::load(database, &next_persona, next_limits)
+            ChatSessionStore::load_with_lock(database, &loading_persona, next_limits, document_lock)
                 .await
                 .map_err(|error| error.to_string())
         });
@@ -460,17 +555,22 @@ impl AgentView {
                 match loaded {
                     Ok(Ok((session, store))) => {
                         let restored_messages = session.messages().len();
+                        this.active_persona = next_persona;
+                        this.active_limits = next_limits;
+                        this.persona_swap_failed = false;
                         this.session = session;
                         this.persist_revision = store.latest_revision();
                         this.shutdown_revision = None;
                         this.store = store;
                         this.reply_message_id = None;
                         this.status = None;
+                        this.publish_live_context();
                         log::info!(
                             "Agent 人格上下文切换完成：revision={revision}, persistence_available=true, restored_messages={restored_messages}"
                         );
                     }
                     Ok(Err(error)) => {
+                        this.persona_swap_failed = true;
                         log::error!(
                             "Agent 人格上下文切换失败：revision={revision}, error_kind=store_load"
                         );
@@ -480,6 +580,7 @@ impl AgentView {
                         );
                     }
                     Err(error) => {
+                        this.persona_swap_failed = true;
                         log::error!(
                             "Agent 人格上下文切换任务异常结束：revision={revision}, error_kind={}",
                             join_error_kind(&error)
@@ -496,34 +597,266 @@ impl AgentView {
         cx.notify();
     }
 
+    /// 上下文修改与人格换入读取同一文档；先取消换入，修改完成后再从最新文档恢复。
+    fn defer_persona_swap_for_context_mutation(&mut self) {
+        if self.persona_swap_task.take().is_some() || self.persona_swap_failed {
+            self.persona_swap_revision = self.persona_swap_revision.wrapping_add(1).max(1);
+            self.persona_swap_failed = false;
+            self.deferred_persona_refresh = true;
+        }
+    }
+
     /// 清除指定人格的短期上下文。
     ///
     /// 会话文档只有本视图会写入，因此清除也统一在这里执行：当前人格直接清空内存并
     /// 落盘空快照，其他人格删除对应文档，两条路径都不会与后台写任务竞争。
-    pub(crate) fn clear_persona_context(&mut self, persona_id: &str, cx: &mut Context<Self>) {
+    pub(crate) fn clear_persona_context(
+        &mut self,
+        persona_id: &str,
+        completion: Option<ContextMutationCompletion>,
+        cx: &mut Context<Self>,
+    ) {
         if persona_id == self.active_persona {
             self.pending_voice = None;
             self.cancel_network_request("context_clear");
             self.session.clear();
             self.reply_message_id = None;
             self.status = None;
-            self.persist(true, cx);
-            log::info!("当前 Agent 人格的短期上下文已在内存清除，持久化任务已提交");
+            self.persist_context_mutation(completion, cx);
+            log::info!("当前 Agent 人格的短期上下文已在内存清除，正在等待持久化完成");
             cx.notify();
             return;
         }
         let Some(database) = self.memory.database() else {
+            complete_context_mutation(
+                completion.as_ref(),
+                Err(t!("persona.memory_unavailable").to_string()),
+            );
             return;
         };
+        self.defer_persona_swap_for_context_mutation();
+        let document_lock = self.memory.session_document_lock();
+        let operation = document_lock.reserve();
         let persona_id = persona_id.to_owned();
-        Tokio::spawn(cx, async move {
-            match super::store::delete_persona_session(&database, &persona_id).await {
-                Ok(()) => log::info!("非活动 Agent 人格的短期上下文已清除"),
-                Err(error) => log::error!(
-                    "清除非活动 Agent 人格的短期上下文失败：error_kind={}",
-                    error.diagnostic_kind()
-                ),
+        self.pending_context_mutations = self.pending_context_mutations.saturating_add(1);
+        let background_completion = completion.clone();
+        let task = Tokio::spawn(cx, async move {
+            let result =
+                super::store::delete_persona_session_reserved(&database, &persona_id, operation)
+                    .await;
+            complete_context_mutation(
+                background_completion.as_ref(),
+                result.as_ref().map(|_| ()).map_err(ToString::to_string),
+            );
+            result
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.pending_context_mutations = this.pending_context_mutations.saturating_sub(1);
+                match result {
+                    Ok(Ok(())) => log::info!("非活动 Agent 人格的短期上下文已清除"),
+                    Ok(Err(ref error)) => log::error!(
+                        "清除非活动 Agent 人格的短期上下文失败：error_kind={}",
+                        error.diagnostic_kind()
+                    ),
+                    Err(ref error) => log::error!(
+                        "清除非活动 Agent 人格上下文任务异常结束：error_kind={}",
+                        join_error_kind(error)
+                    ),
+                }
+                if let Err(error) = &result {
+                    complete_context_mutation(
+                        completion.as_ref(),
+                        Err(t!("chat.task_ended", kind = join_error_kind(error)).to_string()),
+                    );
+                }
+                if this.pending_context_mutations == 0 && this.deferred_persona_refresh {
+                    this.refresh_settings(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// 修改指定人格的一条上下文消息；活动人格由本视图同步修改，其他人格在后台串行落盘。
+    pub(crate) fn edit_persona_context_message(
+        &mut self,
+        persona_id: &str,
+        message_id: u64,
+        content: String,
+        completion: Option<ContextMutationCompletion>,
+        cx: &mut Context<Self>,
+    ) {
+        self.mutate_persona_context(
+            persona_id,
+            ContextMutation::Edit {
+                message_id,
+                content,
+            },
+            completion,
+            cx,
+        );
+    }
+
+    /// 原子删除指定人格的一组上下文消息。
+    pub(crate) fn delete_persona_context_messages(
+        &mut self,
+        persona_id: &str,
+        message_ids: Vec<u64>,
+        completion: Option<ContextMutationCompletion>,
+        cx: &mut Context<Self>,
+    ) {
+        self.mutate_persona_context(
+            persona_id,
+            ContextMutation::Delete { message_ids },
+            completion,
+            cx,
+        );
+    }
+
+    fn mutate_persona_context(
+        &mut self,
+        persona_id: &str,
+        mutation: ContextMutation,
+        completion: Option<ContextMutationCompletion>,
+        cx: &mut Context<Self>,
+    ) {
+        if persona_id == self.active_persona {
+            if self.persona_swap_task.is_some() || self.persona_swap_failed {
+                log::warn!("人格上下文换入期间忽略消息编辑");
+                complete_context_mutation(
+                    completion.as_ref(),
+                    Err(t!("chat.persona_switching").to_string()),
+                );
+                return;
             }
+            let apply = |session: &mut ChatSession| match &mutation {
+                ContextMutation::Edit {
+                    message_id,
+                    content,
+                } => session.edit_message(*message_id, content).map(|()| true),
+                ContextMutation::Delete { message_ids } => session
+                    .delete_messages(message_ids)
+                    .map(|removed| removed != 0),
+            };
+            let mut result = apply(&mut self.session);
+            if matches!(result, Err(super::session::ChatError::Busy)) {
+                self.pending_voice = None;
+                self.cancel_network_request("context_edit");
+                self.session.interrupt_active_response();
+                result = apply(&mut self.session);
+            }
+            match result {
+                Ok(true) => {
+                    if self
+                        .reply_message_id
+                        .is_some_and(|message_id| mutation.deletes_message(message_id))
+                    {
+                        self.reply_message_id = None;
+                        self.reply_lifecycle.hide();
+                    }
+                    self.persist_context_mutation(completion, cx);
+                    cx.notify();
+                }
+                Ok(false) if mutation.unchanged_is_success() => {
+                    complete_context_mutation(completion.as_ref(), Ok(()));
+                }
+                Ok(false) => {
+                    log::debug!("上下文消息已不存在，忽略重复删除");
+                    complete_context_mutation(
+                        completion.as_ref(),
+                        Err(t!("chat.error.missing_message").to_string()),
+                    );
+                }
+                Err(error) => {
+                    complete_context_mutation(completion.as_ref(), Err(error.to_string()));
+                    log::warn!("修改当前人格上下文失败：{error}");
+                }
+            }
+            return;
+        }
+
+        let Some(database) = self.memory.database() else {
+            complete_context_mutation(
+                completion.as_ref(),
+                Err(t!("persona.memory_unavailable").to_string()),
+            );
+            return;
+        };
+        let settings = CONFIG.llm_settings();
+        let personas = CONFIG.persona_settings();
+        let Some(persona) = personas
+            .personas
+            .iter()
+            .find(|persona| persona.id == persona_id)
+        else {
+            complete_context_mutation(
+                completion.as_ref(),
+                Err(t!("persona.error.missing_selected", id = persona_id).to_string()),
+            );
+            return;
+        };
+        self.defer_persona_swap_for_context_mutation();
+        let limits = chat_limits(persona, &settings);
+        let persona_id = persona_id.to_owned();
+        let document_lock = self.memory.session_document_lock();
+        let operation = document_lock.reserve();
+        let unchanged_is_success = mutation.unchanged_is_success();
+        let background_completion = completion.clone();
+        self.pending_context_mutations = self.pending_context_mutations.saturating_add(1);
+        let task = Tokio::spawn(cx, async move {
+            let result = super::store::mutate_persona_session_reserved(
+                &database,
+                &persona_id,
+                limits,
+                operation,
+                |session| match mutation {
+                    ContextMutation::Edit {
+                        message_id,
+                        content,
+                    } => session.edit_message(message_id, &content).map(|()| true),
+                    ContextMutation::Delete { message_ids } => session
+                        .delete_messages(&message_ids)
+                        .map(|removed| removed != 0),
+                },
+            )
+            .await;
+            let reported = match &result {
+                Ok(true) => Ok(()),
+                Ok(false) if unchanged_is_success => Ok(()),
+                Ok(false) => Err(t!("chat.error.missing_message").to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            complete_context_mutation(background_completion.as_ref(), reported);
+            (persona_id, result)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.pending_context_mutations = this.pending_context_mutations.saturating_sub(1);
+                match &result {
+                    Ok((_, Ok(true))) => log::debug!("非活动人格上下文消息修改已保存"),
+                    Ok((_, Ok(false))) => log::debug!("非活动人格上下文消息已不存在"),
+                    Ok((_, Err(error))) => log::error!(
+                        "修改非活动人格上下文失败：error_kind={}",
+                        error.diagnostic_kind()
+                    ),
+                    Err(error) => log::error!(
+                        "修改非活动人格上下文任务异常结束：error_kind={}",
+                        join_error_kind(error)
+                    ),
+                }
+                if let Err(error) = &result {
+                    complete_context_mutation(
+                        completion.as_ref(),
+                        Err(t!("chat.task_ended", kind = join_error_kind(error)).to_string()),
+                    );
+                }
+                if this.pending_context_mutations == 0 && this.deferred_persona_refresh {
+                    this.refresh_settings(cx);
+                }
+            });
         })
         .detach();
     }
@@ -642,6 +975,7 @@ impl AgentView {
             || !Arc::ptr_eq(&pending.settings, &settings)
             || !Arc::ptr_eq(&pending.persona_settings, &persona_settings)
             || self.persona_swap_task.is_some()
+            || self.persona_swap_failed
             || self.is_streaming()
         {
             return false;
@@ -698,7 +1032,12 @@ impl AgentView {
                 self.persist_revision
             }
         };
-        AgentShutdown::new(self.store.clone(), self.session.snapshot(revision))
+        let operation = self.store.reserve_document_operation();
+        AgentShutdown::new(
+            self.store.clone(),
+            self.session.snapshot(revision),
+            operation,
+        )
     }
 
     fn submit_from_input(
@@ -814,7 +1153,11 @@ impl AgentView {
             return false;
         }
         // 人格换入期间会话尚未就位，此时发送会把消息写进即将被替换的上下文。
-        if self.persona_swap_task.is_some() {
+        if self.persona_swap_task.is_some() || self.persona_swap_failed {
+            self.show_status(t!("chat.persona_switching").to_string(), cx);
+            return false;
+        }
+        if self.deferred_persona_refresh {
             self.show_status(t!("chat.persona_switching").to_string(), cx);
             return false;
         }
@@ -822,6 +1165,10 @@ impl AgentView {
             self.show_status(t!("chat.configure_model").to_string(), cx);
             return false;
         };
+        if self.active_limits.max_request_tokens < 8 {
+            self.show_status(t!("chat.context_window_exhausted").to_string(), cx);
+            return false;
+        }
         let has_image = image.is_some();
         let provider = model.provider.id();
         let started = match self.session.start_turn_with_image(text, image) {
@@ -970,6 +1317,19 @@ impl AgentView {
                     cx.emit(AgentViewEvent::ChangeOutfit(request));
                 } else {
                     request.complete(false);
+                }
+                (true, false)
+            }
+            ChatStreamEvent::Trace(trace) => {
+                if self
+                    .session
+                    .attach_response_trace(response_id, trace)
+                    .is_err()
+                {
+                    log::warn!(
+                        "Agent 助手详情未附加：response_id={}, error_kind=invalid_or_stale_trace",
+                        response_id.get()
+                    );
                 }
                 (true, false)
             }
@@ -1194,9 +1554,7 @@ impl AgentView {
 
     fn persist(&mut self, force: bool, cx: &Context<Self>) {
         // 设置窗口只能看到已发布的占用；无论是否真的写盘都要刷新，否则统计会停在旧值。
-        self.memory
-            .live_context_usage()
-            .publish(&self.active_persona, self.session.usage());
+        self.publish_live_context();
         // 数据库不可用时启动状态已提示过一次，无需为每轮对话重复克隆快照并记录同一条错误。
         if !self.store.is_available() {
             return;
@@ -1209,8 +1567,9 @@ impl AgentView {
         let snapshot = self.session.snapshot(self.persist_revision);
         let revision = self.persist_revision;
         let store = self.store.clone();
+        let operation = store.reserve_document_operation();
         Tokio::spawn(cx, async move {
-            match store.save(snapshot).await {
+            match store.save_reserved(snapshot, operation).await {
                 Ok(()) if force => {
                     log::debug!("聊天会话快照保存任务已完成：revision={revision}");
                 }
@@ -1224,6 +1583,58 @@ impl AgentView {
             }
         })
         .detach();
+    }
+
+    /// 为设置页发起的活动上下文修改持久化快照，并在数据库提交后返回准确结果。
+    fn persist_context_mutation(
+        &mut self,
+        completion: Option<ContextMutationCompletion>,
+        cx: &Context<Self>,
+    ) {
+        self.publish_live_context();
+        if !self.store.is_available() {
+            complete_context_mutation(
+                completion.as_ref(),
+                Err(t!("persona.memory_unavailable").to_string()),
+            );
+            return;
+        }
+        self.persist_revision = self.persist_revision.saturating_add(1).max(1);
+        self.last_persist = Instant::now();
+        let snapshot = self.session.snapshot(self.persist_revision);
+        let revision = self.persist_revision;
+        let store = self.store.clone();
+        let operation = store.reserve_document_operation();
+        Tokio::spawn(cx, async move {
+            let result = store
+                .save_reserved(snapshot, operation)
+                .await
+                .map_err(|error| error.to_string());
+            if result.is_ok() {
+                log::debug!("上下文修改快照保存任务已完成：revision={revision}");
+            } else {
+                log::error!("上下文修改快照保存失败：revision={revision}");
+            }
+            complete_context_mutation(completion.as_ref(), result);
+        })
+        .detach();
+    }
+
+    fn publish_live_context(&self) {
+        self.memory.live_context_usage().publish(
+            &self.active_persona,
+            self.session.usage(),
+            self.session.editable_messages(),
+        );
+    }
+}
+
+fn complete_context_mutation(
+    completion: Option<&ContextMutationCompletion>,
+    result: Result<(), String>,
+) {
+    if let Some(completion) = completion {
+        let _ = completion.try_send(result);
     }
 }
 

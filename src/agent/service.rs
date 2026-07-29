@@ -24,7 +24,7 @@ use crate::config::{
 };
 
 use super::{
-    AgentOutfitRequest, AgentOutfitResult,
+    AgentOutfitRequest, AgentOutfitResult, AssistantTrace, ToolExecutionTrace,
     media::{ImageAttachment, capture_primary_screen},
     session::{ChatContextMessage, ChatRole},
 };
@@ -51,6 +51,7 @@ pub(super) const CHANGE_OUTFIT_TOOL: &str = "change_outfit";
 pub(super) enum ChatStreamEvent {
     Delta(String),
     ChangeOutfit(AgentOutfitRequest),
+    Trace(AssistantTrace),
     Finished,
     Failed(String),
 }
@@ -139,10 +140,13 @@ pub(super) struct AttemptFailure {
 /// 单次 Provider 流结束后的语义结果。
 #[derive(Debug)]
 pub(super) enum StreamOutcome {
-    Complete,
+    Complete {
+        reasoning: Option<String>,
+    },
     ToolUse {
         assistant_message: GenaiMessage,
         calls: Vec<ToolCall>,
+        reasoning: Option<String>,
     },
 }
 
@@ -204,6 +208,8 @@ async fn stream_chat(
     );
     let mut used_screen_capture = false;
     let mut used_tools = false;
+    let mut trace_reasoning = String::new();
+    let mut tool_executions = Vec::new();
     loop {
         let required_permission = ((!used_tools && register_screenshot_tool)
             || used_screen_capture)
@@ -231,15 +237,21 @@ async fn stream_chat(
             }
         };
         match outcome {
-            StreamOutcome::Complete => {
-                let _ = send_terminal_event(&mut events, ChatStreamEvent::Finished, total_deadline)
-                    .await;
+            StreamOutcome::Complete { reasoning } => {
+                append_trace_reasoning(&mut trace_reasoning, reasoning);
+                let trace = AssistantTrace::new(
+                    (!trace_reasoning.is_empty()).then_some(trace_reasoning),
+                    tool_executions,
+                );
+                send_completion_events(&mut events, trace, total_deadline).await;
                 return;
             }
             StreamOutcome::ToolUse {
                 assistant_message,
                 calls,
+                reasoning,
             } => {
+                append_trace_reasoning(&mut trace_reasoning, reasoning);
                 if used_tools {
                     log::warn!("Agent 工具循环超过单轮上限，已拒绝继续执行");
                     let _ = send_terminal_event(
@@ -264,6 +276,7 @@ async fn stream_chat(
                 {
                     continuation.revoke_image();
                 }
+                tool_executions.extend(tool_execution_traces(&calls, &continuation.trace_results));
                 if assistant_message.content.thought_signatures().is_empty() {
                     chat_request.messages.push(assistant_message);
                     chat_request.messages.push(GenaiMessage::tool(
@@ -356,6 +369,7 @@ async fn stream_with_retry(
 /// 把供应商高级参数翻译为 `genai` 请求选项；全部未设置时返回 `None` 以沿用 Provider 默认值。
 pub(super) fn base_chat_options(advanced: &LlmAdvancedOptions) -> Option<ChatOptions> {
     let LlmAdvancedOptions {
+        context_window_tokens: _,
         reasoning_effort,
         max_output_tokens,
         temperature,
@@ -672,17 +686,18 @@ async fn stream_once(
     {
         return Err(screenshot_permission_revoked_failure());
     }
-    let options = match (base_options.clone(), capture_tool_handoff) {
-        (options, false) => options,
-        // 截图 handoff 需要拿回已捕获的正文、思考与工具调用，用户高级参数保持不变。
-        (options, true) => Some(
-            options
-                .unwrap_or_default()
-                .with_capture_content(true)
-                .with_capture_reasoning_content(true)
-                .with_capture_tool_calls(true),
-        ),
-    };
+    // 可读推理对普通回复和工具轮次都属于展示数据，因此每次流都要求 genai 在终态汇总；
+    // 工具 handoff 仍额外捕获正文与调用协议，二者不会进入持久化详情。
+    let mut options = base_options
+        .clone()
+        .unwrap_or_default()
+        .with_capture_reasoning_content(true);
+    if capture_tool_handoff {
+        options = options
+            .with_capture_content(true)
+            .with_capture_tool_calls(true);
+    }
+    let options = Some(options);
     let first_content_deadline = (Instant::now() + FIRST_CONTENT_TIMEOUT).min(total_deadline);
     let response_result = if let Some(revision) = screenshot_permission_revision {
         tokio::select! {
@@ -773,7 +788,7 @@ where
         }
         if !response_started && now >= first_content_deadline {
             if !flush(&mut pending, events, total_deadline).await {
-                return Ok(StreamOutcome::Complete);
+                return Ok(complete_stream(captured_reasoning));
             }
             return Err(AttemptFailure {
                 message: t!("chat.error.first_content_timeout").to_string(),
@@ -783,7 +798,7 @@ where
         }
         if idle_deadline.is_some_and(|deadline| now >= deadline) {
             if !flush(&mut pending, events, total_deadline).await {
-                return Ok(StreamOutcome::Complete);
+                return Ok(complete_stream(captured_reasoning));
             }
             return Err(AttemptFailure {
                 message: t!("chat.error.idle_timeout").to_string(),
@@ -830,7 +845,7 @@ where
                     if pending.len() >= FLUSH_BYTES
                         && !flush(&mut pending, events, total_deadline).await
                     {
-                        return Ok(StreamOutcome::Complete);
+                        return Ok(complete_stream(captured_reasoning));
                     }
                     if pending.is_empty() {
                         flush_deadline = None;
@@ -840,7 +855,7 @@ where
             Ok(Some(Ok(GenaiStreamEvent::End(end)))) => {
                 let delivery_deadline = terminal_delivery_deadline(total_deadline);
                 if !flush(&mut pending, events, delivery_deadline).await {
-                    return Ok(StreamOutcome::Complete);
+                    return Ok(complete_stream(captured_reasoning));
                 }
                 if end
                     .captured_reasoning_content
@@ -868,11 +883,9 @@ where
                         calls.push(call.clone());
                     }
                 }
+                let reasoning =
+                    readable_reasoning(end.captured_reasoning_content, captured_reasoning);
                 if !calls.is_empty() {
-                    let reasoning = end
-                        .captured_reasoning_content
-                        .filter(|reasoning| !reasoning.is_empty())
-                        .or_else(|| (!captured_reasoning.is_empty()).then_some(captured_reasoning));
                     let mut content = end
                         .captured_content
                         .unwrap_or_else(|| MessageContent::from_tool_calls(calls.clone()));
@@ -888,8 +901,9 @@ where
                     }
                     return Ok(StreamOutcome::ToolUse {
                         assistant_message: GenaiMessage::assistant(content)
-                            .with_reasoning_content(reasoning),
+                            .with_reasoning_content(reasoning.clone()),
                         calls,
+                        reasoning,
                     });
                 }
                 if !produced_content {
@@ -899,7 +913,7 @@ where
                         response_started,
                     });
                 }
-                return Ok(StreamOutcome::Complete);
+                return Ok(StreamOutcome::Complete { reasoning });
             }
             Ok(Some(Ok(GenaiStreamEvent::ReasoningChunk(chunk)))) => {
                 if !reserve_bounded_bytes(
@@ -947,7 +961,7 @@ where
             }
             Ok(Some(Err(error))) => {
                 if !flush(&mut pending, events, total_deadline).await {
-                    return Ok(StreamOutcome::Complete);
+                    return Ok(complete_stream(captured_reasoning));
                 }
                 let mut failure = attempt_failure(error);
                 failure.response_started = response_started;
@@ -955,7 +969,7 @@ where
             }
             Ok(None) => {
                 if !flush(&mut pending, events, total_deadline).await {
-                    return Ok(StreamOutcome::Complete);
+                    return Ok(complete_stream(captured_reasoning));
                 }
                 return Err(AttemptFailure {
                     message: t!("chat.error.stream_ended").to_string(),
@@ -965,12 +979,34 @@ where
             }
             Err(_) => {
                 if !pending.is_empty() && !flush(&mut pending, events, total_deadline).await {
-                    return Ok(StreamOutcome::Complete);
+                    return Ok(complete_stream(captured_reasoning));
                 }
                 flush_deadline = None;
             }
         }
     }
+}
+
+fn readable_reasoning(terminal: Option<String>, streamed: String) -> Option<String> {
+    terminal
+        .filter(|reasoning| !reasoning.trim().is_empty())
+        .or_else(|| (!streamed.trim().is_empty()).then_some(streamed))
+}
+
+fn complete_stream(streamed_reasoning: String) -> StreamOutcome {
+    StreamOutcome::Complete {
+        reasoning: readable_reasoning(None, streamed_reasoning),
+    }
+}
+
+fn append_trace_reasoning(target: &mut String, reasoning: Option<String>) {
+    let Some(reasoning) = reasoning.filter(|reasoning| !reasoning.trim().is_empty()) else {
+        return;
+    };
+    if !target.is_empty() {
+        target.push_str("\n\n");
+    }
+    target.push_str(&reasoning);
 }
 
 async fn wait_for_screenshot_permission_revocation(revision: u64) {
@@ -1027,6 +1063,7 @@ struct ToolContinuation {
     image: Option<ImageAttachment>,
     screen_capture_requested: bool,
     stateless_results: Vec<String>,
+    trace_results: Vec<serde_json::Value>,
 }
 
 impl ToolContinuation {
@@ -1041,6 +1078,9 @@ impl ToolContinuation {
                 response.content = content.to_string();
                 if let Some(result) = self.stateless_results.get_mut(index) {
                     *result = stateless_tool_result(SCREEN_CAPTURE_TOOL, &content);
+                }
+                if let Some(result) = self.trace_results.get_mut(index) {
+                    *result = content;
                 }
             }
         }
@@ -1059,6 +1099,7 @@ async fn execute_tool_calls(
     let mut image = None;
     let mut screen_capture_requested = false;
     let mut stateless_results = Vec::with_capacity(calls.len());
+    let mut trace_results = Vec::with_capacity(calls.len());
     for call in calls {
         let content = match call.fn_name.as_str() {
             SCREEN_CAPTURE_TOOL => {
@@ -1135,6 +1176,7 @@ async fn execute_tool_calls(
             _ => json!({"status": "error", "code": "unknown_tool"}),
         };
         stateless_results.push(stateless_tool_result(&call.fn_name, &content));
+        trace_results.push(content.clone());
         responses.push(ToolResponse::from_tool_call(call, content.to_string()));
     }
     ToolContinuation {
@@ -1142,7 +1184,40 @@ async fn execute_tool_calls(
         image,
         screen_capture_requested,
         stateless_results,
+        trace_results,
     }
+}
+
+fn tool_execution_traces(
+    calls: &[ToolCall],
+    results: &[serde_json::Value],
+) -> Vec<ToolExecutionTrace> {
+    calls
+        .iter()
+        .zip(results)
+        .map(|(call, result)| {
+            ToolExecutionTrace::new(
+                call.fn_name.clone(),
+                call.fn_arguments.clone(),
+                result.clone(),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+pub(super) async fn execute_tool_traces_for_test(calls: &[ToolCall]) -> Vec<ToolExecutionTrace> {
+    let (mut events, _receiver) = mpsc::channel(1);
+    let continuation = execute_tool_calls(
+        calls,
+        Instant::now() + Duration::from_secs(1),
+        None,
+        &[],
+        0,
+        &mut events,
+    )
+    .await;
+    tool_execution_traces(calls, &continuation.trace_results)
 }
 
 pub(super) fn outfit_argument<'a>(
@@ -1284,6 +1359,19 @@ pub(super) async fn send_terminal_event(
     total_deadline: Instant,
 ) -> bool {
     send_event(events, event, terminal_delivery_deadline(total_deadline)).await
+}
+
+pub(super) async fn send_completion_events(
+    events: &mut mpsc::Sender<ChatStreamEvent>,
+    trace: AssistantTrace,
+    total_deadline: Instant,
+) {
+    if !trace.is_empty()
+        && !send_terminal_event(events, ChatStreamEvent::Trace(trace), total_deadline).await
+    {
+        return;
+    }
+    let _ = send_terminal_event(events, ChatStreamEvent::Finished, total_deadline).await;
 }
 
 fn terminal_delivery_deadline(total_deadline: Instant) -> Instant {

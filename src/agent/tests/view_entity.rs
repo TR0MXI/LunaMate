@@ -11,13 +11,17 @@ use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
 use super::ConfigGuard;
 use crate::{
     agent::{
-        AgentMemoryAccess, AgentOutfitRequest,
+        AgentMemoryAccess, AgentOutfitRequest, AssistantTrace,
         service::{ChatBackend, ChatServiceRequest, ChatStreamEvent},
-        session::ChatSession,
+        session::{ChatSession, MAX_TRACE_REASONING_BYTES},
         store::ChatSessionStore,
         view::AgentView,
     },
-    config::{AppLanguage, CONFIG, DEFAULT_PERSONA_ID, LlmSettings},
+    config::{
+        AppLanguage, CONFIG, DEFAULT_PERSONA_ID, LlmAdvancedOptions, LlmModelConfig, LlmProvider,
+        LlmSettings, PersonaContextLimits, PersonaSettings,
+    },
+    database::Database,
 };
 
 /// 永不产出事件的 fake backend；保证测试不会发起任何网络请求。
@@ -41,10 +45,34 @@ fn config_without_model() -> ConfigGuard {
     ConfigGuard::publish(LlmSettings::default())
 }
 
+fn config_with_model() -> ConfigGuard {
+    ConfigGuard::publish(LlmSettings {
+        models: vec![LlmModelConfig {
+            id: "local".to_owned(),
+            label: "Local".to_owned(),
+            provider: LlmProvider::Ollama,
+            model: "qwen3:8b".to_owned(),
+            endpoint: Some("http://localhost:11434/".to_owned()),
+            api_key: None,
+            advanced: LlmAdvancedOptions::default(),
+        }],
+        selected_model: Some("local".to_owned()),
+    })
+}
+
 fn mount(
     cx: &mut TestAppContext,
     backend: Arc<dyn ChatBackend>,
     initial_status: Option<String>,
+) -> (Entity<AgentView>, &mut VisualTestContext) {
+    mount_with_session(cx, backend, initial_status, ChatSession::default())
+}
+
+fn mount_with_session(
+    cx: &mut TestAppContext,
+    backend: Arc<dyn ChatBackend>,
+    initial_status: Option<String>,
+    session: ChatSession,
 ) -> (Entity<AgentView>, &mut VisualTestContext) {
     // 与生产启动路径一致：GPUI Component 与 Tokio runtime 必须在创建视图前完成初始化。
     cx.update(|cx| {
@@ -56,7 +84,7 @@ fn mount(
             CONFIG.llm_settings(),
             CONFIG.persona_settings(),
             DEFAULT_PERSONA_ID.to_owned(),
-            ChatSession::default(),
+            session,
             ChatSessionStore::unavailable(),
             AgentMemoryAccess::default(),
             initial_status,
@@ -67,6 +95,41 @@ fn mount(
         view
     });
     (view, cx)
+}
+
+fn mount_with_database(
+    cx: &mut TestAppContext,
+    database: Arc<Database>,
+) -> (Entity<AgentView>, &mut VisualTestContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        gpui_tokio::init(cx);
+    });
+    let memory = AgentMemoryAccess::new(Some(database));
+    let store = ChatSessionStore::unavailable();
+    let (view, cx) = cx.add_window_view(|window, cx| {
+        AgentView::new(
+            CONFIG.llm_settings(),
+            CONFIG.persona_settings(),
+            DEFAULT_PERSONA_ID.to_owned(),
+            ChatSession::default(),
+            store,
+            memory,
+            None,
+            window,
+            cx,
+        )
+    });
+    (view, cx)
+}
+
+fn memory_database() -> Arc<Database> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("测试必须能创建 Tokio 运行时")
+        .block_on(Database::open_memory())
+        .expect("内存数据库应可打开")
 }
 
 #[gpui::test]
@@ -102,6 +165,149 @@ fn submitting_without_a_configured_model_shows_a_status_instead_of_a_turn(cx: &m
         assert_eq!(view.message_count_for_test(), 0);
         assert!(view.reply_visible());
         assert!(view.reply_text_for_test().is_some());
+    });
+}
+
+#[gpui::test]
+fn a_failed_persona_restore_cannot_send_the_previous_session(cx: &mut TestAppContext) {
+    let _config = config_with_model();
+    let (view, cx) = mount(cx, Arc::new(SilentBackend), None);
+
+    view.update(cx, |view, cx| {
+        view.mark_persona_swap_failed_for_test();
+        assert!(!view.send_message_for_test("不得写入旧人格", cx));
+        assert_eq!(view.message_count_for_test(), 0);
+        assert!(view.reply_visible());
+    });
+}
+
+#[gpui::test]
+fn offline_limit_changes_preserve_the_newest_current_persona_history(cx: &mut TestAppContext) {
+    let _config = config_without_model();
+    let mut session = ChatSession::default();
+    for (question, answer) in [("first", "one"), ("second", "two")] {
+        let turn = session.start_turn(question).expect("测试轮次应可开始");
+        session
+            .append_response(turn.response_id, answer)
+            .expect("测试回复应可写入");
+        assert!(session.finish_response(turn.response_id));
+    }
+    let (view, cx) = mount_with_session(cx, Arc::new(SilentBackend), None, session);
+    let mut personas = PersonaSettings::default();
+    personas.personas[0].context = PersonaContextLimits {
+        max_messages: Some(2),
+        max_tokens: None,
+    };
+    CONFIG.publish_persona_settings_for_test(personas);
+
+    view.update(cx, |view, cx| {
+        view.refresh_settings(cx);
+        assert_eq!(view.message_count_for_test(), 2);
+    });
+}
+
+#[gpui::test]
+fn clearing_the_active_context_reports_persistence_failure(cx: &mut TestAppContext) {
+    let _config = config_without_model();
+    let mut session = ChatSession::default();
+    let turn = session.start_turn("question").expect("测试轮次应可开始");
+    session
+        .append_response(turn.response_id, "answer")
+        .expect("测试回复应可写入");
+    assert!(session.finish_response(turn.response_id));
+    let (view, cx) = mount_with_session(cx, Arc::new(SilentBackend), None, session);
+    let (completion, result) = async_channel::bounded(1);
+
+    view.update(cx, |view, cx| {
+        view.clear_persona_context(DEFAULT_PERSONA_ID, Some(completion), cx);
+        assert_eq!(view.message_count_for_test(), 0);
+    });
+    let error = result
+        .try_recv()
+        .expect("数据库不可用时应立即返回结果")
+        .expect_err("未落盘的上下文清空不得报告成功");
+    assert_eq!(error, rust_i18n::t!("persona.memory_unavailable"));
+}
+
+#[gpui::test]
+fn a_late_edit_for_a_deleted_persona_does_not_defer_the_active_restore(cx: &mut TestAppContext) {
+    let _config = config_without_model();
+    let (view, cx) = mount_with_database(cx, memory_database());
+
+    view.update(cx, |view, cx| {
+        view.mark_persona_swap_failed_for_test();
+        view.edit_persona_context_message("deleted", 1, "late".to_owned(), None, cx);
+        assert_eq!(view.persona_swap_state_for_test(), (true, false));
+    });
+}
+
+#[gpui::test]
+fn trace_events_only_attach_to_the_matching_active_response(cx: &mut TestAppContext) {
+    let mut session = ChatSession::default();
+    let old = session.start_turn("old").expect("第一轮应可开始");
+    assert!(session.cancel_response(old.response_id));
+    let current = session.start_turn("current").expect("替代轮次应可开始");
+    let message_id = session.messages().back().expect("应有助手占位").id();
+    let (view, cx) = mount_with_session(cx, Arc::new(SilentBackend), None, session);
+    let trace = AssistantTrace::new(Some("current reasoning".to_owned()), Vec::new());
+
+    view.update(cx, |view, cx| {
+        assert!(
+            view.apply_stream_event_for_test(
+                old.response_id,
+                ChatStreamEvent::Trace(AssistantTrace::new(
+                    Some("late reasoning".to_owned()),
+                    Vec::new(),
+                )),
+                cx,
+            )
+            .is_none()
+        );
+        assert!(view.message_trace_for_test(message_id).is_none());
+        assert_eq!(
+            view.apply_stream_event_for_test(
+                current.response_id,
+                ChatStreamEvent::Trace(trace.clone()),
+                cx,
+            ),
+            Some((true, false))
+        );
+        assert_eq!(view.message_trace_for_test(message_id), Some(trace));
+        assert_eq!(
+            view.apply_stream_event_for_test(current.response_id, ChatStreamEvent::Finished, cx,),
+            Some((false, true))
+        );
+    });
+}
+
+#[gpui::test]
+fn rejected_optional_trace_does_not_fail_the_matching_visible_reply(cx: &mut TestAppContext) {
+    let mut session = ChatSession::default();
+    let current = session.start_turn("question").expect("测试轮次应可开始");
+    session
+        .append_response(current.response_id, "visible answer")
+        .expect("可见回复应可写入");
+    let message_id = session.messages().back().expect("应有助手消息").id();
+    let (view, cx) = mount_with_session(cx, Arc::new(SilentBackend), None, session);
+
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.apply_stream_event_for_test(
+                current.response_id,
+                ChatStreamEvent::Trace(AssistantTrace::new(
+                    Some("x".repeat(MAX_TRACE_REASONING_BYTES + 1)),
+                    Vec::new(),
+                )),
+                cx,
+            ),
+            Some((true, false))
+        );
+        assert_eq!(
+            view.apply_stream_event_for_test(current.response_id, ChatStreamEvent::Finished, cx,),
+            Some((false, true))
+        );
+        assert!(!view.is_streaming_for_test());
+        assert!(view.message_trace_for_test(message_id).is_none());
     });
 }
 

@@ -295,6 +295,36 @@ fn selecting_a_variant_outside_the_scan_result_is_rejected() {
 }
 
 #[test]
+fn runtime_selection_resolves_only_scanned_manifests_and_can_be_cleared() {
+    let directory = TestDirectory::new();
+    let model_directory = directory.path().join("luna");
+    fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
+    fs::write(model_directory.join("luna.model3.json"), "{}").expect("模型清单应当可以创建");
+    let mut catalog =
+        ModelCatalog::load(directory.path().to_path_buf(), None).expect("模型目录应当可以扫描");
+    let selected = Path::new("luna/luna.model3.json");
+
+    assert_eq!(
+        catalog.model_path(selected),
+        Some(directory.path().join(selected))
+    );
+    assert_eq!(catalog.model_path(Path::new("missing.model3.json")), None);
+    assert_eq!(
+        catalog
+            .set_runtime_selection(Some(selected))
+            .expect("扫描结果内的运行时模型应当可以选择"),
+        Some(directory.path().join(selected))
+    );
+    assert_eq!(
+        catalog
+            .set_runtime_selection(None)
+            .expect("清空运行时模型应当成功"),
+        None
+    );
+    assert_eq!(catalog.selected_relative_path(), None);
+}
+
+#[test]
 fn stale_configured_selection_falls_back_to_the_only_family() {
     let directory = TestDirectory::new();
     let model_directory = directory.path().join("luna");

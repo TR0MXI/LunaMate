@@ -36,11 +36,12 @@ use document::{
     write_logging_settings, write_window_position,
 };
 pub(crate) use llm::{
-    DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REASONING_BUDGET, DEFAULT_TEMPERATURE, DEFAULT_TOP_P,
-    LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
-    MAX_OUTPUT_TOKENS_MAX, MAX_OUTPUT_TOKENS_MIN, REASONING_BUDGET_MAX, REASONING_BUDGET_MIN,
-    REASONING_EFFORT_LEVELS, ReasoningEffort, SharedLlmSettings, TEMPERATURE_MAX, TEMPERATURE_MIN,
-    TOP_P_MAX, TOP_P_MIN,
+    DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MODEL_CONTEXT_TOKENS, DEFAULT_REASONING_BUDGET,
+    DEFAULT_TEMPERATURE, DEFAULT_TOP_P, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig,
+    LlmProvider, LlmSettings, MAX_OUTPUT_TOKENS_MAX, MAX_OUTPUT_TOKENS_MIN,
+    MODEL_CONTEXT_RESERVE_TOKENS, MODEL_CONTEXT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MIN,
+    REASONING_BUDGET_MAX, REASONING_BUDGET_MIN, REASONING_EFFORT_LEVELS, ReasoningEffort,
+    SharedLlmSettings, TEMPERATURE_MAX, TEMPERATURE_MIN, TOP_P_MAX, TOP_P_MIN,
 };
 use llm::{parse_llm_settings, write_llm_settings};
 pub(crate) use model::{
@@ -49,8 +50,8 @@ pub(crate) use model::{
 };
 use model::{parse_model_resource_settings, write_model_resource_settings};
 pub(crate) use persona::{
-    CONTEXT_KIB_MAX, CONTEXT_KIB_MIN, CONTEXT_MESSAGES_MAX, CONTEXT_MESSAGES_MIN,
-    DEFAULT_CONTEXT_KIB, DEFAULT_CONTEXT_MESSAGES, DEFAULT_PERSONA_ID, MAX_PERSONAS, PersonaConfig,
+    CONTEXT_MESSAGES_MAX, CONTEXT_MESSAGES_MIN, CONTEXT_TOKENS_MAX, CONTEXT_TOKENS_MIN,
+    DEFAULT_CONTEXT_MESSAGES, DEFAULT_CONTEXT_TOKENS, DEFAULT_PERSONA_ID, PersonaConfig,
     PersonaContextLimits, PersonaSettings, SharedPersonaSettings,
 };
 use persona::{parse_persona_settings, write_persona_settings};

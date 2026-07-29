@@ -11,6 +11,7 @@ use tokio::time::{Instant, sleep, timeout};
 
 use crate::{
     agent::{
+        AssistantTrace,
         media::prepare_dynamic_image,
         service::*,
         session::{ChatContextMessage, ChatRole},
@@ -35,6 +36,7 @@ fn request_keeps_system_prompt_separate_from_history() {
         },
         system_prompt: "persona".to_owned(),
         messages: vec![ChatContextMessage {
+            source_message_id: None,
             role: ChatRole::User,
             content: "hello".to_owned(),
             image: None,
@@ -243,6 +245,7 @@ fn history_without_pixels_degrades_to_a_text_placeholder() {
     let request = build_request(
         String::new(),
         vec![ChatContextMessage {
+            source_message_id: None,
             role: ChatRole::User,
             content: "what is this".to_owned(),
             image: Some(restored),
@@ -267,11 +270,13 @@ fn assistant_history_and_blank_system_prompts_are_preserved_verbatim() {
         "   \n  ".to_owned(),
         vec![
             ChatContextMessage {
+                source_message_id: None,
                 role: ChatRole::User,
                 content: "hi".to_owned(),
                 image: None,
             },
             ChatContextMessage {
+                source_message_id: None,
                 role: ChatRole::Assistant,
                 content: "hello".to_owned(),
                 image: None,
@@ -293,6 +298,7 @@ fn failed_capture_handoff_tells_the_model_to_continue_without_the_image() {
     let mut request = build_request(
         String::new(),
         vec![ChatContextMessage {
+            source_message_id: None,
             role: ChatRole::User,
             content: "inspect my screen".to_owned(),
             image: None,
@@ -375,6 +381,7 @@ fn user_image_is_encoded_as_multipart_content() {
     let request = build_request(
         String::new(),
         vec![ChatContextMessage {
+            source_message_id: None,
             role: ChatRole::User,
             content: "inspect".to_owned(),
             image: Some(image),
@@ -398,6 +405,7 @@ fn signed_tool_handoff_retries_from_original_user_message() {
     let mut request = build_request(
         String::new(),
         vec![ChatContextMessage {
+            source_message_id: None,
             role: ChatRole::User,
             content: "inspect my screen".to_owned(),
             image: None,
@@ -518,6 +526,72 @@ async fn empty_terminal_event_is_not_recorded_as_complete_reply() {
 }
 
 #[tokio::test]
+async fn ordinary_completion_captures_streamed_readable_reasoning() {
+    let stream = stream::iter(vec![
+        Ok(GenaiStreamEvent::ReasoningChunk(genai::chat::StreamChunk {
+            content: "step one".to_owned(),
+        })),
+        Ok(GenaiStreamEvent::ReasoningChunk(genai::chat::StreamChunk {
+            content: " and two".to_owned(),
+        })),
+        Ok(GenaiStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "answer".to_owned(),
+        })),
+        Ok(GenaiStreamEvent::End(StreamEnd::default())),
+    ]);
+    let (mut sender, _receiver) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let outcome = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect("普通回复应当完成");
+
+    let StreamOutcome::Complete { reasoning } = outcome else {
+        panic!("普通回复应返回完成结果");
+    };
+    assert_eq!(reasoning.as_deref(), Some("step one and two"));
+}
+
+#[tokio::test]
+async fn ordinary_completion_prefers_terminal_captured_reasoning() {
+    let stream = stream::iter(vec![
+        Ok(GenaiStreamEvent::ReasoningChunk(genai::chat::StreamChunk {
+            content: "streamed summary".to_owned(),
+        })),
+        Ok(GenaiStreamEvent::Chunk(genai::chat::StreamChunk {
+            content: "answer".to_owned(),
+        })),
+        Ok(GenaiStreamEvent::End(StreamEnd {
+            captured_reasoning_content: Some("terminal summary".to_owned()),
+            ..StreamEnd::default()
+        })),
+    ]);
+    let (mut sender, _receiver) = mpsc::channel(4);
+    let now = Instant::now();
+
+    let outcome = consume_stream(
+        stream,
+        now + Duration::from_secs(1),
+        Duration::from_secs(1),
+        now + Duration::from_secs(1),
+        &mut sender,
+    )
+    .await
+    .expect("普通回复应当完成");
+
+    let StreamOutcome::Complete { reasoning } = outcome else {
+        panic!("普通回复应返回完成结果");
+    };
+    assert_eq!(reasoning.as_deref(), Some("terminal summary"));
+}
+
+#[tokio::test]
 async fn tool_only_terminal_event_returns_complete_tool_call() {
     let call = ToolCall {
         call_id: "call-1".to_owned(),
@@ -546,12 +620,14 @@ async fn tool_only_terminal_event_returns_complete_tool_call() {
     let StreamOutcome::ToolUse {
         assistant_message,
         calls,
+        reasoning,
     } = outcome
     else {
         panic!("应当返回完整工具调用");
     };
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].fn_name, SCREEN_CAPTURE_TOOL);
+    assert_eq!(reasoning.as_deref(), Some("reasoning handoff"));
     assert_eq!(
         assistant_message.content.first_reasoning_content(),
         Some("reasoning handoff")
@@ -580,6 +656,59 @@ async fn outfit_tool_waits_for_the_desktop_pet_to_apply_the_change() {
     request.complete(true);
 
     assert_eq!(task.await.expect("换装工具任务不应 panic"), Ok(()));
+}
+
+#[tokio::test]
+async fn local_tool_trace_keeps_arguments_and_sanitized_result_only() {
+    let call = ToolCall {
+        call_id: "private-call-id".to_owned(),
+        fn_name: SCREEN_CAPTURE_TOOL.to_owned(),
+        fn_arguments: serde_json::json!({}),
+        thought_signatures: Some(vec!["private-thought-signature".to_owned()]),
+    };
+
+    let executions = execute_tool_traces_for_test(&[call]).await;
+
+    assert_eq!(executions.len(), 1);
+    assert_eq!(executions[0].name(), SCREEN_CAPTURE_TOOL);
+    assert_eq!(executions[0].arguments(), &serde_json::json!({}));
+    assert_eq!(
+        executions[0].result(),
+        &serde_json::json!({"status": "error", "code": "permission_disabled"})
+    );
+    let encoded =
+        serde_json::to_string(&AssistantTrace::new(None, executions)).expect("工具详情应可序列化");
+    assert!(!encoded.contains("private-call-id"));
+    assert!(!encoded.contains("private-thought-signature"));
+}
+
+#[tokio::test]
+async fn non_empty_trace_is_sent_immediately_before_finished() {
+    let trace = AssistantTrace::new(Some("reasoning".to_owned()), Vec::new());
+    let (mut sender, mut receiver) = mpsc::channel(4);
+
+    send_completion_events(&mut sender, trace, Instant::now() + Duration::from_secs(1)).await;
+
+    let Some(ChatStreamEvent::Trace(trace)) = receiver.next().await else {
+        panic!("完成前应先发送非空详情");
+    };
+    assert_eq!(trace.reasoning(), Some("reasoning"));
+    assert!(matches!(
+        receiver.next().await,
+        Some(ChatStreamEvent::Finished)
+    ));
+
+    let (mut sender, mut receiver) = mpsc::channel(2);
+    send_completion_events(
+        &mut sender,
+        AssistantTrace::default(),
+        Instant::now() + Duration::from_secs(1),
+    )
+    .await;
+    assert!(matches!(
+        receiver.next().await,
+        Some(ChatStreamEvent::Finished)
+    ));
 }
 
 #[tokio::test]
@@ -617,6 +746,7 @@ async fn streamed_thought_signature_is_preserved_for_tool_handoff() {
     let StreamOutcome::ToolUse {
         assistant_message,
         calls,
+        reasoning,
     } = outcome
     else {
         panic!("应当返回完整工具调用");
@@ -629,6 +759,7 @@ async fn streamed_thought_signature_is_preserved_for_tool_handoff() {
         calls[0].thought_signatures.as_deref(),
         Some(["signed-reasoning".to_owned()].as_slice())
     );
+    assert!(reasoning.is_none(), "思考签名不得成为可展示推理");
 }
 
 #[tokio::test]
@@ -653,7 +784,10 @@ async fn start_event_alone_does_not_start_the_response() {
     .await
     .expect("含 Start 事件的正常流应当完成");
 
-    assert!(matches!(outcome, StreamOutcome::Complete));
+    assert!(matches!(
+        outcome,
+        StreamOutcome::Complete { reasoning: None }
+    ));
     assert!(matches!(receiver.next().await, Some(ChatStreamEvent::Delta(text)) if text == "hello"));
 }
 
@@ -807,7 +941,7 @@ async fn closed_receiver_stops_the_stream_without_reporting_a_failure() {
     .await
     .expect("接收端关闭不应视为 Provider 失败");
 
-    assert!(matches!(outcome, StreamOutcome::Complete));
+    assert!(matches!(outcome, StreamOutcome::Complete { .. }));
 }
 
 #[tokio::test]
@@ -987,6 +1121,7 @@ fn unset_advanced_options_send_no_request_overrides() {
 #[test]
 fn advanced_options_map_onto_provider_request_options() {
     let options = base_chat_options(&LlmAdvancedOptions {
+        context_window_tokens: Some(128_000),
         reasoning_effort: Some(ReasoningEffort::Budget(4_096)),
         max_output_tokens: Some(1_024),
         temperature: Some(0.25),
@@ -997,6 +1132,7 @@ fn advanced_options_map_onto_provider_request_options() {
     assert_eq!(options.max_tokens, Some(1_024));
     assert_eq!(options.temperature, Some(0.25));
     assert_eq!(options.top_p, Some(0.9));
+    // 模型上下文窗口只用于本地历史裁剪，不能泄漏成 Provider 请求参数。
     assert!(matches!(
         options.reasoning_effort,
         Some(genai::chat::ReasoningEffort::Budget(4_096))

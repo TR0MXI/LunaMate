@@ -7,9 +7,10 @@ use gpui_component::{IndexPath, input::InputState, select::SelectState};
 use rust_i18n::t;
 
 use crate::config::{
-    CONFIG, DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_REASONING_BUDGET, DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
-    MAX_OUTPUT_TOKENS_MAX, MAX_OUTPUT_TOKENS_MIN, REASONING_BUDGET_MAX, REASONING_BUDGET_MIN,
+    CONFIG, DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MODEL_CONTEXT_TOKENS, DEFAULT_REASONING_BUDGET,
+    DEFAULT_TEMPERATURE, DEFAULT_TOP_P, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig,
+    LlmProvider, LlmSettings, MAX_OUTPUT_TOKENS_MAX, MAX_OUTPUT_TOKENS_MIN,
+    MODEL_CONTEXT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MIN, REASONING_BUDGET_MAX, REASONING_BUDGET_MIN,
     REASONING_EFFORT_LEVELS, ReasoningEffort, SharedLlmSettings, TEMPERATURE_MAX, TEMPERATURE_MIN,
     TOP_P_MAX, TOP_P_MIN,
 };
@@ -50,9 +51,11 @@ pub(crate) struct AgentSettingsView {
     provider_select: Entity<SelectState<Vec<SharedString>>>,
     reasoning_select: Entity<SelectState<Vec<SharedString>>>,
     reasoning_budget_input: Entity<InputState>,
+    context_window_tokens_input: Entity<InputState>,
     max_output_tokens_input: Entity<InputState>,
     temperature_input: Entity<InputState>,
     top_p_input: Entity<InputState>,
+    context_window_tokens_enabled: bool,
     max_output_tokens_enabled: bool,
     temperature_enabled: bool,
     top_p_enabled: bool,
@@ -157,6 +160,20 @@ impl AgentSettingsView {
                     .to_string(),
             )
         });
+        let context_window_tokens_input = cx.new(|cx| {
+            integer_input(
+                window,
+                cx,
+                MODEL_CONTEXT_TOKENS_MIN,
+                MODEL_CONTEXT_TOKENS_MAX,
+            )
+            .default_value(
+                advanced
+                    .context_window_tokens
+                    .unwrap_or(DEFAULT_MODEL_CONTEXT_TOKENS)
+                    .to_string(),
+            )
+        });
         let max_output_tokens_input = cx.new(|cx| {
             integer_input(window, cx, MAX_OUTPUT_TOKENS_MIN, MAX_OUTPUT_TOKENS_MAX).default_value(
                 advanced
@@ -185,9 +202,11 @@ impl AgentSettingsView {
             provider_select,
             reasoning_select,
             reasoning_budget_input,
+            context_window_tokens_input,
             max_output_tokens_input,
             temperature_input,
             top_p_input,
+            context_window_tokens_enabled: advanced.context_window_tokens.is_some(),
             max_output_tokens_enabled: advanced.max_output_tokens.is_some(),
             temperature_enabled: advanced.temperature.is_some(),
             top_p_enabled: advanced.top_p.is_some(),
@@ -248,6 +267,12 @@ impl AgentSettingsView {
         self.max_output_tokens_enabled = max_output_tokens;
         self.temperature_enabled = temperature;
         self.top_p_enabled = top_p;
+    }
+
+    /// 切换本地模型上下文窗口是否生效。
+    #[cfg(test)]
+    pub(in crate::agent) fn set_context_window_enabled_for_test(&mut self, enabled: bool) {
+        self.context_window_tokens_enabled = enabled;
     }
 
     /// 追加一个新模型条目。
@@ -322,6 +347,11 @@ impl AgentSettingsView {
         cx.notify();
     }
 
+    pub(super) fn toggle_context_window_tokens(&mut self, cx: &mut Context<Self>) {
+        self.context_window_tokens_enabled = !self.context_window_tokens_enabled;
+        cx.notify();
+    }
+
     pub(super) fn toggle_temperature(&mut self, cx: &mut Context<Self>) {
         self.temperature_enabled = !self.temperature_enabled;
         cx.notify();
@@ -373,6 +403,10 @@ impl AgentSettingsView {
         };
 
         LlmAdvancedOptions {
+            context_window_tokens: self
+                .context_window_tokens_enabled
+                .then(|| parse_u32(self.context_window_tokens_input.read(cx).value().as_ref()))
+                .flatten(),
             reasoning_effort,
             max_output_tokens: self
                 .max_output_tokens_enabled
@@ -453,6 +487,15 @@ impl AgentSettingsView {
             cx,
         );
         set_input(
+            &self.context_window_tokens_input,
+            &advanced
+                .context_window_tokens
+                .unwrap_or(DEFAULT_MODEL_CONTEXT_TOKENS)
+                .to_string(),
+            window,
+            cx,
+        );
+        set_input(
             &self.max_output_tokens_input,
             &advanced
                 .max_output_tokens
@@ -473,6 +516,7 @@ impl AgentSettingsView {
             window,
             cx,
         );
+        self.context_window_tokens_enabled = advanced.context_window_tokens.is_some();
         self.max_output_tokens_enabled = advanced.max_output_tokens.is_some();
         self.temperature_enabled = advanced.temperature.is_some();
         self.top_p_enabled = advanced.top_p.is_some();
@@ -606,14 +650,16 @@ impl AgentSettingsView {
             provider: &self.provider_select,
             reasoning: &self.reasoning_select,
             reasoning_budget: &self.reasoning_budget_input,
+            context_window_tokens: &self.context_window_tokens_input,
             max_output_tokens: &self.max_output_tokens_input,
             temperature: &self.temperature_input,
             top_p: &self.top_p_input,
         }
     }
 
-    pub(super) const fn advanced_toggles(&self) -> [bool; 3] {
+    pub(super) const fn advanced_toggles(&self) -> [bool; 4] {
         [
+            self.context_window_tokens_enabled,
             self.max_output_tokens_enabled,
             self.temperature_enabled,
             self.top_p_enabled,
@@ -630,6 +676,7 @@ pub(super) struct ProviderFormInputs<'a> {
     pub(super) provider: &'a Entity<SelectState<Vec<SharedString>>>,
     pub(super) reasoning: &'a Entity<SelectState<Vec<SharedString>>>,
     pub(super) reasoning_budget: &'a Entity<InputState>,
+    pub(super) context_window_tokens: &'a Entity<InputState>,
     pub(super) max_output_tokens: &'a Entity<InputState>,
     pub(super) temperature: &'a Entity<InputState>,
     pub(super) top_p: &'a Entity<InputState>,

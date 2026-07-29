@@ -9,8 +9,8 @@ use super::ConfigGuard;
 use crate::{
     agent::settings::{AgentSettingsDraft, AgentSettingsView},
     config::{
-        DEFAULT_MAX_OUTPUT_TOKENS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
-        ReasoningEffort,
+        DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MODEL_CONTEXT_TOKENS, LlmAdvancedOptions,
+        LlmModelConfig, LlmProvider, LlmSettings, ReasoningEffort,
     },
 };
 
@@ -199,6 +199,7 @@ fn window_state_is_transferable_across_a_settings_window_reopen(cx: &mut TestApp
 fn advanced_options_survive_a_switch_between_entries(cx: &mut TestAppContext) {
     let mut with_reasoning = model("a");
     with_reasoning.advanced = LlmAdvancedOptions {
+        context_window_tokens: Some(32_768),
         reasoning_effort: Some(ReasoningEffort::High),
         max_output_tokens: Some(2_048),
         temperature: Some(0.4),
@@ -223,6 +224,7 @@ fn advanced_options_survive_a_switch_between_entries(cx: &mut TestAppContext) {
         assert_eq!(
             view.advanced_options_for_test(0),
             Some(LlmAdvancedOptions {
+                context_window_tokens: Some(32_768),
                 reasoning_effort: Some(ReasoningEffort::High),
                 max_output_tokens: Some(2_048),
                 temperature: Some(0.4),
@@ -250,11 +252,17 @@ fn disabled_advanced_options_are_not_persisted_even_with_prefilled_values(cx: &m
         );
 
         view.set_advanced_enabled_for_test(true, false, false);
+        view.set_context_window_enabled_for_test(true);
         view.capture_form_for_test(cx);
         assert_eq!(
             view.advanced_options_for_test(0)
                 .and_then(|advanced| advanced.max_output_tokens),
             Some(DEFAULT_MAX_OUTPUT_TOKENS)
+        );
+        assert_eq!(
+            view.advanced_options_for_test(0)
+                .and_then(|advanced| advanced.context_window_tokens),
+            Some(DEFAULT_MODEL_CONTEXT_TOKENS)
         );
     });
 }

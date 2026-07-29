@@ -19,6 +19,9 @@ pub(super) const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
 /// 输出长度上限的可接受区间；上界只用于挡住明显的手写错误，实际上限由 Provider 决定。
 pub(crate) const MAX_OUTPUT_TOKENS_MIN: u32 = 1;
 pub(crate) const MAX_OUTPUT_TOKENS_MAX: u32 = 1_000_000;
+/// 本地用于约束历史消息的模型上下文窗口区间；该值不会作为请求参数发送。
+pub(crate) const MODEL_CONTEXT_TOKENS_MIN: u32 = 256;
+pub(crate) const MODEL_CONTEXT_TOKENS_MAX: u32 = 10_000_000;
 /// 思考预算 token 数区间，仅在思考强度取 `Budget` 时有效。
 pub(crate) const REASONING_BUDGET_MIN: u32 = 0;
 pub(crate) const REASONING_BUDGET_MAX: u32 = 1_000_000;
@@ -29,9 +32,12 @@ pub(crate) const TOP_P_MAX: f64 = 1.0;
 
 /// 设置界面在启用某个高级参数时预填的建议值；未启用时不会发送该参数。
 pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4_096;
+pub(crate) const DEFAULT_MODEL_CONTEXT_TOKENS: u32 = 128_000;
 pub(crate) const DEFAULT_REASONING_BUDGET: u32 = 8_192;
 pub(crate) const DEFAULT_TEMPERATURE: f64 = 1.0;
 pub(crate) const DEFAULT_TOP_P: f64 = 1.0;
+/// 为系统提示词、消息包装与常规工具 schema 保留的本地上下文空间。
+pub(crate) const MODEL_CONTEXT_RESERVE_TOKENS: u32 = 512;
 
 /// LunaMate 配置 schema 支持的稳定 Provider。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,9 +206,13 @@ impl ReasoningEffort {
     }
 }
 
-/// 供应商的可选请求参数；每个字段的 `None` 表示不发送并沿用 Provider 默认值。
+/// 供应商的高级模型参数。
+///
+/// `context_window_tokens` 只参与 LunaMate 本地历史裁剪，不会随请求发送；其余字段的
+/// `None` 表示不发送并沿用 Provider 默认值。
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct LlmAdvancedOptions {
+    pub(crate) context_window_tokens: Option<u32>,
     pub(crate) reasoning_effort: Option<ReasoningEffort>,
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) temperature: Option<f64>,
@@ -212,6 +222,19 @@ pub(crate) struct LlmAdvancedOptions {
 impl LlmAdvancedOptions {
     /// 校验各高级参数落在可接受区间内。
     fn normalize(&mut self) -> Result<(), ConfigWriteError> {
+        if let Some(tokens) = self.context_window_tokens
+            && !(MODEL_CONTEXT_TOKENS_MIN..=MODEL_CONTEXT_TOKENS_MAX).contains(&tokens)
+        {
+            return Err(invalid(
+                t!(
+                    "llm.error.out_of_range",
+                    field = t!("llm.context_window_tokens"),
+                    min = MODEL_CONTEXT_TOKENS_MIN,
+                    max = MODEL_CONTEXT_TOKENS_MAX
+                )
+                .to_string(),
+            ));
+        }
         if let Some(ReasoningEffort::Budget(tokens)) = self.reasoning_effort
             && !(REASONING_BUDGET_MIN..=REASONING_BUDGET_MAX).contains(&tokens)
         {
@@ -237,6 +260,23 @@ impl LlmAdvancedOptions {
                 )
                 .to_string(),
             ));
+        }
+        if let Some(window) = self.context_window_tokens {
+            let output = self.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
+            if output
+                .saturating_add(MODEL_CONTEXT_RESERVE_TOKENS)
+                .saturating_add(8)
+                > window
+            {
+                return Err(invalid(
+                    t!(
+                        "llm.error.context_window_output",
+                        context = window,
+                        output = output
+                    )
+                    .to_string(),
+                ));
+            }
         }
         check_ratio(
             self.temperature,
@@ -612,22 +652,12 @@ fn parse_advanced_options(table: &Table) -> Result<LlmAdvancedOptions, ConfigWri
     };
 
     Ok(LlmAdvancedOptions {
+        context_window_tokens: integer("context_window_tokens")?,
         reasoning_effort,
         max_output_tokens: integer("max_output_tokens")?,
         temperature: ratio("temperature")?,
         top_p: ratio("top_p")?,
     })
-}
-
-/// 读取旧版全局系统提示词，仅用于首次生成默认人格。
-pub(super) fn parse_legacy_system_prompt(document: &DocumentMut) -> String {
-    document
-        .get("llm")
-        .and_then(|llm| llm.get("system_prompt"))
-        .and_then(Item::as_str)
-        .filter(|prompt| prompt.len() <= MAX_SYSTEM_PROMPT_BYTES)
-        .unwrap_or_default()
-        .to_owned()
 }
 
 pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSettings) {
@@ -684,6 +714,12 @@ fn write_advanced_options(table: &mut Table, advanced: &LlmAdvancedOptions) {
             table.remove(key);
         }
     };
+    write_optional(
+        "context_window_tokens",
+        advanced
+            .context_window_tokens
+            .map(|tokens| Value::from(i64::from(tokens))),
+    );
     write_optional(
         "reasoning_effort",
         advanced

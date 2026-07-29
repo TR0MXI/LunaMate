@@ -46,9 +46,19 @@ impl Render for ExpressionDragPreview {
 }
 
 impl SettingsView {
+    fn global_selected_family(&self) -> Option<&ModelFamily> {
+        let selected = self.global_model_selection.as_deref()?;
+        self.catalog
+            .families()
+            .iter()
+            .find(|family| family.contains(selected))
+    }
+
     pub(super) fn render_model_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = UiPalette::from_app(cx);
-        let selected_path = self.catalog.selected_relative_path();
+        let selected_path = self.global_model_selection.as_deref();
+        let runtime_path = self.catalog.selected_relative_path();
+        let selected_family = self.global_selected_family();
         let refresh_label = if self.is_refreshing {
             t!("model.scanning").to_string()
         } else {
@@ -106,7 +116,9 @@ impl SettingsView {
                                 .text_color(palette.secondary_foreground)
                                 .cursor_pointer()
                                 .hover(move |style| style.bg(palette.accent))
-                                .on_click(cx.listener(|this, _, _, cx| this.refresh_models(cx)))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.refresh_models(window, cx);
+                                }))
                                 .child(
                                     svg()
                                         .path("icons/refresh-cw.svg")
@@ -122,12 +134,8 @@ impl SettingsView {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(self.render_model_list(selected_path, cx))
-                    .child(self.render_model_controls(
-                        self.catalog.selected_family(),
-                        selected_path,
-                        cx,
-                    )),
+                    .child(self.render_model_list(selected_path, runtime_path, cx))
+                    .child(self.render_model_controls(selected_family, selected_path, cx)),
             )
             .into_any_element()
     }
@@ -135,6 +143,7 @@ impl SettingsView {
     fn render_model_list(
         &self,
         selected_path: Option<&Path>,
+        runtime_path: Option<&Path>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let palette = UiPalette::from_app(cx);
@@ -180,18 +189,19 @@ impl SettingsView {
                     })
                     .children(families.iter().enumerate().map(|(index, family)| {
                         let selected = selected_path.is_some_and(|path| family.contains(path));
-                        let expression_outfits = if selected {
-                            self.preview_capabilities
-                                .expressions()
-                                .iter()
-                                .filter(|expression| {
-                                    self.expression_category(expression)
-                                        == ModelExpressionCategory::Outfit
-                                })
-                                .count()
-                        } else {
-                            0
-                        };
+                        let expression_outfits =
+                            if runtime_path.is_some_and(|path| family.contains(path)) {
+                                self.preview_capabilities
+                                    .expressions()
+                                    .iter()
+                                    .filter(|expression| {
+                                        self.expression_category(expression)
+                                            == ModelExpressionCategory::Outfit
+                                    })
+                                    .count()
+                            } else {
+                                0
+                            };
                         let outfit_count = family.outfit_count().saturating_add(expression_outfits);
                         div()
                             .id(("model-family", index))
@@ -387,8 +397,9 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let relative_path = variant.relative_path().to_path_buf();
-        let selected =
-            self.active_outfit.is_none() && selected_path == Some(relative_path.as_path());
+        let selected = selected_path == Some(relative_path.as_path())
+            && (self.catalog.selected_relative_path() != selected_path
+                || self.active_outfit.is_none());
         let default_name = if default_outfit {
             t!("model.default_outfit").to_string()
         } else {
@@ -422,6 +433,20 @@ impl SettingsView {
                     .text_color(palette.primary),
             )
             .into_any_element()
+    }
+
+    /// 返回模型页按全局选择展示的清单变体，供状态隔离回归测试使用。
+    #[cfg(test)]
+    pub(in crate::ui) fn global_model_variants_for_test(&self) -> Vec<std::path::PathBuf> {
+        self.global_selected_family()
+            .map(|family| {
+                family
+                    .variants()
+                    .iter()
+                    .map(|variant| variant.relative_path().to_path_buf())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn render_motion_row(

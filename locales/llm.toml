@@ -247,10 +247,10 @@ _version = 2
 "ja" = "詳細設定"
 
 [llm.advanced_summary]
-"zh-CN" = "思考强度、输出长度与采样参数"
-"zh-TW" = "思考強度、輸出長度與取樣參數"
-"en" = "Reasoning effort, output length, and sampling"
-"ja" = "推論強度、出力長、サンプリング"
+"zh-CN" = "上下文窗口、思考强度、输出长度与采样参数"
+"zh-TW" = "上下文視窗、思考強度、輸出長度與取樣參數"
+"en" = "Context window, reasoning effort, output length, and sampling"
+"ja" = "コンテキストウィンドウ、推論強度、出力長、サンプリング"
 
 [llm.advanced_default_hint]
 "zh-CN" = "未启用，沿用 Provider 默认值"
@@ -259,10 +259,22 @@ _version = 2
 "ja" = "無効。Provider の既定値を使用します"
 
 [llm.advanced_range_hint]
-"zh-CN" = "输出长度上限 ≤ %{tokens}，temperature ≤ %{temperature}，top_p ≤ %{top_p}。关闭开关的参数不会随请求发送。"
-"zh-TW" = "輸出長度上限 ≤ %{tokens}，temperature ≤ %{temperature}，top_p ≤ %{top_p}。關閉開關的參數不會隨請求傳送。"
-"en" = "Max output tokens ≤ %{tokens}, temperature ≤ %{temperature}, top_p ≤ %{top_p}. Disabled parameters are not sent with the request."
-"ja" = "最大出力トークン ≤ %{tokens}、temperature ≤ %{temperature}、top_p ≤ %{top_p}。無効な項目はリクエストに含まれません。"
+"zh-CN" = "模型窗口 ≤ %{context} token，输出长度 ≤ %{tokens} token，temperature ≤ %{temperature}，top_p ≤ %{top_p}。模型窗口仅用于本地历史裁剪。"
+"zh-TW" = "模型視窗 ≤ %{context} token，輸出長度 ≤ %{tokens} token，temperature ≤ %{temperature}，top_p ≤ %{top_p}。模型視窗僅用於本機歷史裁剪。"
+"en" = "Model window ≤ %{context} tokens, output ≤ %{tokens} tokens, temperature ≤ %{temperature}, top_p ≤ %{top_p}. The model window is used only for local history trimming."
+"ja" = "モデルウィンドウ ≤ %{context} トークン、出力 ≤ %{tokens} トークン、temperature ≤ %{temperature}、top_p ≤ %{top_p}。モデルウィンドウはローカル履歴の調整にのみ使用されます。"
+
+[llm.context_window_tokens]
+"zh-CN" = "模型上下文窗口 (token)"
+"zh-TW" = "模型上下文視窗 (token)"
+"en" = "Model context window (tokens)"
+"ja" = "モデルコンテキストウィンドウ (トークン)"
+
+[llm.context_window_default_hint]
+"zh-CN" = "未启用，不按模型窗口额外裁剪历史"
+"zh-TW" = "未啟用，不依模型視窗額外裁剪歷史"
+"en" = "Disabled; history is not additionally trimmed to a model window"
+"ja" = "無効。モデルウィンドウによる追加の履歴調整は行いません"
 
 [llm.reasoning_effort]
 "zh-CN" = "思考强度"
@@ -359,3 +371,9 @@ _version = 2
 "zh-TW" = "%{field}必須在 %{min} 到 %{max} 之間"
 "en" = "%{field} must be between %{min} and %{max}"
 "ja" = "%{field} は %{min} から %{max} の範囲で指定してください"
+
+[llm.error.context_window_output]
+"zh-CN" = "模型上下文窗口 %{context} token 扣除输出上限 %{output} token 后，必须保留本地请求余量和至少一轮消息空间"
+"zh-TW" = "模型上下文視窗 %{context} token 扣除輸出上限 %{output} token 後，必須保留本機請求餘量和至少一輪訊息空間"
+"en" = "After reserving the %{output}-token output limit, the %{context}-token model window must leave local request overhead and room for one turn"
+"ja" = "%{context} トークンのモデルウィンドウは %{output} トークンの出力上限を確保した後、ローカル要求の余裕と 1 ターン分の領域を残す必要があります"

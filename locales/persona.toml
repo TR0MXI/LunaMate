@@ -42,6 +42,24 @@ _version = 2
 "en" = "Identity"
 "ja" = "ペルソナ設定"
 
+[persona.tab_definition]
+"zh-CN" = "设定"
+"zh-TW" = "設定"
+"en" = "Definition"
+"ja" = "設定"
+
+[persona.tab_context]
+"zh-CN" = "上下文"
+"zh-TW" = "上下文"
+"en" = "Context"
+"ja" = "コンテキスト"
+
+[persona.tab_settings]
+"zh-CN" = "设置"
+"zh-TW" = "設定"
+"en" = "Settings"
+"ja" = "設定"
+
 [persona.id]
 "zh-CN" = "人格 ID"
 "zh-TW" = "人格 ID"
@@ -66,11 +84,29 @@ _version = 2
 "en" = "Describe this persona's identity, tone, and boundaries"
 "ja" = "このペルソナの人物像、口調、境界を記述します"
 
+[persona.input_prompt]
+"zh-CN" = "输入提示词"
+"zh-TW" = "輸入提示詞"
+"en" = "Input prompt"
+"ja" = "入力プロンプト"
+
+[persona.input_prompt_placeholder]
+"zh-CN" = "用户输入格式化模板"
+"zh-TW" = "使用者輸入格式化範本"
+"en" = "User input formatting template"
+"ja" = "ユーザー入力の書式テンプレート"
+
 [persona.provider]
-"zh-CN" = "绑定供应商"
-"zh-TW" = "綁定供應商"
-"en" = "Bound provider"
-"ja" = "使用するプロバイダー"
+"zh-CN" = "对话模型"
+"zh-TW" = "對話模型"
+"en" = "Conversation model"
+"ja" = "会話モデル"
+
+[persona.conversation_model]
+"zh-CN" = "对话模型"
+"zh-TW" = "對話模型"
+"en" = "Conversation model"
+"ja" = "会話モデル"
 
 [persona.provider_inherit]
 "zh-CN" = "跟随全局默认供应商"
@@ -84,17 +120,41 @@ _version = 2
 "en" = "The bound provider no longer exists"
 "ja" = "指定したプロバイダーは存在しません"
 
-[persona.advanced]
-"zh-CN" = "高级设置"
-"zh-TW" = "進階設定"
-"en" = "Advanced"
-"ja" = "詳細設定"
+[persona.live2d_model]
+"zh-CN" = "Live2D 模型绑定"
+"zh-TW" = "Live2D 模型綁定"
+"en" = "Live2D model binding"
+"ja" = "Live2D モデルの関連付け"
 
-[persona.advanced_summary]
-"zh-CN" = "当前上下文的条数与体积上限"
-"zh-TW" = "目前上下文的條數與體積上限"
-"en" = "Message and size limits for the current context"
-"ja" = "現在のコンテキストの件数と容量上限"
+[persona.live2d_inherit]
+"zh-CN" = "跟随全局 Live2D 模型"
+"zh-TW" = "跟隨全域 Live2D 模型"
+"en" = "Follow the global Live2D model"
+"ja" = "グローバル Live2D モデルに従う"
+
+[persona.live2d_missing_option]
+"zh-CN" = "模型不存在：%{path}"
+"zh-TW" = "模型不存在：%{path}"
+"en" = "Missing model: %{path}"
+"ja" = "モデルがありません: %{path}"
+
+[persona.search_live2d]
+"zh-CN" = "搜索 Live2D 模型"
+"zh-TW" = "搜尋 Live2D 模型"
+"en" = "Search Live2D models"
+"ja" = "Live2D モデルを検索"
+
+[persona.live2d_fallback]
+"zh-CN" = "人格绑定的 Live2D 模型不存在，已回退到全局模型：%{path}"
+"zh-TW" = "人格綁定的 Live2D 模型不存在，已回退到全域模型：%{path}"
+"en" = "The persona's Live2D model is missing. Falling back to the global model: %{path}"
+"ja" = "ペルソナの Live2D モデルがありません。グローバルモデルに戻しました: %{path}"
+
+[persona.live2d_missing]
+"zh-CN" = "人格绑定的 Live2D 模型不存在，且没有可用的全局模型：%{path}"
+"zh-TW" = "人格綁定的 Live2D 模型不存在，且沒有可用的全域模型：%{path}"
+"en" = "The persona's Live2D model is missing and no global fallback is available: %{path}"
+"ja" = "ペルソナの Live2D モデルがなく、利用可能なグローバルモデルもありません: %{path}"
 
 [persona.context_messages]
 "zh-CN" = "上下文消息条数上限"
@@ -102,23 +162,167 @@ _version = 2
 "en" = "Max context messages"
 "ja" = "コンテキスト最大件数"
 
-[persona.context_size]
-"zh-CN" = "上下文体积上限 (KiB)"
-"zh-TW" = "上下文體積上限 (KiB)"
-"en" = "Max context size (KiB)"
-"ja" = "コンテキスト最大サイズ (KiB)"
+[persona.context_tokens]
+"zh-CN" = "上下文 token 上限"
+"zh-TW" = "上下文 token 上限"
+"en" = "Max context tokens"
+"ja" = "コンテキスト最大トークン"
 
-[persona.context_default_hint]
-"zh-CN" = "未启用，使用默认上限"
-"zh-TW" = "未啟用，使用預設上限"
-"en" = "Disabled; the default limit is used"
-"ja" = "無効。既定の上限を使用します"
+[persona.context_editor]
+"zh-CN" = "对话上下文管理"
+"zh-TW" = "對話上下文管理"
+"en" = "Conversation context"
+"ja" = "会話コンテキスト管理"
 
-[persona.context_range_hint]
-"zh-CN" = "消息条数 ≤ %{messages}，体积 ≤ %{size} KiB。调小上限后，超出的历史轮次会在下次加载时被丢弃。"
-"zh-TW" = "訊息條數 ≤ %{messages}，體積 ≤ %{size} KiB。調小上限後，超出的歷史輪次會在下次載入時被丟棄。"
-"en" = "Messages ≤ %{messages}, size ≤ %{size} KiB. Lowering a limit drops the oldest turns that no longer fit on the next load."
-"ja" = "件数 ≤ %{messages}、サイズ ≤ %{size} KiB。上限を下げると、収まらない古い履歴は次回読み込み時に破棄されます。"
+[persona.context_stat_messages]
+"zh-CN" = "消息"
+"zh-TW" = "訊息"
+"en" = "Messages"
+"ja" = "メッセージ"
+
+[persona.context_stat_tokens]
+"zh-CN" = "Token"
+"zh-TW" = "Token"
+"en" = "Tokens"
+"ja" = "トークン"
+
+[persona.context_drag_hint]
+"zh-CN" = "拖动卡片调整顺序"
+"zh-TW" = "拖曳卡片調整順序"
+"en" = "Drag cards to reorder"
+"ja" = "カードをドラッグして並べ替え"
+
+[persona.context_selected]
+"zh-CN" = "已选择 %{count} 条"
+"zh-TW" = "已選取 %{count} 則"
+"en" = "%{count} selected"
+"ja" = "%{count} 件選択"
+
+[persona.context_loading]
+"zh-CN" = "正在读取当前上下文"
+"zh-TW" = "正在讀取目前上下文"
+"en" = "Loading current context"
+"ja" = "現在のコンテキストを読み込み中"
+
+[persona.context_empty]
+"zh-CN" = "当前上下文为空"
+"zh-TW" = "目前上下文為空"
+"en" = "The current context is empty"
+"ja" = "現在のコンテキストは空です"
+
+[persona.context_role_user]
+"zh-CN" = "用户"
+"zh-TW" = "使用者"
+"en" = "User"
+"ja" = "ユーザー"
+
+[persona.context_role_assistant]
+"zh-CN" = "助手"
+"zh-TW" = "助理"
+"en" = "Assistant"
+"ja" = "アシスタント"
+
+[persona.context_select_message]
+"zh-CN" = "选择这条消息"
+"zh-TW" = "選取這則訊息"
+"en" = "Select this message"
+"ja" = "このメッセージを選択"
+
+[persona.context_drag_message]
+"zh-CN" = "拖动调整消息顺序"
+"zh-TW" = "拖曳調整訊息順序"
+"en" = "Drag to reorder this message"
+"ja" = "ドラッグしてメッセージを並べ替え"
+
+[persona.context_drag_selected]
+"zh-CN" = "同时拖动已选择的 %{count} 条消息"
+"zh-TW" = "同時拖曳已選取的 %{count} 則訊息"
+"en" = "Drag all %{count} selected messages"
+"ja" = "選択した %{count} 件をまとめてドラッグ"
+
+[persona.context_delete_selected]
+"zh-CN" = "删除已选择的 %{count} 条消息"
+"zh-TW" = "刪除已選取的 %{count} 則訊息"
+"en" = "Delete %{count} selected messages"
+"ja" = "選択した %{count} 件のメッセージを削除"
+
+[persona.context_delete_message]
+"zh-CN" = "删除这条消息"
+"zh-TW" = "刪除這則訊息"
+"en" = "Delete this message"
+"ja" = "このメッセージを削除"
+
+[persona.context_edit]
+"zh-CN" = "编辑"
+"zh-TW" = "編輯"
+"en" = "Edit"
+"ja" = "編集"
+
+[persona.context_copy]
+"zh-CN" = "复制"
+"zh-TW" = "複製"
+"en" = "Copy"
+"ja" = "コピー"
+
+[persona.context_delete]
+"zh-CN" = "删除"
+"zh-TW" = "刪除"
+"en" = "Delete"
+"ja" = "削除"
+
+[persona.context_copied]
+"zh-CN" = "已复制所选消息"
+"zh-TW" = "已複製所選訊息"
+"en" = "Selected messages copied"
+"ja" = "選択したメッセージをコピーしました"
+
+[persona.context_owner_unavailable]
+"zh-CN" = "会话视图不可用，无法清除上下文"
+"zh-TW" = "工作階段檢視不可用，無法清除上下文"
+"en" = "The session view is unavailable, so the context could not be cleared"
+"ja" = "セッションビューが利用できないため、コンテキストを消去できません"
+
+[persona.context_drag_to_delete]
+"zh-CN" = "选择消息后删除，或将消息拖到这里"
+"zh-TW" = "選取訊息後刪除，或將訊息拖曳到這裡"
+"en" = "Select messages to delete, or drag a message here"
+"ja" = "メッセージを選択するか、ここへドラッグして削除"
+
+[persona.context_message_empty]
+"zh-CN" = "上下文消息不能为空，请使用删除按钮移除消息"
+"zh-TW" = "上下文訊息不能為空，請使用刪除按鈕移除訊息"
+"en" = "A context message cannot be empty; use its delete button instead"
+"ja" = "コンテキストメッセージは空にできません。削除ボタンを使用してください"
+
+[persona.context_message_too_large]
+"zh-CN" = "修改后的消息超过当前上下文 token 上限"
+"zh-TW" = "修改後的訊息超過目前上下文 token 上限"
+"en" = "The edited message exceeds the current context token limit"
+"ja" = "編集後のメッセージが現在のコンテキストのトークン上限を超えています"
+
+[persona.context_message_file_too_large]
+"zh-CN" = "单条上下文消息不能超过 4 MiB"
+"zh-TW" = "單則上下文訊息不能超過 4 MiB"
+"en" = "A context message cannot exceed 4 MiB"
+"ja" = "1 件のコンテキストメッセージは 4 MiB を超えることができません"
+
+[persona.context_messages_deleted]
+"zh-CN" = "已删除 %{count} 条上下文消息"
+"zh-TW" = "已刪除 %{count} 則上下文訊息"
+"en" = "Deleted %{count} context messages"
+"ja" = "%{count} 件のコンテキストメッセージを削除しました"
+
+[persona.context_reordered]
+"zh-CN" = "上下文消息顺序已更新"
+"zh-TW" = "上下文訊息順序已更新"
+"en" = "Context message order updated"
+"ja" = "コンテキストメッセージの順序を更新しました"
+
+[persona.context_message_save_failed]
+"zh-CN" = "上下文消息修改失败：%{error}"
+"zh-TW" = "上下文訊息修改失敗：%{error}"
+"en" = "Could not update the context message: %{error}"
+"ja" = "コンテキストメッセージを更新できませんでした: %{error}"
 
 [persona.memory]
 "zh-CN" = "记忆"
@@ -138,17 +342,41 @@ _version = 2
 "en" = "Refresh"
 "ja" = "更新"
 
+[persona.memory_expand]
+"zh-CN" = "展开记忆详情"
+"zh-TW" = "展開記憶詳情"
+"en" = "Expand memory details"
+"ja" = "記憶の詳細を展開"
+
+[persona.memory_collapse]
+"zh-CN" = "收起记忆详情"
+"zh-TW" = "收合記憶詳情"
+"en" = "Collapse memory details"
+"ja" = "記憶の詳細を折りたたむ"
+
+[persona.memory_not_implemented]
+"zh-CN" = "此记忆层的管理功能尚未完成。"
+"zh-TW" = "此記憶層的管理功能尚未完成。"
+"en" = "Management for this memory tier is not implemented yet."
+"ja" = "この記憶層の管理機能はまだ実装されていません。"
+
 [persona.memory_context]
 "zh-CN" = "当前上下文"
 "zh-TW" = "目前上下文"
 "en" = "Current context"
 "ja" = "現在のコンテキスト"
 
-[persona.memory_context_bytes]
-"zh-CN" = "已占用 %{used} / %{total}"
-"zh-TW" = "已佔用 %{used} / %{total}"
-"en" = "%{used} of %{total} used"
-"ja" = "%{total} 中 %{used} 使用"
+[persona.memory_context_messages]
+"zh-CN" = "%{used} / %{total} 条消息"
+"zh-TW" = "%{used} / %{total} 則訊息"
+"en" = "%{used} / %{total} messages"
+"ja" = "%{used} / %{total} 件"
+
+[persona.memory_context_tokens]
+"zh-CN" = "约 %{used} / %{total} token"
+"zh-TW" = "約 %{used} / %{total} token"
+"en" = "About %{used} / %{total} tokens"
+"ja" = "約 %{used} / %{total} トークン"
 
 [persona.memory_medium]
 "zh-CN" = "中期记忆"
@@ -240,7 +468,7 @@ _version = 2
 "en" = "Confirm persona removal"
 "ja" = "ペルソナの削除を確認"
 
-[persona.confirm_delete_message]
+[persona.confirm_delete_persona_message]
 "zh-CN" = "将删除人格「%{persona}」及其绑定的全部记忆，此操作无法撤销。"
 "zh-TW" = "將刪除人格「%{persona}」及其綁定的全部記憶，此操作無法復原。"
 "en" = "This deletes the persona \"%{persona}\" together with all of its memory and cannot be undone."
@@ -251,6 +479,24 @@ _version = 2
 "zh-TW" = "確認刪除"
 "en" = "Delete"
 "ja" = "削除する"
+
+[persona.confirm_delete_message_title]
+"zh-CN" = "确认删除上下文消息"
+"zh-TW" = "確認刪除上下文訊息"
+"en" = "Confirm message removal"
+"ja" = "コンテキストメッセージの削除を確認"
+
+[persona.confirm_delete_context_messages]
+"zh-CN" = "将永久删除人格「%{persona}」当前上下文中的 %{count} 条消息，此操作无法撤销。"
+"zh-TW" = "將永久刪除人格「%{persona}」目前上下文中的 %{count} 則訊息，此操作無法復原。"
+"en" = "This permanently deletes %{count} messages from the current context of persona \"%{persona}\" and cannot be undone."
+"ja" = "ペルソナ「%{persona}」の現在のコンテキストから %{count} 件のメッセージを完全に削除します。この操作は取り消せません。"
+
+[persona.confirm_delete_message_action]
+"zh-CN" = "删除 %{count} 条消息"
+"zh-TW" = "刪除 %{count} 則訊息"
+"en" = "Delete %{count} messages"
+"ja" = "%{count} 件を削除"
 
 [persona.saving]
 "zh-CN" = "正在保存人格设置"
@@ -281,12 +527,6 @@ _version = 2
 "zh-TW" = "至少需要保留一個人格"
 "en" = "At least one persona must remain"
 "ja" = "ペルソナは少なくとも 1 つ必要です"
-
-[persona.error.max_personas]
-"zh-CN" = "人格数量不能超过 %{max}"
-"zh-TW" = "人格數量不能超過 %{max}"
-"en" = "The number of personas cannot exceed %{max}"
-"ja" = "ペルソナは %{max} 件以内にしてください"
 
 [persona.error.duplicate_id]
 "zh-CN" = "人格 ID 重复：%{id}"

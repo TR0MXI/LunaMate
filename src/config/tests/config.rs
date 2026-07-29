@@ -64,6 +64,41 @@ fn missing_config_uses_complete_defaults() {
 }
 
 #[test]
+fn oversized_persona_directory_is_rejected_before_creating_an_unreadable_config() {
+    let directory = TestDirectory::new();
+    let config = LunaConfig::load_from(directory.config_path());
+    let prompt = "x".repeat(64 * 1024);
+    let personas = (0..9)
+        .map(|index| {
+            let mut persona = PersonaConfig::new(format!("p-{index}"), format!("人格 {index}"));
+            persona.system_prompt = prompt.clone();
+            persona.input_prompt = prompt.clone();
+            persona
+        })
+        .collect();
+    let settings = PersonaSettings {
+        personas,
+        selected: Some("p-0".to_owned()),
+        pending_deletions: Vec::new(),
+    };
+
+    let revision = config.reserve_persona_settings_revision();
+    let error = config
+        .set_persona_settings_at_revision(settings, revision)
+        .expect_err("超过完整配置上限的人格目录必须拒绝写入");
+
+    assert!(matches!(error, ConfigWriteError::InvalidValue(_)));
+    assert!(!directory.config_path().exists());
+    assert_eq!(
+        config
+            .persona_settings()
+            .active()
+            .map(|persona| persona.id.as_str()),
+        Some(DEFAULT_PERSONA_ID)
+    );
+}
+
+#[test]
 fn shortcut_settings_publish_and_round_trip() {
     let directory = TestDirectory::new();
     let config = LunaConfig::load_from(directory.config_path());
@@ -877,8 +912,6 @@ enabled = true
 
 [llm]
 selected = "local"
-system_prompt = """你是 LunaMate。
-回答保持简洁。"""
 
 [[llm.models]]
 id = "local"
@@ -903,21 +936,11 @@ future_option = "keep"
         loaded.selected().map(|model| model.id.as_str()),
         Some("local")
     );
-    // 旧版全局提示词在没有 `[persona]` 时迁移为唯一的默认人格。
-    let persona = config.persona_settings();
-    assert_eq!(persona.personas.len(), 1);
-    assert!(
-        persona
-            .active()
-            .expect("默认人格必须存在")
-            .system_prompt
-            .contains("回答保持简洁")
-    );
-
     let mut edited = loaded.as_ref().clone();
     edited.selected_model = Some("cloud".to_owned());
     if let Some(model) = edited.models.first_mut() {
         model.advanced = LlmAdvancedOptions {
+            context_window_tokens: Some(32_768),
             reasoning_effort: Some(ReasoningEffort::Budget(2_048)),
             max_output_tokens: Some(512),
             temperature: Some(0.5),
@@ -957,6 +980,7 @@ future_option = "keep"
     assert_eq!(
         reloaded.model("local").map(|model| model.advanced),
         Some(LlmAdvancedOptions {
+            context_window_tokens: Some(32_768),
             reasoning_effort: Some(ReasoningEffort::Budget(2_048)),
             max_output_tokens: Some(512),
             temperature: Some(0.5),

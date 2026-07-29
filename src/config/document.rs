@@ -156,7 +156,13 @@ pub(super) fn write_config_file(
     document: &DocumentMut,
     nonce: u64,
 ) -> Result<(), ConfigWriteError> {
-    let Err(error) = atomic_replace(path, document.to_string().as_bytes(), nonce) else {
+    let encoded = document.to_string();
+    if encoded.len() as u64 > MAX_CONFIG_FILE_BYTES {
+        return Err(ConfigWriteError::InvalidValue(format!(
+            "配置文件超过 {MAX_CONFIG_FILE_BYTES} 字节上限"
+        )));
+    }
+    let Err(error) = atomic_replace(path, encoded.as_bytes(), nonce) else {
         return Ok(());
     };
     let (operation, error_path, source) = error.into_parts();

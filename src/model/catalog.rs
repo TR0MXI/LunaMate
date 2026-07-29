@@ -140,6 +140,7 @@ impl ModelCatalog {
     }
 
     /// 返回当前选择模型清单的绝对路径。
+    #[cfg(test)]
     pub(crate) fn selected_model_path(&self) -> Option<PathBuf> {
         self.selected
             .as_ref()
@@ -151,11 +152,33 @@ impl ModelCatalog {
         self.selected.as_deref()
     }
 
+    /// 只解析本次扫描确认存在的模型清单，避免调用方自行拼接不可信路径。
+    pub(crate) fn model_path(&self, relative_path: &Path) -> Option<PathBuf> {
+        self.families
+            .iter()
+            .any(|family| family.contains(relative_path))
+            .then(|| self.root.join(relative_path))
+    }
+
+    /// 更新当前运行时模型但不持久化全局选择，供人格绑定切换复用目录校验。
+    pub(crate) fn set_runtime_selection(
+        &mut self,
+        relative_path: Option<&Path>,
+    ) -> Result<Option<PathBuf>, ModelCatalogError> {
+        let Some(relative_path) = relative_path else {
+            self.selected = None;
+            return Ok(None);
+        };
+        let path = self.select_variant(relative_path)?;
+        Ok(Some(path))
+    }
+
     /// 选择一个模型家族，优先保留该家族中当前服装，否则使用首个服装。
     ///
     /// # Errors
     ///
     /// 索引不在当前扫描结果中，或目标家族没有服装清单时返回错误。
+    #[cfg(test)]
     pub(crate) fn select_family(&mut self, index: usize) -> Result<PathBuf, ModelCatalogError> {
         let family = self.families.get(index).ok_or_else(|| {
             ModelCatalogError::message(format!("模型索引不在当前扫描结果中：{index}"))

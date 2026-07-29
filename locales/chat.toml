@@ -90,6 +90,12 @@ _version = 2
 "en" = "Add and select a language model in Settings first"
 "ja" = "設定で言語モデルを追加して選択してください"
 
+[chat.context_window_exhausted]
+"zh-CN" = "模型上下文窗口没有为输入保留足够空间，请增大窗口或减小输出上限和系统提示词"
+"zh-TW" = "模型上下文視窗沒有為輸入保留足夠空間，請增大視窗或減小輸出上限和系統提示詞"
+"en" = "The model context window leaves no room for input; increase it or reduce the output limit and system prompt"
+"ja" = "モデルコンテキストウィンドウに入力領域がありません。ウィンドウを増やすか、出力上限とシステムプロンプトを減らしてください"
+
 [chat.persistence_unavailable]
 "zh-CN" = "本次运行无法保存会话：%{error}"
 "zh-TW" = "本次執行無法儲存對話：%{error}"
@@ -319,10 +325,10 @@ _version = 2
 "ja" = "モデルがツールを繰り返し要求したため、ツール処理を停止しました"
 
 [chat.error.invalid_limits]
-"zh-CN" = "聊天限制必须至少容纳一轮对话和一个字节"
-"zh-TW" = "聊天限制必須至少容納一輪對話和一個位元組"
-"en" = "Chat limits must allow at least one turn and one byte"
-"ja" = "会話制限には少なくとも1ターンと1バイトが必要です"
+"zh-CN" = "聊天消息上限必须至少容纳一轮对话"
+"zh-TW" = "聊天訊息上限必須至少容納一輪對話"
+"en" = "The chat message limit must allow at least one turn"
+"ja" = "会話のメッセージ上限には少なくとも1ターンが必要です"
 
 [chat.error.empty_message]
 "zh-CN" = "消息不能为空"
@@ -353,6 +359,18 @@ _version = 2
 "zh-TW" = "目前串流回應缺少助理訊息"
 "en" = "The streaming response is missing an assistant message"
 "ja" = "ストリーミング応答にアシスタントメッセージがありません"
+
+[chat.error.missing_message]
+"zh-CN" = "上下文消息已不存在"
+"zh-TW" = "上下文訊息已不存在"
+"en" = "The context message no longer exists"
+"ja" = "コンテキストメッセージは存在しません"
+
+[chat.error.invalid_message_order]
+"zh-CN" = "上下文消息顺序无效"
+"zh-TW" = "上下文訊息順序無效"
+"en" = "The context message order is invalid"
+"ja" = "コンテキストメッセージの順序が無効です"
 
 [chat.error.unsupported_snapshot]
 "zh-CN" = "聊天会话快照版本不受支持"

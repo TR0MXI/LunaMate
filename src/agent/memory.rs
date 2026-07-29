@@ -11,9 +11,18 @@
 //! 删除路径；[`MediumTermMemory`] 与 [`LongTermMemory`] 的字段与数据库模式一一对应，
 //! 后续实现写入时不需要再改动人格与设置界面的接口。
 
-use std::{error::Error, fmt, sync::Arc};
+use std::{
+    error::Error,
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::database::{Database, DatabaseError, MemoryTier, MemoryUsage};
 
@@ -70,8 +79,95 @@ pub(super) struct LongTermMemory {
 pub(crate) struct ContextUsage {
     pub(crate) messages: usize,
     pub(crate) max_messages: usize,
-    pub(crate) bytes: usize,
-    pub(crate) max_bytes: usize,
+    pub(crate) tokens: usize,
+    pub(crate) max_tokens: usize,
+}
+
+/// 设置页编辑当前上下文时使用的稳定角色。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ContextMessageRole {
+    User,
+    Assistant,
+}
+
+/// 一次本地工具执行中可安全展示的 Provider 无关记录。
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ToolExecutionTrace {
+    name: String,
+    arguments: Value,
+    result: Value,
+}
+
+impl ToolExecutionTrace {
+    pub(super) fn new(name: String, arguments: Value, result: Value) -> Self {
+        Self {
+            name,
+            arguments,
+            result,
+        }
+    }
+
+    /// 返回稳定工具名，不包含 Provider call ID。
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// 返回模型提交给本地工具的 JSON 参数。
+    pub(crate) fn arguments(&self) -> &Value {
+        &self.arguments
+    }
+
+    /// 返回权限复核后生成的脱敏 JSON 结果。
+    pub(crate) fn result(&self) -> &Value {
+        &self.result
+    }
+}
+
+/// 助手消息附带的可展示推理与本地工具执行详情。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct AssistantTrace {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_executions: Vec<ToolExecutionTrace>,
+}
+
+impl AssistantTrace {
+    pub(super) fn new(reasoning: Option<String>, tool_executions: Vec<ToolExecutionTrace>) -> Self {
+        Self {
+            reasoning,
+            tool_executions,
+        }
+    }
+
+    /// 返回 Provider 提供的可读推理文本；协议签名不会进入此字段。
+    pub(crate) fn reasoning(&self) -> Option<&str> {
+        self.reasoning.as_deref()
+    }
+
+    /// 按实际执行顺序返回本地工具记录。
+    pub(crate) fn tool_executions(&self) -> &[ToolExecutionTrace] {
+        &self.tool_executions
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.reasoning
+            .as_ref()
+            .is_none_or(|reasoning| reasoning.trim().is_empty())
+            && self.tool_executions.is_empty()
+    }
+}
+
+/// 不含内部状态、图片内容和 Provider 类型的可编辑上下文消息。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ContextMessage {
+    pub(crate) id: u64,
+    pub(crate) role: ContextMessageRole,
+    pub(crate) content: String,
+    pub(crate) tokens: usize,
+    pub(crate) fixed_tokens: usize,
+    /// 仅供展示；编辑正文不会把该数据回放给 Provider。
+    pub(crate) trace: Option<AssistantTrace>,
 }
 
 /// 人格设置界面展示的三层记忆用量。
@@ -88,12 +184,30 @@ pub(crate) struct PersonaMemoryUsage {
 /// 增量，因此这里使用只保留最新值的共享状态：视图在每次提交快照时发布，界面按需读取。
 #[derive(Clone, Default)]
 pub(crate) struct LiveContextUsage {
-    latest: Arc<Mutex<Option<(String, ContextUsage)>>>,
+    latest: Arc<Mutex<Option<LiveContextSnapshot>>>,
+    revision: Arc<AtomicU64>,
+}
+
+#[derive(Clone)]
+struct LiveContextSnapshot {
+    persona_id: String,
+    usage: ContextUsage,
+    messages: Vec<ContextMessage>,
 }
 
 impl LiveContextUsage {
-    pub(super) fn publish(&self, persona_id: &str, usage: ContextUsage) {
-        *self.latest.lock() = Some((persona_id.to_owned(), usage));
+    pub(super) fn publish(
+        &self,
+        persona_id: &str,
+        usage: ContextUsage,
+        messages: Vec<ContextMessage>,
+    ) {
+        *self.latest.lock() = Some(LiveContextSnapshot {
+            persona_id: persona_id.to_owned(),
+            usage,
+            messages,
+        });
+        self.revision.fetch_add(1, Ordering::Release);
     }
 
     /// 返回指定人格的实时占用；该人格当前未被加载时返回 `None`。
@@ -101,13 +215,31 @@ impl LiveContextUsage {
         self.latest
             .lock()
             .as_ref()
-            .filter(|(active, _)| active == persona_id)
-            .map(|(_, usage)| *usage)
+            .filter(|snapshot| snapshot.persona_id == persona_id)
+            .map(|snapshot| snapshot.usage)
+    }
+
+    /// 返回指定人格实时上下文最近一次发布的 revision；非活动人格返回 `None`。
+    pub(crate) fn revision_for(&self, persona_id: &str) -> Option<u64> {
+        self.latest
+            .lock()
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.persona_id == persona_id)
+            .then(|| self.revision.load(Ordering::Acquire))
+    }
+
+    fn messages(&self, persona_id: &str) -> Option<Vec<ContextMessage>> {
+        self.latest
+            .lock()
+            .as_ref()
+            .filter(|snapshot| snapshot.persona_id == persona_id)
+            .map(|snapshot| snapshot.messages.clone())
     }
 }
 
 /// 需要清除的记忆范围。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // 中期与长期页面暂时留空，但存储层仍需区分清理范围。
 pub(crate) enum MemoryScope {
     /// 当前对话上下文。
     Context,
@@ -138,13 +270,19 @@ impl MemoryScope {
 #[derive(Clone)]
 pub(crate) struct PersonaMemory {
     database: Option<Arc<Database>>,
+    session_document_lock: super::store::SessionDocumentLock,
     persona_id: String,
 }
 
 impl PersonaMemory {
-    pub(super) fn new(database: Option<Arc<Database>>, persona_id: impl Into<String>) -> Self {
+    pub(super) fn new(
+        database: Option<Arc<Database>>,
+        session_document_lock: super::store::SessionDocumentLock,
+        persona_id: impl Into<String>,
+    ) -> Self {
         Self {
             database,
+            session_document_lock,
             persona_id: persona_id.into(),
         }
     }
@@ -168,23 +306,40 @@ impl PersonaMemory {
             .map_err(MemoryError::Database)?;
         let context = match live.get(&self.persona_id) {
             Some(usage) => usage,
-            None => {
-                let (messages, bytes) =
-                    super::store::persona_context_usage(database, &self.persona_id)
-                        .await
-                        .map_err(|error| MemoryError::Stored(error.to_string()))?;
-                ContextUsage {
-                    messages,
-                    bytes,
-                    ..limits
-                }
-            }
+            None => super::store::persona_context_usage(
+                database,
+                &self.session_document_lock,
+                &self.persona_id,
+                limits,
+            )
+            .await
+            .map_err(|error| MemoryError::Stored(error.to_string()))?,
         };
         Ok(PersonaMemoryUsage {
             context,
             medium: memory.medium,
             long: memory.long,
         })
+    }
+
+    /// 返回设置页可编辑的当前上下文；活动人格优先使用内存快照。
+    pub(crate) async fn context_messages(
+        &self,
+        live: LiveContextUsage,
+        limits: ContextUsage,
+    ) -> Result<Vec<ContextMessage>, MemoryError> {
+        if let Some(messages) = live.messages(&self.persona_id) {
+            return Ok(messages);
+        }
+        let database = self.database.as_ref().ok_or(MemoryError::Unavailable)?;
+        super::store::persona_context_messages(
+            database,
+            &self.session_document_lock,
+            &self.persona_id,
+            limits,
+        )
+        .await
+        .map_err(|error| MemoryError::Stored(error.to_string()))
     }
 
     /// 删除该人格在数据库中的记忆；短期上下文由会话存储单独清除。

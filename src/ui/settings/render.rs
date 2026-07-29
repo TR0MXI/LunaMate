@@ -79,8 +79,11 @@ impl SettingsView {
                             label,
                             active_section == section,
                             palette,
-                            cx.listener(move |this: &mut SettingsView, _, _, cx| {
+                            cx.listener(move |this: &mut SettingsView, _, window, cx| {
                                 this.set_section(section, cx);
+                                if section == ConfigSection::Persona {
+                                    this.refresh_persona_live2d_models(window, cx);
+                                }
                             }),
                         )
                     })),
