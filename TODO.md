@@ -180,8 +180,8 @@ GPUI 点击
 - [x] 录音时显示底部音量波形，并在用户说话时打断流式回复、保留带标注的部分上下文。
 - [x] 通用构建固定包含 macOS Metal 或 Windows/Linux Vulkan，运行时按偏好启用并在失败时回退 CPU。
 - [x] 移除本地 `whisper-rs-sys` patch，VAD 只通过 whisper-rs 公开安全接口推理。
-- [ ] whisper-rs 修复 safe abort callback 的 trampoline 类型与所有权后，移除 `raw-api`
-  和本地 abort FFI。
+- [x] 移除同步 abort setter 不需要的 `raw-api` feature。
+- [ ] whisper-rs 修复 safe abort callback 的 trampoline 类型与所有权后，移除本地 abort FFI。
 - [x] 提供可录入单键或多修饰键组合的四个全局动作，并通过 `global-hotkey` 支持 Windows、macOS
   与 X11。
 - [x] 通过 XDG GlobalShortcuts portal 补齐原生 Wayland 快捷键，以稳定应用/动作 ID 恢复授权，

@@ -68,7 +68,7 @@ pub(crate) use types::{
 };
 pub(crate) use voice::{SharedVoiceSettings, VoiceMode, VoiceSettings};
 use voice::{parse_voice_settings, write_voice_settings};
-/// 全局应用配置；首次访问时从用户配置目录加载，并兼容已有工作目录配置。
+/// 全局应用配置；首次访问时从平台用户配置目录加载。
 pub(crate) static CONFIG: LazyLock<LunaConfig> = LazyLock::new(LunaConfig::load);
 
 #[derive(Clone, Debug, Default)]

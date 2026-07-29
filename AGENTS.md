@@ -7,6 +7,20 @@
 - 已实现能力以源码为准，计划与验收项以 `TODO.md` 为准；Mocari 来源和本地差异以
   `vendor/mocari/LUNAMATE.md` 为准。
 
+## 快速原型阶段
+
+LunaMate 尚未发布任何版本。首个公开版本发布前，配置、数据库、会话快照和内部 API
+都不提供向后兼容保证：
+
+- 修改持久化结构或内部接口时直接更新唯一的当前格式，不保留旧字段读取、迁移器、别名、
+  旧路径探测、废弃接口包装或只验证旧格式的测试；开发者自行删除并重建本地原型数据。
+- 不为尚未发布或没有外部消费者的代码预留兼容层。只有已经发布的格式、明确存在的外部
+  消费者，或任务显式要求时，才能引入迁移与兼容逻辑，并必须写明移除条件。
+- 当前格式的缺省值、无效输入诊断、损坏数据恢复、安全校验，以及平台或运行时能力回退
+  不属于旧版本兼容，不得以清理兼容代码为由删除。
+- 为当前依赖缺陷保留的补丁或适配必须确有构建、正确性或安全需要，记录上游状态与移除条件；
+  上游条件满足后立即删除，不把临时补丁演变为长期兼容层。
+
 ## 项目边界
 
 LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅提供二进制应用；
@@ -54,11 +68,11 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
   GlobalShortcuts portal、稳定应用/动作 ID 和合成器返回的绑定子集，不得把 preferred trigger
   或本地配置伪装为注册成功。发布包必须安装与应用 ID 匹配的 desktop entry。
 - `vendor/mocari` 是第三方源码边界；保留 MIT `LICENSE`、原始 manifest 和
-  `LUNAMATE.md`，本地修改限于必要的兼容或安全修复，并同步记录差异。升级相关依赖时
+  `LUNAMATE.md`，本地修改限于当前集成、安全或性能所必需的修复，并同步记录差异。升级相关依赖时
   检查 `[patch.crates-io]` 是否可以移除。
 - Silero VAD 只使用 whisper-rs 公开安全接口和有界滚动上下文，不 vendor 或 patch
-  `whisper-rs-sys`。`raw-api` 只用于转写线程的同步 abort callback；whisper-rs 修复 safe
-  callback 的 trampoline 类型与所有权后，必须删除该 feature 和本地 abort FFI。
+  `whisper-rs-sys`。同步转写通过 whisper-rs 公开的 unsafe setter 安装有界生命周期的 abort
+  callback；whisper-rs 修复 safe callback 的 trampoline 类型与所有权后，必须删除本地 abort FFI。
 - Whisper 通用构建不暴露 LunaMate GPU feature：macOS 固定包含 Metal，Windows 和 Linux
   固定包含 Vulkan。CUDA、ROCm 与 Intel SYCL 会直接链接供应商运行库，不得加入通用二进制；
   Windows 和 Linux 运行时由系统或 GPU 驱动提供 Vulkan loader。如需支持供应商后端，必须先
@@ -111,7 +125,7 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 
 ## 配置与 LLM
 
-- 默认在用户配置目录保存 `config.toml`，兼容工作目录中的旧文件；每个人格的有界会话仅
+- 默认在用户配置目录保存 `config.toml`，不探测或迁移工作目录中的旧文件；每个人格的有界会话仅
   保存到工作目录下固定的 `./data/lunamate.db` 嵌入式数据库。配置写入必须原子化，数据库
   目录和配置文件必须限制本地访问权限。
 - Provider、endpoint、模型、模型调用参数和系统提示词来自配置；持久化 LunaMate 稳定

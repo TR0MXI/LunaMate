@@ -77,7 +77,7 @@ fn default_appearance_is_already_normalized() {
 }
 
 #[test]
-fn language_identifiers_round_trip_and_accept_regional_aliases() {
+fn language_identifiers_round_trip_and_reject_noncanonical_values() {
     for language in [
         AppLanguage::SimplifiedChinese,
         AppLanguage::TraditionalChinese,
@@ -87,19 +87,9 @@ fn language_identifiers_round_trip_and_accept_regional_aliases() {
         assert_eq!(AppLanguage::from_id(language.id()), Some(language));
     }
 
-    assert_eq!(
-        AppLanguage::from_id("zh"),
-        Some(AppLanguage::SimplifiedChinese)
-    );
-    assert_eq!(
-        AppLanguage::from_id("zh-HK"),
-        Some(AppLanguage::TraditionalChinese)
-    );
-    for alias in ["en-US", "en-GB"] {
-        assert_eq!(AppLanguage::from_id(alias), Some(AppLanguage::English));
+    for value in ["zh", "zh-HK", "en-US", "en-GB", "ja-JP", "ko"] {
+        assert_eq!(AppLanguage::from_id(value), None);
     }
-    assert_eq!(AppLanguage::from_id("ja-JP"), Some(AppLanguage::Japanese));
-    assert_eq!(AppLanguage::from_id("ko"), None);
 }
 
 #[test]

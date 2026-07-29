@@ -366,12 +366,6 @@ _version = 2
 "en" = "The context message no longer exists"
 "ja" = "コンテキストメッセージは存在しません"
 
-[chat.error.invalid_message_order]
-"zh-CN" = "上下文消息顺序无效"
-"zh-TW" = "上下文訊息順序無效"
-"en" = "The context message order is invalid"
-"ja" = "コンテキストメッセージの順序が無効です"
-
 [chat.error.unsupported_snapshot]
 "zh-CN" = "聊天会话快照版本不受支持"
 "zh-TW" = "不支援此聊天工作階段快照版本"

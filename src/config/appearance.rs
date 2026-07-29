@@ -31,10 +31,10 @@ impl AppLanguage {
     /// 从配置文件标识恢复语言；未知值不影响其余配置。
     pub(crate) fn from_id(value: &str) -> Option<Self> {
         match value {
-            "zh-CN" | "zh" => Some(Self::SimplifiedChinese),
-            "zh-TW" | "zh-HK" => Some(Self::TraditionalChinese),
-            "en" | "en-US" | "en-GB" => Some(Self::English),
-            "ja" | "ja-JP" => Some(Self::Japanese),
+            "zh-CN" => Some(Self::SimplifiedChinese),
+            "zh-TW" => Some(Self::TraditionalChinese),
+            "en" => Some(Self::English),
+            "ja" => Some(Self::Japanese),
             _ => None,
         }
     }

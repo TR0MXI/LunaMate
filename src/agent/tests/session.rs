@@ -449,7 +449,7 @@ fn restoring_streaming_response_marks_it_interrupted() {
 }
 
 #[test]
-fn assistant_trace_uses_legacy_defaults_and_round_trips_with_the_same_message() {
+fn assistant_trace_round_trips_with_the_same_message() {
     let mut session = ChatSession::default();
     let started = session.start_turn("hello").expect("测试轮次应当可开始");
     session
@@ -470,18 +470,36 @@ fn assistant_trace_uses_legacy_defaults_and_round_trips_with_the_same_message() 
     )
     .expect("含详情快照应可恢复");
     assert_eq!(restored.messages()[1].trace(), Some(&expected));
+}
 
-    let mut legacy: serde_json::Value = serde_json::from_slice(&encoded).expect("快照应为 JSON");
-    legacy["messages"][1]
-        .as_object_mut()
-        .expect("消息应为 JSON 对象")
-        .remove("trace");
-    let restored_legacy = ChatSession::from_snapshot(
-        serde_json::from_value(legacy).expect("缺少新字段的旧快照仍应可解码"),
-        ChatLimits::default(),
-    )
-    .expect("缺少详情字段的旧快照仍应可恢复");
-    assert!(restored_legacy.messages()[1].trace().is_none());
+#[test]
+fn snapshot_requires_every_field_in_the_current_message_and_trace_format() {
+    let mut session = ChatSession::default();
+    let started = session.start_turn("hello").expect("测试轮次应当可开始");
+    assert!(
+        session
+            .attach_response_trace(started.response_id, reasoning_trace("reasoning"))
+            .expect("助手详情应可附加")
+    );
+    assert!(session.finish_response(started.response_id));
+    let current = serde_json::to_value(session.snapshot(1)).expect("当前快照应可编码");
+
+    for (message_index, field) in [(0, "image"), (0, "trace")] {
+        let mut missing = current.clone();
+        missing["messages"][message_index]
+            .as_object_mut()
+            .expect("消息应为 JSON 对象")
+            .remove(field);
+        assert!(serde_json::from_value::<ChatSessionSnapshot>(missing).is_err());
+    }
+    for field in ["reasoning", "tool_executions"] {
+        let mut missing = current.clone();
+        missing["messages"][1]["trace"]
+            .as_object_mut()
+            .expect("助手详情应为 JSON 对象")
+            .remove(field);
+        assert!(serde_json::from_value::<ChatSessionSnapshot>(missing).is_err());
+    }
 }
 
 #[test]
@@ -492,7 +510,8 @@ fn untrusted_snapshot_rejects_user_invalid_and_oversized_trace_metadata() {
     let base = serde_json::to_value(session.snapshot(1)).expect("测试快照应可转换为 JSON");
 
     let mut user_trace = base.clone();
-    user_trace["messages"][0]["trace"] = serde_json::json!({"reasoning": "forbidden"});
+    user_trace["messages"][0]["trace"] =
+        serde_json::json!({"reasoning": "forbidden", "tool_executions": []});
     let snapshot = serde_json::from_value(user_trace).expect("详情结构本身应可反序列化");
     assert!(matches!(
         ChatSession::from_snapshot(snapshot, ChatLimits::default()),
@@ -500,8 +519,10 @@ fn untrusted_snapshot_rejects_user_invalid_and_oversized_trace_metadata() {
     ));
 
     let mut oversized_reasoning = base.clone();
-    oversized_reasoning["messages"][1]["trace"] =
-        serde_json::json!({"reasoning": "x".repeat(MAX_TRACE_REASONING_BYTES + 1)});
+    oversized_reasoning["messages"][1]["trace"] = serde_json::json!({
+        "reasoning": "x".repeat(MAX_TRACE_REASONING_BYTES + 1),
+        "tool_executions": []
+    });
     let snapshot = serde_json::from_value(oversized_reasoning).expect("超限详情结构应可反序列化");
     assert!(matches!(
         ChatSession::from_snapshot(snapshot, ChatLimits::default()),
@@ -510,6 +531,7 @@ fn untrusted_snapshot_rejects_user_invalid_and_oversized_trace_metadata() {
 
     let mut too_many_tools = base;
     too_many_tools["messages"][1]["trace"] = serde_json::json!({
+        "reasoning": null,
         "tool_executions": (0..=MAX_MESSAGE_TOOL_EXECUTIONS)
             .map(|index| serde_json::json!({
                 "name": format!("tool_{index}"),
@@ -552,7 +574,7 @@ fn untrusted_snapshot_rejects_aggregate_trace_byte_and_count_overflow() {
         .skip(1)
         .step_by(2)
     {
-        message["trace"] = serde_json::json!({"reasoning": "r"});
+        message["trace"] = serde_json::json!({"reasoning": "r", "tool_executions": []});
     }
     let snapshot = serde_json::from_value(too_many).expect("聚合超限快照应可反序列化");
     assert!(matches!(
@@ -569,7 +591,10 @@ fn untrusted_snapshot_rejects_aggregate_trace_byte_and_count_overflow() {
         .step_by(2)
         .take(18)
     {
-        message["trace"] = serde_json::json!({"reasoning": "r".repeat(60 * 1024)});
+        message["trace"] = serde_json::json!({
+            "reasoning": "r".repeat(60 * 1024),
+            "tool_executions": []
+        });
     }
     let snapshot = serde_json::from_value(too_large).expect("聚合字节超限快照应可反序列化");
     assert!(matches!(
@@ -809,87 +834,6 @@ fn deleting_multiple_messages_is_atomic_while_a_selected_turn_is_active() {
 }
 
 #[test]
-fn reordered_messages_round_trip_and_preserve_the_requested_pair_order() {
-    let mut session = ChatSession::default();
-    let first = session.start_turn("question 1").expect("第一轮应可开始");
-    session
-        .append_response(first.response_id, "answer 1")
-        .expect("第一轮回复应可写入");
-    assert!(
-        session
-            .attach_response_trace(first.response_id, reasoning_trace("trace 1"))
-            .expect("第一轮详情应可附加")
-    );
-    assert!(session.finish_response(first.response_id));
-    let second = session.start_turn("question 2").expect("第二轮应可开始");
-    session
-        .append_response(second.response_id, "answer 2")
-        .expect("第二轮回复应可写入");
-    assert!(
-        session
-            .attach_response_trace(second.response_id, reasoning_trace("trace 2"))
-            .expect("第二轮详情应可附加")
-    );
-    assert!(session.finish_response(second.response_id));
-    let ids = session
-        .messages()
-        .iter()
-        .map(ChatMessage::id)
-        .collect::<Vec<_>>();
-    let reordered = [ids[2], ids[3], ids[0], ids[1]];
-
-    assert!(
-        session
-            .reorder_messages(&reordered)
-            .expect("完整消息集合应可重排")
-    );
-    assert_eq!(
-        session
-            .messages()
-            .iter()
-            .map(ChatMessage::id)
-            .collect::<Vec<_>>(),
-        reordered
-    );
-    assert_eq!(
-        session.messages()[1]
-            .trace()
-            .and_then(AssistantTrace::reasoning),
-        Some("trace 2")
-    );
-    assert_eq!(
-        session.messages()[3]
-            .trace()
-            .and_then(AssistantTrace::reasoning),
-        Some("trace 1")
-    );
-
-    let snapshot = session.snapshot(1);
-    let mut restored = ChatSession::from_snapshot(snapshot, ChatLimits::default())
-        .expect("重排后的轮次分组必须可恢复");
-    assert_eq!(
-        restored.messages()[1]
-            .trace()
-            .and_then(AssistantTrace::reasoning),
-        Some("trace 2")
-    );
-    assert_eq!(
-        restored.messages()[3]
-            .trace()
-            .and_then(AssistantTrace::reasoning),
-        Some("trace 1")
-    );
-    let next = restored.start_turn("next").expect("恢复后应可继续对话");
-    assert_eq!(
-        next.context
-            .iter()
-            .map(|message| message.content.as_str())
-            .collect::<Vec<_>>(),
-        ["question 2", "answer 2", "question 1", "answer 1", "next"]
-    );
-}
-
-#[test]
 fn deleting_messages_never_transfers_an_assistant_trace() {
     let mut session = ChatSession::default();
     for (question, answer, reasoning) in [
@@ -944,66 +888,6 @@ fn deleting_messages_never_transfers_an_assistant_trace() {
             .and_then(ChatMessage::trace)
             .and_then(AssistantTrace::reasoning),
         Some("trace 2")
-    );
-}
-
-#[test]
-fn arbitrary_reordering_only_sends_newly_valid_turns_to_the_provider() {
-    let mut session = ChatSession::default();
-    let first = session.start_turn("question 1").expect("第一轮应可开始");
-    session
-        .append_response(first.response_id, "answer 1")
-        .expect("第一轮回复应可写入");
-    assert!(session.finish_response(first.response_id));
-    let second = session.start_turn("question 2").expect("第二轮应可开始");
-    session
-        .append_response(second.response_id, "answer 2")
-        .expect("第二轮回复应可写入");
-    assert!(session.finish_response(second.response_id));
-    let ids = session
-        .messages()
-        .iter()
-        .map(ChatMessage::id)
-        .collect::<Vec<_>>();
-    let reordered = [ids[1], ids[2], ids[3], ids[0]];
-
-    assert!(session.reorder_messages(&reordered).is_ok());
-    let next = session.start_turn("next").expect("重排后应可继续对话");
-    assert_eq!(
-        next.context
-            .iter()
-            .map(|message| message.content.as_str())
-            .collect::<Vec<_>>(),
-        ["question 2", "answer 2", "next"]
-    );
-}
-
-#[test]
-fn reordering_rejects_a_partial_or_duplicate_message_set() {
-    let mut session = ChatSession::default();
-    let turn = session.start_turn("question").expect("测试轮次应可开始");
-    assert!(session.finish_response(turn.response_id));
-    let ids = session
-        .messages()
-        .iter()
-        .map(ChatMessage::id)
-        .collect::<Vec<_>>();
-
-    assert!(matches!(
-        session.reorder_messages(&[ids[0]]),
-        Err(ChatError::InvalidMessageOrder)
-    ));
-    assert!(matches!(
-        session.reorder_messages(&[ids[0], ids[0]]),
-        Err(ChatError::InvalidMessageOrder)
-    ));
-    assert_eq!(
-        session
-            .messages()
-            .iter()
-            .map(ChatMessage::id)
-            .collect::<Vec<_>>(),
-        ids
     );
 }
 

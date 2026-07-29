@@ -39,13 +39,6 @@ Local changes:
   deformer and its type once per batch instead of once per point, so the
   per-point path no longer repeats range checks, checked arithmetic, grid length
   validation, corner-basis reconstruction, enum dispatch or `sin`/`cos`.
-  `warp_deformer_transform_target`, `warp_deformer_transform_inside` and
-  `rotation_deformer_transform_point` keep their original signatures and
-  fallibility and are bit-for-bit identical to the previous implementation
-  (verified against the pre-change code over 31.2M randomized cases covering the
-  interior, both extrapolation bands, degenerate `cols`/`rows`, short grids and
-  empty vertex slices). See `profile/frofile.md` for the profile that motivated
-  this change.
 - MOC3 count tables have structural, per-section, and aggregate complexity
   limits before parser allocation. Generic sections and id tables use fallible
   reservations so malformed models return an error instead of requesting an

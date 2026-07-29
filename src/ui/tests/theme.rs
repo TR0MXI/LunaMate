@@ -155,7 +155,7 @@ fn custom_theme_applies_user_colors_to_primary_background_and_selection() {
 
 #[test]
 fn unparsable_custom_colors_keep_the_base_scheme_instead_of_panicking() {
-    // 已持久化的旧配置可能带有不合法颜色；主题构造必须降级而不是崩溃。
+    // 主题构造仍需防御未经配置层规范化的颜色，避免内部调用失误导致崩溃。
     let config = theme_config(
         ThemePreset::Custom,
         &CustomThemeSettings {

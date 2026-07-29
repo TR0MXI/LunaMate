@@ -8,10 +8,6 @@ use super::DatabaseError;
 const INITIAL_SCHEMA: &str = r#"
 BEGIN TRANSACTION;
 
-DEFINE TABLE IF NOT EXISTS schema_version SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS version ON schema_version TYPE int ASSERT $value > 0;
-DEFINE FIELD IF NOT EXISTS updated_at ON schema_version TYPE datetime VALUE time::now();
-
 DEFINE TABLE IF NOT EXISTS app_storage SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS scope ON app_storage TYPE string;
 DEFINE FIELD IF NOT EXISTS document_key ON app_storage TYPE string;
@@ -42,8 +38,6 @@ DEFINE INDEX IF NOT EXISTS agent_memory_expiry ON agent_memory FIELDS expires_at
 DEFINE INDEX IF NOT EXISTS agent_memory_tags ON agent_memory FIELDS tags.*;
 DEFINE ANALYZER IF NOT EXISTS agent_memory_text TOKENIZERS class, punct FILTERS lowercase;
 DEFINE INDEX IF NOT EXISTS agent_memory_content ON agent_memory FIELDS content FULLTEXT ANALYZER agent_memory_text BM25;
-
-UPSERT ONLY schema_version:current SET version = 1;
 
 COMMIT TRANSACTION;
 "#;

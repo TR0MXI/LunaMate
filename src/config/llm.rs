@@ -700,7 +700,6 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
         } else {
             table.remove("api_key");
         }
-        table.remove("api_key_env");
         write_advanced_options(&mut table, &model.advanced);
         models.push(table);
     }

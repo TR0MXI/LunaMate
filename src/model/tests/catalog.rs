@@ -3,9 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::model::catalog::{
-    MAX_DISCOVERY_DEPTH, ModelCatalog, ModelFamily, ensure_model_directory,
-};
+use crate::model::catalog::{MAX_DISCOVERY_DEPTH, ModelCatalog, ensure_model_directory};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -50,7 +48,7 @@ fn manifests_under_one_model_directory_become_outfits() {
     assert_eq!(catalog.families().len(), 1);
     assert_eq!(catalog.families()[0].display_name(), "luna");
     assert_eq!(catalog.families()[0].variants().len(), 2);
-    assert!(catalog.selected_model_path().is_some());
+    assert!(catalog.selected_relative_path().is_some());
 }
 
 #[test]
@@ -99,7 +97,7 @@ fn multiple_model_families_require_a_valid_configured_selection() {
     let catalog =
         ModelCatalog::load(directory.path().to_path_buf(), None).expect("测试模型目录应当可以扫描");
     assert_eq!(catalog.families().len(), 2);
-    assert_eq!(catalog.selected_model_path(), None);
+    assert_eq!(catalog.selected_relative_path(), None);
 }
 
 #[test]
@@ -132,7 +130,7 @@ fn missing_model_root_is_treated_as_an_empty_catalog() {
     assert_eq!(catalog.counts(), (0, 0));
     assert_eq!(catalog.root(), root);
     assert!(catalog.warning().is_none());
-    assert!(catalog.selected_model_path().is_none());
+    assert!(catalog.selected_relative_path().is_none());
     assert!(catalog.selected_family().is_none());
 }
 
@@ -209,65 +207,6 @@ fn variant_names_drop_the_redundant_family_prefix() {
 
     // 变体按相对路径排序；与家族同名的清单没有可用后缀，保留完整名称以免出现空标签。
     assert_eq!(names, ["alt", "winter", "luna", "summer"]);
-}
-
-#[test]
-fn selecting_a_family_keeps_the_current_outfit_when_it_still_belongs_to_it() {
-    let directory = TestDirectory::new();
-    for family in ["luna", "mate"] {
-        let model_directory = directory.path().join(family);
-        fs::create_dir_all(&model_directory).expect("测试模型目录应当可以创建");
-        for stem in ["a", "b"] {
-            fs::write(
-                model_directory.join(format!("{family}-{stem}.model3.json")),
-                "{}",
-            )
-            .expect("模型清单应当可以创建");
-        }
-    }
-    let selected = Path::new("luna/luna-b.model3.json");
-    let mut catalog = ModelCatalog::load(directory.path().to_path_buf(), Some(selected))
-        .expect("测试模型目录应当可以扫描");
-
-    let luna = catalog
-        .families()
-        .iter()
-        .position(|family| family.display_name() == "luna")
-        .expect("扫描结果应当包含 luna 家族");
-    let mate = catalog
-        .families()
-        .iter()
-        .position(|family| family.display_name() == "mate")
-        .expect("扫描结果应当包含 mate 家族");
-
-    assert_eq!(
-        catalog.select_family(luna).expect("重选当前家族应当成功"),
-        directory.path().join(selected)
-    );
-    assert_eq!(
-        catalog.select_family(mate).expect("切换家族应当成功"),
-        directory.path().join("mate/mate-a.model3.json")
-    );
-    assert_eq!(
-        catalog
-            .selected_family()
-            .map(ModelFamily::display_name)
-            .expect("切换后应当有选中家族"),
-        "mate"
-    );
-}
-
-#[test]
-fn selecting_a_family_outside_the_scan_result_is_rejected() {
-    let directory = TestDirectory::new();
-    fs::write(directory.path().join("luna.model3.json"), "{}").expect("模型清单应当可以创建");
-    let mut catalog =
-        ModelCatalog::load(directory.path().to_path_buf(), None).expect("测试模型目录应当可以扫描");
-
-    let error = catalog.select_family(9).expect_err("越界索引应当被拒绝");
-
-    assert!(error.to_string().contains("模型索引不在当前扫描结果中"));
-    assert!(std::error::Error::source(&error).is_none());
 }
 
 #[test]

@@ -9,7 +9,6 @@ fn voice_mode_ids_round_trip() {
     for mode in [VoiceMode::Off, VoiceMode::Auto, VoiceMode::PushToTalk] {
         assert_eq!(VoiceMode::from_id(mode.id()), Some(mode));
     }
-    assert_eq!(VoiceMode::from_id("mixed"), Some(VoiceMode::Auto));
 }
 
 #[test]

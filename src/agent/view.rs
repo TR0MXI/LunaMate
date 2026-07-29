@@ -419,7 +419,7 @@ impl AgentView {
         self.send_message_with_image(text.to_owned(), None, CONFIG.appearance().language, cx)
     }
 
-    /// 从全局配置刷新供应商与人格；活动请求继续使用启动时的旧快照。
+    /// 从全局配置刷新供应商与人格；活动请求继续使用各自启动时的快照。
     ///
     /// 当前人格或其上下文限制发生变化时，先落盘旧人格的上下文，再异步换入新人格的
     /// 上下文；换入完成前拒绝新消息，避免两个人格的记忆互相污染。

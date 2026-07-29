@@ -5,6 +5,11 @@
 LunaMate 是一款使用 Rust 构建的跨平台 Live2D 桌面宠物。项目以 GPUI 提供桌面窗口和
 设置界面，以 Mocari 驱动 Cubism 模型，并通过 genai 接入本地或云端语言模型。
 
+> [!WARNING]
+> LunaMate 尚处于快速原型阶段，尚未发布任何版本。首个公开版本前，配置格式、数据库、
+> 会话快照和内部接口可能直接发生破坏性变更，不提供旧数据迁移或向后兼容保证。更新源码后，
+> 可能需要删除本地 `config.toml` 和 `data/lunamate.db` 并重新配置。
+
 项目仍在开发中，目前包含以下能力：
 
 - Live2D 模型渲染、动作、表情、视线跟随，以及按 HitArea 部位触发的 Agent 互动。
@@ -92,18 +97,19 @@ Windows 和 Linux 运行环境仍需由 GPU 驱动或系统软件包提供 Vulka
 时 LunaMate 自动重试 CPU。whisper.cpp 1.8.3 当前仍强制 Silero VAD 使用 CPU，因此 GPU 开关
 只影响 Whisper 转写。
 
-### VAD 窗口与 raw-api 例外
+### VAD 窗口与推理取消
 
 自动模式只使用 `whisper-rs 0.16.0` 的公开安全 VAD API，不包含本地
 `whisper-rs-sys` patch。LunaMate 每积累 256 ms 音频，就用最近约 1.024 秒的重叠窗口重新
 推理，并只消费最新 256 ms 的概率。每次调用会从零状态开始，再由窗口中的历史音频预热
 Silero LSTM；概率会与对应 PCM 帧重新对齐后再进入预录、迟滞和静音状态机。
 
-`raw-api` 当前仅用于 `src/voice/transcribe.rs` 的 abort callback，让配置切换和应用关闭可以
-中断同步 Whisper 推理。没有使用 0.16.0 的 `FullParams::set_abort_callback_safe`，因为该版本
-的 callback trampoline 类型与 allocation 所有权尚不能满足可验证的生命周期。本地
-user-data 指针只在同步 `whisper_full_with_state` 调用期间有效，且 callback 只读取线程安全的
-取消状态。whisper-rs 修复安全 callback 后，应删除 `raw-api` feature 和这处 `unsafe`。
+`src/voice/transcribe.rs` 通过 whisper-rs 公开的 unsafe setter 安装 abort callback，让配置切换
+和应用关闭可以中断同步 Whisper 推理；这条路径不需要 `raw-api` feature。没有使用 0.16.0 的
+`FullParams::set_abort_callback_safe`，因为该版本的 callback trampoline 类型与 allocation
+所有权尚不能满足可验证的生命周期。本地 user-data 指针只在同步
+`whisper_full_with_state` 调用期间有效，且 callback 只读取线程安全的取消状态。whisper-rs
+修复安全 callback 后，应删除这处本地 `unsafe` callback。
 
 ## 许可证
 

@@ -117,7 +117,7 @@ fn raster_dimensions_never_exceed_the_long_edge_cap() {
 
 #[test]
 fn fixed_window_size_presets_still_fit_small_displays() {
-    // 用户在大屏选择的预设迁移到小屏后不能超出可用区域。
+    // 用户把窗口移到小屏后，已选预设不能超出新的可用区域。
     let [width, height] = desktop_pet_window_size(400.0, 300.0, ModelWindowSize::ExtraLarge);
 
     assert!(width <= 400.0 * DISPLAY_MARGIN_FRACTION);

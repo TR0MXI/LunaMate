@@ -38,14 +38,6 @@ impl ShortcutAction {
     pub(crate) fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|action| action.id() == id)
     }
-
-    const fn legacy_id(self) -> Option<&'static str> {
-        match self {
-            Self::ToggleSettings => Some("open_settings"),
-            Self::ToggleChatInput => Some("open_chat_input"),
-            Self::VoiceInput | Self::ToggleDesktopPet => None,
-        }
-    }
 }
 
 /// 一组已经规范化、可交给系统注册的键盘按键。
@@ -278,12 +270,7 @@ pub(super) fn parse_shortcut_settings(
 
     let mut used = HashSet::with_capacity(ShortcutAction::ALL.len());
     for action in ShortcutAction::ALL {
-        let item = shortcuts.get(action.id()).or_else(|| {
-            action
-                .legacy_id()
-                .and_then(|legacy_id| shortcuts.get(legacy_id))
-        });
-        let Some(item) = item else {
+        let Some(item) = shortcuts.get(action.id()) else {
             continue;
         };
         let Some(id) = item.as_str() else {
@@ -315,9 +302,6 @@ pub(super) fn parse_shortcut_settings(
 pub(super) fn write_shortcut_settings(document: &mut DocumentMut, settings: &ShortcutSettings) {
     ensure_table_like(&mut document["shortcuts"]);
     for action in ShortcutAction::ALL {
-        if let Some(legacy_id) = action.legacy_id() {
-            remove_key(document, "shortcuts", legacy_id);
-        }
         match settings.shortcut(action) {
             Some(shortcut) => set_item_value(
                 &mut document["shortcuts"][action.id()],

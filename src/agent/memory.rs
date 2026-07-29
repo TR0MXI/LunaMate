@@ -126,9 +126,8 @@ impl ToolExecutionTrace {
 /// 助手消息附带的可展示推理与本地工具执行详情。
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct AssistantTrace {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "Option::deserialize")]
     reasoning: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tool_executions: Vec<ToolExecutionTrace>,
 }
 

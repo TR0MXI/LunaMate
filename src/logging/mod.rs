@@ -71,7 +71,7 @@ pub(crate) fn apply_current_settings() -> Result<(), String> {
     let slot = LOGGER_HANDLE
         .get()
         .ok_or_else(|| "日志器尚未初始化".to_owned())?;
-    // 在 writer 锁内读取快照，确保迟到任务不会在较新任务之后重新应用旧配置。
+    // 在 writer 锁内读取快照，确保迟到任务不会在较新任务之后重新应用较早配置。
     let mut guard = slot.lock();
     let settings = CONFIG
         .logging_settings()

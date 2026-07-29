@@ -46,15 +46,15 @@ global-hotkey = "0.8.0"
 proc-macro-error2 = { git = "https://github.com/fgardt/proc-macro-error-2", rev = "53ff94b61c678593158db1a3d50269c6f0de0db7" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# 通用产物固定包含 Vulkan；raw-api 仅用于同步 Whisper 推理的可取消 callback。
-whisper-rs = { version = "0.16.0", features = ["raw-api", "log_backend", "vulkan"] }
+# 通用产物固定包含 Vulkan。
+whisper-rs = { version = "0.16.0", features = ["log_backend", "vulkan"] }
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26.0"
 objc = "0.2.7"
 # Apple 平台通用产物固定包含系统 Metal 后端。
-whisper-rs = { version = "0.16.0", features = ["raw-api", "log_backend", "metal"] }
+whisper-rs = { version = "0.16.0", features = ["log_backend", "metal"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux 截屏交给桌面门户，避免静态截图无条件引入 PipeWire/GBM 开发依赖。
@@ -63,8 +63,8 @@ ashpd = { version = "0.13.13", default-features = false, features = ["async-io",
 ksni = { version = "0.3.6", default-features = false, features = ["tokio"] }
 wayland-client = { version = "0.31.15", features = ["system"] }
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
-# 通用产物固定包含 Vulkan；raw-api 仅用于同步 Whisper 推理的可取消 callback。
-whisper-rs = { version = "0.16.0", features = ["raw-api", "log_backend", "vulkan"] }
+# 通用产物固定包含 Vulkan。
+whisper-rs = { version = "0.16.0", features = ["log_backend", "vulkan"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 # Windows 与 macOS 直接复用各自原生事件循环，不启用 GTK 相关默认 feature。

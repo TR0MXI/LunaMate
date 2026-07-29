@@ -139,14 +139,6 @@ impl ModelCatalog {
             .find(|family| family.contains(selected))
     }
 
-    /// 返回当前选择模型清单的绝对路径。
-    #[cfg(test)]
-    pub(crate) fn selected_model_path(&self) -> Option<PathBuf> {
-        self.selected
-            .as_ref()
-            .map(|relative_path| self.root.join(relative_path))
-    }
-
     /// 返回当前选择模型清单的相对路径。
     pub(crate) fn selected_relative_path(&self) -> Option<&Path> {
         self.selected.as_deref()
@@ -171,32 +163,6 @@ impl ModelCatalog {
         };
         let path = self.select_variant(relative_path)?;
         Ok(Some(path))
-    }
-
-    /// 选择一个模型家族，优先保留该家族中当前服装，否则使用首个服装。
-    ///
-    /// # Errors
-    ///
-    /// 索引不在当前扫描结果中，或目标家族没有服装清单时返回错误。
-    #[cfg(test)]
-    pub(crate) fn select_family(&mut self, index: usize) -> Result<PathBuf, ModelCatalogError> {
-        let family = self.families.get(index).ok_or_else(|| {
-            ModelCatalogError::message(format!("模型索引不在当前扫描结果中：{index}"))
-        })?;
-        let selected = self
-            .selected
-            .as_deref()
-            .filter(|selected| family.contains(selected))
-            .map(Path::to_path_buf)
-            .or_else(|| {
-                family
-                    .variants
-                    .first()
-                    .map(|variant| variant.relative_path.clone())
-            })
-            .ok_or_else(|| ModelCatalogError::message("模型没有可用服装清单"))?;
-        self.selected = Some(selected.clone());
-        Ok(self.root.join(selected))
     }
 
     /// 选择指定服装变体，并返回其绝对模型清单路径。

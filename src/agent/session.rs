@@ -57,9 +57,9 @@ pub(super) struct ChatMessage {
     turn_id: u64,
     role: ChatRole,
     content: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "Option::deserialize")]
     image: Option<ImageAttachment>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "Option::deserialize")]
     trace: Option<AssistantTrace>,
     state: ChatMessageState,
 }
@@ -706,46 +706,6 @@ impl ChatSession {
         Ok(removed)
     }
 
-    /// 按稳定消息 ID 重排完整上下文，并重建 Provider 与快照共用的合法轮次分组。
-    #[allow(dead_code)] // 排序语义由会话层保留，当前人格页面不再提供拖拽入口。
-    pub(super) fn reorder_messages(&mut self, message_ids: &[u64]) -> Result<bool, ChatError> {
-        let current_ids = self
-            .messages
-            .iter()
-            .map(|message| message.id)
-            .collect::<Vec<_>>();
-        let requested_ids = message_ids.iter().copied().collect::<HashSet<_>>();
-        if message_ids.len() != current_ids.len()
-            || requested_ids.len() != message_ids.len()
-            || current_ids.iter().any(|id| !requested_ids.contains(id))
-        {
-            return Err(ChatError::InvalidMessageOrder);
-        }
-        if current_ids == message_ids {
-            return Ok(false);
-        }
-        if self.active_response.is_some() {
-            return Err(ChatError::Busy);
-        }
-
-        let mut reordered = VecDeque::with_capacity(self.messages.len());
-        for message_id in message_ids {
-            let Some(message) = self
-                .messages
-                .iter()
-                .find(|message| message.id == *message_id)
-                .cloned()
-            else {
-                return Err(ChatError::InvalidMessageOrder);
-            };
-            reordered.push_back(message);
-        }
-        self.messages = reordered;
-        self.rebuild_turn_ids();
-        self.refresh_voice_interruption_pending();
-        Ok(true)
-    }
-
     /// 保留单条删除测试入口，生产路径统一使用原子批量删除。
     #[cfg(test)]
     pub(super) fn delete_message(&mut self, message_id: u64) -> Result<bool, ChatError> {
@@ -860,7 +820,7 @@ impl ChatSession {
             {
                 continue;
             }
-            // 用户调小上限后旧快照仍必须可用：装不下的最旧轮次按窗口滚动规则淘汰。
+            // 用户调小上限后仍需恢复会话：装不下的最早轮次按窗口滚动规则淘汰。
             session.trim_completed_turns_for(turn.len(), turn_tokens, turn_image_bytes);
             if session.messages.len().saturating_add(turn.len()) > limits.max_messages
                 || session.total_tokens.saturating_add(turn_tokens) > limits.max_tokens
@@ -991,32 +951,6 @@ impl ChatSession {
             .messages
             .back()
             .is_some_and(|message| message.state == ChatMessageState::InterruptedByVoice);
-    }
-
-    #[allow(dead_code)]
-    fn rebuild_turn_ids(&mut self) {
-        let mut index = 0_usize;
-        while index < self.messages.len() {
-            let pair = self
-                .messages
-                .get(index)
-                .is_some_and(|message| message.role == ChatRole::User)
-                && self
-                    .messages
-                    .get(index.saturating_add(1))
-                    .is_some_and(|message| message.role == ChatRole::Assistant);
-            let turn_id = allocate(&mut self.next_turn_id);
-            if let Some(message) = self.messages.get_mut(index) {
-                message.turn_id = turn_id;
-            }
-            if pair {
-                index = index.saturating_add(1);
-                if let Some(message) = self.messages.get_mut(index) {
-                    message.turn_id = turn_id;
-                }
-            }
-            index = index.saturating_add(1);
-        }
     }
 
     fn trim_completed_turns_for(
@@ -1220,8 +1154,6 @@ pub(super) enum ChatError {
     StaleResponse,
     MissingResponse,
     MissingMessage,
-    #[allow(dead_code)]
-    InvalidMessageOrder,
     UnsupportedSnapshot,
     InvalidSnapshot,
 }
@@ -1236,7 +1168,6 @@ impl fmt::Display for ChatError {
             Self::StaleResponse => t!("chat.error.stale_response"),
             Self::MissingResponse => t!("chat.error.missing_response"),
             Self::MissingMessage => t!("chat.error.missing_message"),
-            Self::InvalidMessageOrder => t!("chat.error.invalid_message_order"),
             Self::UnsupportedSnapshot => t!("chat.error.unsupported_snapshot"),
             Self::InvalidSnapshot => t!("chat.error.invalid_snapshot"),
         };

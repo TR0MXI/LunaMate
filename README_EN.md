@@ -6,6 +6,12 @@ LunaMate is a cross-platform Live2D desktop companion built with Rust. It uses G
 desktop window and settings UI, Mocari for Cubism model playback, and genai for local or cloud
 language model integrations.
 
+> [!WARNING]
+> LunaMate is a rapid prototype and has not published a release. Until the first public release,
+> configuration formats, the database, session snapshots, and internal APIs may change without
+> migration or backward compatibility. Source updates may require deleting the local
+> `config.toml` and `data/lunamate.db` and configuring the application again.
+
 The project is under active development and currently includes:
 
 - Live2D rendering, motions, expressions, eye tracking, and Agent interactions triggered by

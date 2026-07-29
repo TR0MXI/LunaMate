@@ -19,16 +19,11 @@ use super::{
     parse_shortcut_settings, parse_voice_settings,
 };
 
-const LEGACY_CONFIG_PATH: &str = "./config.toml";
+const FALLBACK_CONFIG_PATH: &str = "./config.toml";
 const MAX_CONFIG_FILE_BYTES: u64 = 1024 * 1024;
 
-/// 返回默认配置路径，并优先兼容工作目录中的旧配置。
+/// 返回平台用户配置目录中的默认路径；环境不完整时才使用工作目录。
 pub(super) fn default_config_path() -> PathBuf {
-    let legacy = PathBuf::from(LEGACY_CONFIG_PATH);
-    if legacy.is_file() {
-        return legacy;
-    }
-
     #[cfg(target_os = "windows")]
     let directory = env::var_os("APPDATA").map(PathBuf::from);
     #[cfg(target_os = "macos")]
@@ -43,7 +38,7 @@ pub(super) fn default_config_path() -> PathBuf {
 
     directory
         .map(|directory| directory.join("LunaMate").join("config.toml"))
-        .unwrap_or(legacy)
+        .unwrap_or_else(|| PathBuf::from(FALLBACK_CONFIG_PATH))
 }
 
 /// 读取并解析完整配置，失败时返回默认值与可展示的启动诊断。
@@ -315,9 +310,12 @@ fn parse_frame_rate(document: &DocumentMut, item: &Item) -> Option<FrameRate> {
         }
         Some(_) | None => {}
     }
-    item.as_integer()
-        .and_then(|fps| u16::try_from(fps).ok())
-        .and_then(|fps| FrameRate::try_from(fps).ok())
+    match item.as_integer() {
+        Some(30) => Some(FrameRate::Fps30),
+        Some(60) => Some(FrameRate::Fps60),
+        Some(120) => Some(FrameRate::Fps120),
+        Some(_) | None => None,
+    }
 }
 
 fn parse_logging_settings(document: &DocumentMut, warnings: &mut Vec<String>) -> LoggingSettings {

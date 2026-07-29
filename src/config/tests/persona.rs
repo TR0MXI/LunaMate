@@ -30,33 +30,6 @@ fn an_empty_configuration_still_yields_one_persona() {
 }
 
 #[test]
-fn legacy_system_prompt_migrates_into_the_default_persona() {
-    let mut source = document(
-        r#"
-[llm]
-system_prompt = "沿用旧人格"
-"#,
-    );
-
-    let settings = parse_persona_settings(&source, &mut Vec::new());
-
-    assert_eq!(
-        settings
-            .active()
-            .map(|persona| persona.system_prompt.as_str()),
-        Some("沿用旧人格")
-    );
-    write_persona_settings(&mut source, &settings);
-    assert!(
-        source
-            .get("llm")
-            .and_then(|llm| llm.get("system_prompt"))
-            .is_none(),
-        "写回人格后必须移除旧提示词来源"
-    );
-}
-
-#[test]
 fn stored_personas_round_trip_through_the_document() {
     let mut source = document(
         r#"

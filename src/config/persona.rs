@@ -1,4 +1,4 @@
-//! 定义人格配置、删除 tombstone、上下文限制与旧版系统提示词迁移。
+//! 定义人格配置、删除 tombstone 与上下文限制。
 //!
 //! 人格是记忆的归属单位：人格 ID 同时作为会话文档键和 `agent_memory.agent_id`，
 //! 因此列表必须始终至少保留一条，删除最后一条人格会让已有记忆失去可管理的入口。
@@ -278,7 +278,7 @@ pub(super) fn parse_persona_settings(
     warnings: &mut Vec<String>,
 ) -> PersonaSettings {
     let Some(persona) = document.get("persona") else {
-        return migrated_settings(document);
+        return PersonaSettings::default();
     };
 
     let mut settings = PersonaSettings {
@@ -326,8 +326,7 @@ pub(super) fn parse_persona_settings(
 
     if settings.personas.is_empty() {
         warnings.push(t!("persona.error.empty").to_string());
-        let mut migrated = migrated_settings(document);
-        migrated.pending_deletions = settings
+        let pending_deletions = settings
             .pending_deletions
             .into_iter()
             .filter(|id| {
@@ -338,7 +337,10 @@ pub(super) fn parse_persona_settings(
                 keep
             })
             .collect();
-        return migrated;
+        return PersonaSettings {
+            pending_deletions,
+            ..PersonaSettings::default()
+        };
     }
     settings.selected = settings
         .selected
@@ -398,21 +400,6 @@ fn parse_pending_deletions(persona: &Item, warnings: &mut Vec<String>) -> Vec<St
         }
     }
     result
-}
-
-/// 配置中还没有人格时，把旧版全局系统提示词收敛为唯一的默认人格。
-fn migrated_settings(document: &DocumentMut) -> PersonaSettings {
-    let mut settings = PersonaSettings::default();
-    let prompt = document
-        .get("llm")
-        .and_then(|llm| llm.get("system_prompt"))
-        .and_then(Item::as_str)
-        .filter(|prompt| prompt.len() <= MAX_SYSTEM_PROMPT_BYTES)
-        .unwrap_or_default();
-    if let Some(persona) = settings.personas.first_mut() {
-        persona.system_prompt = prompt.to_owned();
-    }
-    settings
 }
 
 fn parse_persona(table: &Table) -> Result<PersonaConfig, ConfigWriteError> {
@@ -539,8 +526,6 @@ pub(super) fn write_persona_settings(document: &mut DocumentMut, settings: &Pers
         list.push(table);
     }
     document["persona"]["list"] = Item::ArrayOfTables(list);
-    // 提示词已迁移到人格条目；保留旧键会让同一份配置出现两个互相矛盾的来源。
-    remove_key(document, "llm", "system_prompt");
 }
 
 fn write_optional(table: &mut Table, key: &str, value: Option<Value>) {

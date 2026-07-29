@@ -67,17 +67,6 @@ impl RotationTarget {
     }
 }
 
-pub fn rotation_deformer_transform_point(
-    point: Vector2,
-    angle_degrees: f32,
-    scale: f32,
-    translation: Vector2,
-    flip_x: bool,
-    flip_y: bool,
-) -> Vector2 {
-    RotationTarget::new(angle_degrees, scale, translation, flip_x, flip_y).transform(point)
-}
-
 pub fn transform_art_mesh_vertices_by_deformers(
     vertices: &[Vector2],
     transforms: &[DeformerTransform<'_>],
@@ -120,8 +109,7 @@ pub enum WarpInterpolation {
 /// 预校验后的 warp 变形目标。
 ///
 /// `stride`、网格长度校验和外插基底都只取决于变形器网格本身，与被变换的顶点
-/// 无关。批量变换同一网格下的顶点时先构造一次，可以把这些不变量从每顶点路径
-/// 中移除；`warp_deformer_transform_target` 保留原有的单点可失败接口。
+/// 无关。批量变换同一网格下的顶点时先构造一次，可以把这些不变量从每顶点路径中移除。
 #[derive(Debug, Copy, Clone)]
 pub struct WarpTarget<'a> {
     grid: &'a [Vector2],
@@ -230,36 +218,6 @@ fn interpolate_inside(
         WarpInterpolation::Quad => bilinear_cell(s, t, c00, c10, c01, c11),
         WarpInterpolation::Triangle => triangle_cell(s, t, c00, c10, c01, c11),
     })
-}
-
-pub fn warp_deformer_transform_inside(
-    local_point: Vector2,
-    grid: &[Vector2],
-    cols: usize,
-    rows: usize,
-    interpolation: WarpInterpolation,
-) -> Option<Vector2> {
-    if !(0.0..1.0).contains(&local_point.x()) || !(0.0..1.0).contains(&local_point.y()) {
-        return None;
-    }
-
-    let stride = cols.checked_add(1)?;
-    let required = stride.checked_mul(rows.checked_add(1)?)?;
-    if grid.len() < required {
-        return None;
-    }
-
-    interpolate_inside(local_point, grid, cols, rows, stride, interpolation)
-}
-
-pub fn warp_deformer_transform_target(
-    local_point: Vector2,
-    grid: &[Vector2],
-    cols: usize,
-    rows: usize,
-    interpolation: WarpInterpolation,
-) -> Option<Vector2> {
-    WarpTarget::new(grid, cols, rows, interpolation)?.transform(local_point)
 }
 
 struct WarpCell {

@@ -413,7 +413,7 @@ fn lowering_the_context_limit_drops_history_instead_of_failing_to_load() {
             .await
             .expect("会话应保存到数据库");
 
-        // 用户调小上限后旧快照仍必须可用：只丢弃装不下的历史轮次。
+        // 用户调小上限后仍需恢复会话，只丢弃装不下的最早轮次。
         let (restored, _) = ChatSessionStore::load(
             database,
             PERSONA,
@@ -488,59 +488,6 @@ fn concurrent_non_active_edits_are_serialized_without_losing_each_other() {
         assert_eq!(restored.messages()[0].content(), "edited question");
         assert_eq!(restored.messages()[1].id(), assistant_id);
         assert_eq!(restored.messages()[1].content(), "edited answer");
-    });
-}
-
-#[test]
-fn non_active_reordering_is_persisted_with_stable_message_ids() {
-    run_async(async {
-        let database = Database::open_memory().await.expect("内存数据库应可打开");
-        let lock: SessionDocumentLock = Arc::new(SessionDocumentCoordinator::new());
-        let limits = ChatLimits::default();
-        let mut session = ChatSession::default();
-        let first = session.start_turn("question 1").expect("第一轮应可开始");
-        session
-            .append_response(first.response_id, "answer 1")
-            .expect("第一轮回复应可写入");
-        assert!(session.finish_response(first.response_id));
-        let second = session.start_turn("question 2").expect("第二轮应可开始");
-        session
-            .append_response(second.response_id, "answer 2")
-            .expect("第二轮回复应可写入");
-        assert!(session.finish_response(second.response_id));
-        let ids = session
-            .messages()
-            .iter()
-            .map(|message| message.id())
-            .collect::<Vec<_>>();
-        let reordered = vec![ids[2], ids[3], ids[0], ids[1]];
-        let (_, store) =
-            ChatSessionStore::load_with_lock(database.clone(), PERSONA, limits, lock.clone())
-                .await
-                .expect("空会话应可加载");
-        store
-            .save(session.snapshot(1))
-            .await
-            .expect("初始会话应可保存");
-
-        let changed = mutate_persona_session(&database, &lock, PERSONA, limits, |session| {
-            session.reorder_messages(&reordered)
-        })
-        .await
-        .expect("非活动人格排序应可保存");
-        assert!(changed);
-
-        let (restored, _) = ChatSessionStore::load_with_lock(database, PERSONA, limits, lock)
-            .await
-            .expect("排序后的会话应可恢复");
-        assert_eq!(
-            restored
-                .messages()
-                .iter()
-                .map(|message| message.id())
-                .collect::<Vec<_>>(),
-            reordered
-        );
     });
 }
 

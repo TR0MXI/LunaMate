@@ -70,35 +70,6 @@ fn direct_api_key_is_normalized_and_redacted_in_debug() {
 }
 
 #[test]
-fn legacy_environment_key_reference_is_ignored_and_removed_on_write() {
-    let mut document = r#"
-[llm]
-selected = "cloud"
-
-[[llm.models]]
-id = "cloud"
-label = "Cloud"
-provider = "openai"
-model = "gpt-5-mini"
-api_key_env = "OPENAI_API_KEY"
-"#
-    .parse::<DocumentMut>()
-    .expect("旧版语言模型配置应当可以解析");
-    let mut warnings = Vec::new();
-    let settings = parse_llm_settings(&document, &mut warnings);
-
-    assert!(warnings.is_empty());
-    assert_eq!(
-        settings
-            .selected()
-            .and_then(|model| model.api_key.as_deref()),
-        None
-    );
-    write_llm_settings(&mut document, &settings);
-    assert!(!document.to_string().contains("api_key_env"));
-}
-
-#[test]
 fn one_invalid_model_does_not_discard_the_remaining_models_or_api_keys() {
     let document = r#"
 [llm]
@@ -334,7 +305,7 @@ fn required_model_fields_are_trimmed_and_bounded() {
 }
 
 #[test]
-fn model_count_and_system_prompt_have_hard_limits() {
+fn model_count_has_a_hard_limit() {
     let model = |index: usize| LlmModelConfig {
         id: format!("model-{index}"),
         label: format!("Model {index}"),
@@ -550,10 +521,10 @@ top_p = 0.5
 fn unknown_provider_ids_only_discard_the_offending_model() {
     let document = r#"
 [[llm.models]]
-id = "legacy"
-label = "Legacy"
+id = "unsupported"
+label = "Unsupported"
 provider = "not-a-provider"
-model = "legacy-model"
+model = "unsupported-model"
 
 [[llm.models]]
 id = "local"

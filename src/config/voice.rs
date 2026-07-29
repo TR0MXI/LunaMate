@@ -44,8 +44,6 @@ impl VoiceMode {
         match id {
             "off" => Some(Self::Off),
             "auto" => Some(Self::Auto),
-            // 旧混合模式与当前自动模式语义相同，读取时直接迁移。
-            "mixed" => Some(Self::Auto),
             "push-to-talk" => Some(Self::PushToTalk),
             _ => None,
         }

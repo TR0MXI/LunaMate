@@ -642,21 +642,6 @@ fn invalid_custom_frame_rate_payloads_fall_back_to_default() {
 }
 
 #[test]
-fn legacy_integer_custom_frame_rate_loads_as_custom_mode() {
-    let directory = TestDirectory::new();
-    directory.write(
-        r#"[render]
-frame_rate = 75
-"#,
-    );
-
-    assert_eq!(
-        LunaConfig::load_from(directory.config_path()).frame_rate(),
-        FrameRate::custom(75).expect("测试帧率必须有效")
-    );
-}
-
-#[test]
 fn follow_display_frame_rate_loads_and_persists_as_named_mode() {
     let directory = TestDirectory::new();
     directory.write(
@@ -968,7 +953,6 @@ future_option = "keep"
     assert!(saved.contains("# 保留配置注释"));
     assert!(saved.contains("enabled = true"));
     assert!(saved.contains("api_key = \"test-token+/=\""));
-    assert!(!saved.contains("api_key_env"));
     assert!(saved.contains("future_option = \"keep\""));
     assert!(saved.contains("reasoning_effort = \"budget\""));
     assert!(saved.contains("reasoning_budget = 2048"));
@@ -998,7 +982,7 @@ future_option = "keep"
 #[test]
 fn inline_llm_table_becomes_a_table_before_models_are_added() {
     let directory = TestDirectory::new();
-    directory.write("llm = { system_prompt = \"你好\" }\n");
+    directory.write("llm = { future_option = \"keep\" }\n");
     let config = LunaConfig::load_from(directory.config_path());
     let settings = LlmSettings {
         models: vec![LlmModelConfig {
@@ -1069,7 +1053,7 @@ fn stale_llm_write_cannot_replace_newer_selection() {
     assert!(
         config
             .set_llm_settings_at_revision(local, old_revision)
-            .expect("旧配置应当被无害丢弃")
+            .expect("迟到配置应当被无害丢弃")
             .is_none()
     );
     assert_eq!(
