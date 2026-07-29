@@ -70,6 +70,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 - `vendor/mocari` 是第三方源码边界；保留 MIT `LICENSE`、原始 manifest 和
   `LUNAMATE.md`，本地修改限于当前集成、安全或性能所必需的修复，并同步记录差异。升级相关依赖时
   检查 `[patch.crates-io]` 是否可以移除。
+- `vendor/mocari` 同时是非默认 workspace 成员，以便不构建 LunaMate 的语音和桌面依赖就能独立
+  运行库测试与 Criterion 基准；根目录默认命令仍只针对 `lunamate`。`benchmark-support` 只能用于
+  合成数据基准，不得进入生产依赖 feature。
 - Silero VAD 只使用 whisper-rs 公开安全接口和有界滚动上下文，不 vendor 或 patch
   `whisper-rs-sys`。同步转写通过 whisper-rs 公开的 unsafe setter 安装有界生命周期的 abort
   callback；whisper-rs 修复 safe callback 的 trampoline 类型与所有权后，必须删除本地 abort FFI。
@@ -173,6 +176,13 @@ cargo check --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --all
 cargo test --locked
+```
+
+Mocari 变形器 scratch 的时间与分配基准分别执行：
+
+```bash
+cargo bench --locked -p mocari --bench deformer_composition --features benchmark-support
+cargo bench --locked -p mocari --bench deformer_composition_allocations --features benchmark-support
 ```
 
 - 目标平台系统依赖导致命令失败时，记录准确原因，不得删除 feature、测试或错误处理来掩盖问题。

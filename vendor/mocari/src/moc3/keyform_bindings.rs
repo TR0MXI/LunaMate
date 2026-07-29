@@ -1,6 +1,9 @@
 use crate::{
     Result,
-    core::{KeyformAxis, compute_keyform_axis_interval, expand_keyform_runtime_slots},
+    core::{
+        KeyformAxis, KeyformRuntimeSlot, compute_keyform_axis_interval,
+        expand_keyform_runtime_slots_into,
+    },
 };
 
 use super::{
@@ -35,10 +38,12 @@ pub struct Moc3KeyformBindings {
     key_values: Vec<f32>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub(super) struct Moc3KeyformSlot {
-    pub(super) local_index: usize,
-    pub(super) weight: f32,
+pub(super) type Moc3KeyformSlot = KeyformRuntimeSlot;
+
+#[derive(Debug, Default)]
+pub(crate) struct Moc3KeyformScratch {
+    axes: Vec<KeyformAxis>,
+    slots: Vec<Moc3KeyformSlot>,
 }
 
 impl Moc3KeyformBindings {
@@ -160,37 +165,53 @@ impl Moc3KeyformBindings {
         keyform_count: usize,
         parameter_values: &[f32],
     ) -> Option<Vec<Moc3KeyformSlot>> {
+        let mut scratch = Moc3KeyformScratch::default();
+        self.keyform_slots_into(band_index, keyform_count, parameter_values, &mut scratch)?;
+        Some(scratch.slots)
+    }
+
+    pub(super) fn keyform_slots_into<'a>(
+        &self,
+        band_index: i32,
+        keyform_count: usize,
+        parameter_values: &[f32],
+        scratch: &'a mut Moc3KeyformScratch,
+    ) -> Option<&'a [Moc3KeyformSlot]> {
+        scratch.axes.clear();
+        scratch.slots.clear();
         if keyform_count == 0 {
             return None;
         }
 
         if keyform_count == 1 {
-            return Some(vec![Moc3KeyformSlot {
+            scratch.slots.push(Moc3KeyformSlot {
                 local_index: 0,
                 weight: 1.0,
-            }]);
+            });
+            return Some(&scratch.slots);
         }
 
         if band_index < 0 {
-            return Some(vec![Moc3KeyformSlot {
+            scratch.slots.push(Moc3KeyformSlot {
                 local_index: 0,
                 weight: 1.0,
-            }]);
+            });
+            return Some(&scratch.slots);
         }
 
         let bindings = self.band_keyform_bindings(band_index)?;
         if bindings.is_empty() {
-            return Some(vec![Moc3KeyformSlot {
+            scratch.slots.push(Moc3KeyformSlot {
                 local_index: 0,
                 weight: 1.0,
-            }]);
+            });
+            return Some(&scratch.slots);
         }
         if bindings.len() > MAX_KEYFORM_AXES {
             return None;
         }
 
-        let mut axes = Vec::new();
-        axes.try_reserve_exact(bindings.len()).ok()?;
+        scratch.axes.try_reserve(bindings.len()).ok()?;
         let mut stride = 1usize;
         for &binding_index in bindings {
             let binding_index = usize::try_from(binding_index).ok()?;
@@ -205,7 +226,7 @@ impl Moc3KeyformBindings {
             if active_index >= keys.len() {
                 return None;
             }
-            axes.push(KeyformAxis::new(
+            scratch.axes.push(KeyformAxis::new(
                 interval.left_index(),
                 interval.t(),
                 stride,
@@ -213,20 +234,32 @@ impl Moc3KeyformBindings {
             stride = stride.checked_mul(keys.len())?;
         }
 
-        let expanded = expand_keyform_runtime_slots(&axes);
-        if expanded.is_empty() {
+        expand_keyform_runtime_slots_into(&scratch.axes, &mut scratch.slots)?;
+        if scratch
+            .slots
+            .iter()
+            .any(|slot| slot.local_index >= keyform_count)
+        {
+            scratch.slots.clear();
             return None;
         }
-        let slots = expanded
-            .into_iter()
-            .map(|slot| {
-                (slot.flat_index() < keyform_count).then_some(Moc3KeyformSlot {
-                    local_index: slot.flat_index(),
-                    weight: slot.weight(),
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-        Some(slots)
+        Some(&scratch.slots)
+    }
+
+    #[cfg(any(test, feature = "benchmark-support"))]
+    pub(super) fn two_keyforms_for_benchmark() -> Self {
+        Self {
+            parameter_min_values: vec![0.0],
+            parameter_max_values: vec![1.0],
+            parameter_default_values: vec![0.35],
+            binding_parameter_indices: vec![0],
+            keyform_binding_indices: vec![0],
+            band_begin_indices: vec![0],
+            band_counts: vec![1],
+            keys_begin_indices: vec![0],
+            keys_counts: vec![2],
+            key_values: vec![0.0, 1.0],
+        }
     }
 
     fn band_keyform_bindings(&self, band_index: i32) -> Option<&[i32]> {
@@ -351,6 +384,39 @@ mod tests {
     }
 
     #[test]
+    fn keyform_slots_reuse_axes_and_slot_storage() {
+        let bindings = Moc3KeyformBindings {
+            parameter_min_values: vec![0.0],
+            parameter_max_values: vec![1.0],
+            parameter_default_values: vec![0.0],
+            binding_parameter_indices: vec![0],
+            keyform_binding_indices: vec![0],
+            band_begin_indices: vec![0],
+            band_counts: vec![1],
+            keys_begin_indices: vec![0],
+            keys_counts: vec![2],
+            key_values: vec![0.0, 1.0],
+        };
+        let expected = bindings
+            .keyform_slots(0, 2, &[0.25])
+            .expect("有效参数应生成 keyform slots");
+        let mut scratch = Moc3KeyformScratch::default();
+
+        let slots = bindings
+            .keyform_slots_into(0, 2, &[0.25], &mut scratch)
+            .expect("应能写入复用 keyform scratch");
+        assert_eq!(slots, expected);
+        let pointer = slots.as_ptr();
+
+        let slots = bindings
+            .keyform_slots_into(0, 2, &[0.75], &mut scratch)
+            .expect("第二次应能复用 keyform scratch");
+        assert_eq!(slots.as_ptr(), pointer);
+        assert_eq!(slots.len(), 2);
+    }
+
+    #[test]
+    #[ignore = "依赖仓库不分发的 Hiyori Live2D 模型"]
     fn hiyori_binding_parameter_map_matches_layout() {
         let bytes = std::fs::read("assets/models/Hiyori/Hiyori.moc3").unwrap();
         let bindings = Moc3KeyformBindings::parse(&bytes).unwrap();

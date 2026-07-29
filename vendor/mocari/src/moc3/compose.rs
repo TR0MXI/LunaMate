@@ -7,7 +7,7 @@ const DEFAULT_MULTIPLY_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
 const DEFAULT_SCREEN_COLOR: [f32; 3] = [0.0, 0.0, 0.0];
 
 pub(super) fn parent_rotation_angle(
-    composed: &[Option<ComposedDeformer>],
+    composed: &ComposedDeformers,
     parent_index: i32,
     origin_world: Vector2,
     translation: Vector2,
@@ -49,12 +49,9 @@ pub(super) fn parent_rotation_angle(
     ))
 }
 
-fn parent_deformer(
-    composed: &[Option<ComposedDeformer>],
-    parent_index: i32,
-) -> Option<&ComposedDeformer> {
+fn parent_deformer(composed: &ComposedDeformers, parent_index: i32) -> Option<&ComposedDeformer> {
     let index = usize::try_from(parent_index).ok()?;
-    composed.get(index)?.as_ref()
+    composed.get(index)
 }
 
 fn wrap_angle(mut angle: f32) -> f32 {
@@ -122,14 +119,92 @@ pub(super) struct ComposedRotation {
     pub(super) screen_color: [f32; 3],
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ComposedDeformers {
     deformers: Vec<ComposedDeformer>,
+    valid: Vec<u8>,
 }
 
 impl ComposedDeformers {
-    pub(super) fn new(deformers: Vec<ComposedDeformer>) -> Self {
-        Self { deformers }
+    pub(super) fn reset_with(
+        &mut self,
+        count: usize,
+        mut value: impl FnMut(usize) -> Option<ComposedDeformer>,
+    ) -> Option<()> {
+        if self.deformers.len() != count {
+            self.deformers.clear();
+            self.deformers.try_reserve(count).ok()?;
+            for index in 0..count {
+                self.deformers.push(value(index)?);
+            }
+        }
+        if self.valid.len() != count {
+            self.valid.clear();
+            self.valid.try_reserve(count).ok()?;
+            self.valid.resize(count, 0);
+        } else {
+            self.valid.fill(0);
+        }
+        Some(())
+    }
+
+    fn get(&self, index: usize) -> Option<&ComposedDeformer> {
+        self.valid
+            .get(index)
+            .copied()
+            .filter(|valid| *valid != 0)
+            .and_then(|_| self.deformers.get(index))
+    }
+
+    pub(super) fn slot_mut(&mut self, index: usize) -> Option<&mut ComposedDeformer> {
+        self.deformers.get_mut(index)
+    }
+
+    pub(super) fn mark_valid(&mut self, index: usize) -> Option<()> {
+        *self.valid.get_mut(index)? = 1;
+        Some(())
+    }
+
+    pub(super) fn is_complete(&self) -> bool {
+        self.valid.len() == self.deformers.len() && self.valid.iter().all(|valid| *valid != 0)
+    }
+
+    pub(super) fn apply_parent_to_warp_grid(
+        &mut self,
+        current_index: usize,
+        parent_index: i32,
+    ) -> Option<()> {
+        let grid_is_empty = match self.deformers.get(current_index)? {
+            ComposedDeformer::Warp(warp) => warp.grid.is_empty(),
+            ComposedDeformer::Rotation(_) => return None,
+        };
+        // 空网格保持旧行为：不解析父变形器，因此非法父索引不会让空网格失败。
+        if grid_is_empty {
+            return Some(());
+        }
+        if parent_index < 0 {
+            return Some(());
+        }
+        let parent_index = usize::try_from(parent_index).ok()?;
+        if parent_index == current_index || self.valid.get(parent_index).copied()? == 0 {
+            return None;
+        }
+
+        let (parent, current) = if parent_index < current_index {
+            let (before, current_and_after) = self.deformers.split_at_mut(current_index);
+            (before.get(parent_index)?, current_and_after.first_mut()?)
+        } else {
+            let (before_parent, parent_and_after) = self.deformers.split_at_mut(parent_index);
+            (
+                parent_and_after.first()?,
+                before_parent.get_mut(current_index)?,
+            )
+        };
+        let apply = ComposedApply::new(parent)?;
+        let ComposedDeformer::Warp(warp) = current else {
+            return None;
+        };
+        apply.apply_slice(&mut warp.grid)
     }
 
     pub(super) fn transform_vertices(
@@ -146,7 +221,7 @@ impl ComposedDeformers {
         if vertices.is_empty() {
             return Some(());
         }
-        ComposedApply::new(self.deformers.get(index)?)?.apply_slice(vertices)
+        ComposedApply::new(self.get(index)?)?.apply_slice(vertices)
     }
 
     pub(super) fn deformer_opacity(&self, parent_deformer_index: i32) -> f32 {
@@ -157,8 +232,7 @@ impl ComposedDeformers {
             Ok(value) => value,
             Err(_) => return 1.0,
         };
-        self.deformers
-            .get(index)
+        self.get(index)
             .map(ComposedDeformer::opacity_accum)
             .unwrap_or(1.0)
     }
@@ -171,10 +245,24 @@ impl ComposedDeformers {
             Ok(value) => value,
             Err(_) => return (DEFAULT_MULTIPLY_COLOR, DEFAULT_SCREEN_COLOR),
         };
-        self.deformers
-            .get(index)
+        self.get(index)
             .map(ComposedDeformer::colors)
             .unwrap_or((DEFAULT_MULTIPLY_COLOR, DEFAULT_SCREEN_COLOR))
+    }
+
+    #[cfg(feature = "benchmark-support")]
+    pub(super) fn benchmark_probe(&self) -> f32 {
+        match self.deformers.last() {
+            Some(ComposedDeformer::Warp(warp)) => warp
+                .grid
+                .last()
+                .map(|point| point.x() + point.y() + warp.opacity_accum)
+                .unwrap_or(warp.opacity_accum),
+            Some(ComposedDeformer::Rotation(rotation)) => {
+                rotation.origin.x() + rotation.origin.y() + rotation.angle_degrees
+            }
+            None => 0.0,
+        }
     }
 }
 
@@ -230,33 +318,30 @@ impl<'a> ComposedApply<'a> {
 
 /// 解析父变形器并准备批量应用体。
 pub(super) fn composed_parent_apply(
-    composed: &[Option<ComposedDeformer>],
+    composed: &ComposedDeformers,
     parent_index: i32,
 ) -> Option<ComposedApply<'_>> {
     if parent_index < 0 {
         return Some(ComposedApply::Identity);
     }
     let index = usize::try_from(parent_index).ok()?;
-    ComposedApply::new(composed.get(index)?.as_ref()?)
+    ComposedApply::new(composed.get(index)?)
 }
 
-pub(super) fn parent_scale_accum(composed: &[Option<ComposedDeformer>], parent_index: i32) -> f32 {
+pub(super) fn parent_scale_accum(composed: &ComposedDeformers, parent_index: i32) -> f32 {
     parent_deformer(composed, parent_index)
         .map(ComposedDeformer::scale_accum)
         .unwrap_or(1.0)
 }
 
-pub(super) fn parent_opacity_accum(
-    composed: &[Option<ComposedDeformer>],
-    parent_index: i32,
-) -> f32 {
+pub(super) fn parent_opacity_accum(composed: &ComposedDeformers, parent_index: i32) -> f32 {
     parent_deformer(composed, parent_index)
         .map(ComposedDeformer::opacity_accum)
         .unwrap_or(1.0)
 }
 
 pub(super) fn parent_colors(
-    composed: &[Option<ComposedDeformer>],
+    composed: &ComposedDeformers,
     parent_index: i32,
 ) -> ([f32; 3], [f32; 3]) {
     parent_deformer(composed, parent_index)

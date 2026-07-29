@@ -679,18 +679,6 @@ impl ModelRuntime {
         Some(())
     }
 
-    fn drawable_part_opacities(&self) -> Vec<f32> {
-        (0..self.art_meshes.meshes().len())
-            .map(|drawable_index| {
-                self.offscreen
-                    .drawable_parent_part_index(drawable_index)
-                    .and_then(|p| usize::try_from(p).ok())
-                    .and_then(|part_index| self.part_opacities.get(part_index).copied())
-                    .unwrap_or(1.0)
-            })
-            .collect()
-    }
-
     /// Rebuilds drawable meshes from the current runtime state.
     ///
     /// Call this after changing parameters, applying motion or expression
@@ -698,12 +686,17 @@ impl ModelRuntime {
     /// when the model data cannot produce a valid mesh update.
     pub fn update_meshes(&mut self) -> Option<()> {
         self.update_part_opacities()?;
-        let drawable_part_opacities = self.drawable_part_opacities();
-        self.rebuild_or_update_meshes(&drawable_part_opacities)?;
+        update_drawable_part_opacities(
+            self.art_meshes.meshes().len(),
+            &self.offscreen,
+            &self.part_opacities,
+            &mut self.mesh_update_scratch.drawable_part_opacities,
+        )?;
+        self.rebuild_or_update_meshes()?;
         self.apply_mesh_post_processing()
     }
 
-    fn rebuild_or_update_meshes(&mut self, drawable_part_opacities: &[f32]) -> Option<()> {
+    fn rebuild_or_update_meshes(&mut self) -> Option<()> {
         if self.meshes.len() == self.art_meshes.meshes().len() {
             update_moc3_drawable_meshes_with_parameters_offscreen_and_part_opacities(
                 &mut self.meshes,
@@ -715,7 +708,6 @@ impl ModelRuntime {
                 &self.ids,
                 &self.offscreen,
                 &self.parameter_values,
-                drawable_part_opacities,
             )?;
         } else {
             self.meshes = build_moc3_drawable_meshes_with_parameters_offscreen_and_part_opacities(
@@ -726,15 +718,19 @@ impl ModelRuntime {
                 &self.ids,
                 &self.offscreen,
                 &self.parameter_values,
-                drawable_part_opacities,
+                &self.mesh_update_scratch.drawable_part_opacities,
             )?;
         }
         Some(())
     }
 
     fn apply_mesh_post_processing(&mut self) -> Option<()> {
-        self.glues
-            .apply(&mut self.meshes, &self.bindings, &self.parameter_values)?;
+        self.glues.apply_with_scratch(
+            &mut self.meshes,
+            &self.bindings,
+            &self.parameter_values,
+            &mut self.mesh_update_scratch.keyforms,
+        )?;
         self.apply_group_render_orders();
         Some(())
     }
@@ -790,6 +786,25 @@ impl ModelRuntime {
             self.parameter_maximum_by_index(index)?,
         ))
     }
+}
+
+fn update_drawable_part_opacities(
+    drawable_count: usize,
+    offscreen: &Moc3OffscreenInfo,
+    part_opacities: &[f32],
+    out: &mut Vec<f32>,
+) -> Option<()> {
+    out.clear();
+    out.try_reserve(drawable_count).ok()?;
+    for drawable_index in 0..drawable_count {
+        let opacity = offscreen
+            .drawable_parent_part_index(drawable_index)
+            .and_then(|parent| usize::try_from(parent).ok())
+            .and_then(|part_index| part_opacities.get(part_index).copied())
+            .unwrap_or(1.0);
+        out.push(opacity);
+    }
+    Some(())
 }
 
 fn normalized_parameter_value(value: f32, minimum: f32, maximum: f32) -> f32 {
@@ -893,6 +908,7 @@ mod tests {
     };
 
     #[test]
+    #[ignore = "依赖仓库不分发的 Hiyori Live2D 模型"]
     fn part_keyform_opacity_does_not_drive_drawable_visibility() {
         let mut model = load_model_runtime("assets/models/Hiyori/Hiyori.model3.json").unwrap();
         let runtime = model.runtime_mut();
@@ -914,6 +930,15 @@ mod tests {
             .update_part_opacities()
             .expect("测试 Part 父链应当有效");
 
-        assert_eq!(runtime.drawable_part_opacities(), vec![1.0]);
+        let mut drawable_part_opacities = Vec::new();
+        super::update_drawable_part_opacities(
+            runtime.art_meshes.meshes().len(),
+            &runtime.offscreen,
+            &runtime.part_opacities,
+            &mut drawable_part_opacities,
+        )
+        .expect("测试 Drawable 透明度缓冲应可写入");
+
+        assert_eq!(drawable_part_opacities, vec![1.0]);
     }
 }

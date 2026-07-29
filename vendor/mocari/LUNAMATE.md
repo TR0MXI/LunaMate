@@ -29,9 +29,15 @@ Local changes:
   allocating one native staging resource per changed drawable. The mesh buffer
   cache also reuses its CPU encoding scratch and only rebuilds draw order when
   that order changes.
-- Deformer composition caches its static parent-depth order, reuses each
-  deformer's interpolated keyform slots, and reads packed warp-grid values
-  directly instead of allocating a temporary vector for every active keyform.
+- Deformer composition caches its static parent-depth order and reads packed
+  warp-grid values directly instead of allocating a temporary vector for every
+  active keyform.
+- Steady mesh updates retain keyform axes and slots, composed deformer storage,
+  each warp grid, art-mesh interpolation positions, drawable part opacities,
+  and glue interpolation storage at their cross-frame high-water marks. Failed
+  composition invalidates partial results without discarding those capacities;
+  cloning a runtime starts with empty scratch instead of copying the retained
+  buffers.
 - Warp and rotation deformers expose prepared `WarpTarget` and `RotationTarget`
   values that validate the grid geometry, precompute the extrapolation basis and
   build the rotation matrix once per deformer, plus a batched `transform_slice`.
@@ -51,6 +57,13 @@ Local changes:
   those files use the same curve and segment layout as Cubism motion version 3.
 - Upstream examples, integration tests, and development dependencies are not
   included in the application dependency copy.
+- The local-only `benchmark-support` feature exposes a synthetic two-keyform
+  warp chain to Criterion. `deformer_composition` measures warmed steady-state
+  scratch; `deformer_composition_allocations` asserts that it performs zero
+  allocations. Criterion, allocation-counter, and mimalloc are dev-only
+  dependencies and the feature is not enabled by LunaMate's production edge.
+- Three retained unit tests that require the undistributed Hiyori model are
+  ignored by default and can be run manually after supplying that asset.
 
 `Cargo.toml.upstream` preserves the original published dependency declaration.
 Live2D model assets and Live2D Inc. software are not included in this directory.

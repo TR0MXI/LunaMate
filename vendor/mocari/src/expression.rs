@@ -239,8 +239,12 @@ impl ExpressionManager {
                 continue;
             };
             let mut values = ExpressionBlendValues::identity(base);
-            let mut active_index = 0_usize;
-            for player in self.players.iter().filter(|player| !player.is_finished()) {
+            for (active_index, player) in self
+                .players
+                .iter()
+                .filter(|player| !player.is_finished())
+                .enumerate()
+            {
                 let operation = player
                     .expression()
                     .parameters()
@@ -252,7 +256,6 @@ impl ExpressionManager {
                 } else {
                     values.blend_towards(next, player.fade_weight());
                 }
-                active_index += 1;
             }
             let target = values.resolved();
             let value = base * (1.0 - weight) + target * weight;

@@ -32,6 +32,7 @@ pub use interpolation::{
     interpolate_float32_array, interpolate_float32_array_grouped, interpolate_float32_grouped,
     interpolate_int32,
 };
+pub(crate) use keyforms::expand_keyform_runtime_slots_into;
 pub use keyforms::{
     KeyformAxis, KeyformAxisInterval, KeyformRuntimeSlot, compute_keyform_axis_interval,
     expand_keyform_runtime_slots,

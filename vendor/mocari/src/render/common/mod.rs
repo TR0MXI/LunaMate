@@ -13,6 +13,7 @@ pub use clipping::{
     ClippingContext, ClippingLayout, ClippingLayoutError, ClippingPlan, ClippingRect, DrawableInfo,
     MaskChannel, draw_order_indices,
 };
+#[cfg(feature = "wgpu")]
 pub(crate) use vertex::drawable_render_values;
 pub use vertex::{
     DrawableVertex, encode_indices, encode_vertices, encode_vertices_from_drawable,

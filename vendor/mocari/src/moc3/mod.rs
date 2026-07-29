@@ -27,6 +27,8 @@ mod parts;
 pub use art_meshes::{Moc3ArtMeshInfo, Moc3ArtMeshes};
 pub use canvas::Moc3CanvasInfo;
 pub use counts::Moc3CountInfo;
+#[cfg(feature = "benchmark-support")]
+pub use deformers::DeformerCompositionBenchmark;
 pub use deformers::Moc3Deformers;
 pub use draw_order_groups::Moc3DrawOrderGroups;
 pub use drawable::{

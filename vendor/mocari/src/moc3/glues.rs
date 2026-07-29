@@ -6,6 +6,7 @@ use crate::{
 use super::{
     Moc3CountInfo, Moc3DrawableMesh, Moc3DrawableVertex, Moc3Header, Moc3KeyformBindings,
     Moc3SectionOffsets,
+    keyform_bindings::Moc3KeyformScratch,
     parse::{
         invalid_moc3, read_f32_section, read_i32_section, read_u16_section, to_usize,
         validate_count_range,
@@ -193,6 +194,21 @@ impl Moc3Glues {
         bindings: &Moc3KeyformBindings,
         parameter_values: &[f32],
     ) -> Option<()> {
+        self.apply_with_scratch(
+            meshes,
+            bindings,
+            parameter_values,
+            &mut Moc3KeyformScratch::default(),
+        )
+    }
+
+    pub(crate) fn apply_with_scratch(
+        &self,
+        meshes: &mut [Moc3DrawableMesh],
+        bindings: &Moc3KeyformBindings,
+        parameter_values: &[f32],
+        keyform_scratch: &mut Moc3KeyformScratch,
+    ) -> Option<()> {
         for index in 0..self.len() {
             let info_count = usize::try_from(*self.info_counts.get(index)?).ok()?;
             if info_count == 0 {
@@ -204,7 +220,8 @@ impl Moc3Glues {
 
             let mesh_a = usize::try_from(*self.art_mesh_indices_a.get(index)?).ok()?;
             let mesh_b = usize::try_from(*self.art_mesh_indices_b.get(index)?).ok()?;
-            let intensity = self.interpolate_intensity(index, bindings, parameter_values)?;
+            let intensity =
+                self.interpolate_intensity(index, bindings, parameter_values, keyform_scratch)?;
             let info_begin = usize::try_from(*self.info_begin_indices.get(index)?).ok()?;
             let info_end = info_begin.checked_add(info_count)?;
             let weights = self.info_weights.get(info_begin..info_end)?;
@@ -221,12 +238,14 @@ impl Moc3Glues {
         index: usize,
         bindings: &Moc3KeyformBindings,
         parameter_values: &[f32],
+        keyform_scratch: &mut Moc3KeyformScratch,
     ) -> Option<f32> {
         let keyform_count = usize::try_from(*self.keyform_counts.get(index)?).ok()?;
-        let slots = bindings.keyform_slots(
+        let slots = bindings.keyform_slots_into(
             *self.binding_indices.get(index)?,
             keyform_count,
             parameter_values,
+            keyform_scratch,
         )?;
         let begin = usize::try_from(*self.keyform_begin_indices.get(index)?).ok()?;
         let mut intensity = 0.0f32;

@@ -33,13 +33,13 @@ impl KeyformAxis {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct KeyformRuntimeSlot {
-    flat_index: usize,
-    weight: f32,
+    pub(crate) local_index: usize,
+    pub(crate) weight: f32,
 }
 
 impl KeyformRuntimeSlot {
     pub fn flat_index(&self) -> usize {
-        self.flat_index
+        self.local_index
     }
 
     pub fn weight(&self) -> f32 {
@@ -82,62 +82,69 @@ pub fn compute_keyform_axis_interval(keys: &[f32], value: f32) -> Option<Keyform
 }
 
 pub fn expand_keyform_runtime_slots(axes: &[KeyformAxis]) -> Vec<KeyformRuntimeSlot> {
-    let active_count = axes.iter().filter(|axis| axis.t != 0.0).count();
-    let Some(slot_count) = u32::try_from(active_count)
-        .ok()
-        .and_then(|count| 1usize.checked_shl(count))
-        .filter(|count| *count <= MAX_RUNTIME_KEYFORM_SLOTS)
-    else {
-        return Vec::new();
-    };
     let mut slots = Vec::new();
-    if slots.try_reserve_exact(slot_count).is_err() {
-        return Vec::new();
-    }
-
-    for mask in 0..slot_count {
-        let mut flat_index = 0usize;
-        let mut weight = 1.0f32;
-        let mut bit = 0usize;
-
-        for axis in axes {
-            if axis.t == 0.0 {
-                let Some(next) = axis
-                    .left_index
-                    .checked_mul(axis.stride)
-                    .and_then(|offset| flat_index.checked_add(offset))
-                else {
-                    return Vec::new();
-                };
-                flat_index = next;
-                continue;
-            }
-
-            let use_right = ((mask >> bit) & 1) != 0;
-            bit += 1;
-
-            let Some(axis_index) = axis.left_index.checked_add(usize::from(use_right)) else {
-                return Vec::new();
-            };
-            let Some(next) = axis_index
-                .checked_mul(axis.stride)
-                .and_then(|offset| flat_index.checked_add(offset))
-            else {
-                return Vec::new();
-            };
-            flat_index = next;
-            if use_right {
-                weight *= axis.t;
-            } else {
-                weight *= 1.0 - axis.t;
-            }
-        }
-
-        slots.push(KeyformRuntimeSlot { flat_index, weight });
-    }
-
+    let _ = expand_keyform_runtime_slots_into(axes, &mut slots);
     slots
 }
+
+pub(crate) fn expand_keyform_runtime_slots_into(
+    axes: &[KeyformAxis],
+    slots: &mut Vec<KeyformRuntimeSlot>,
+) -> Option<()> {
+    slots.clear();
+    let result = (|| {
+        let active_count = axes.iter().filter(|axis| axis.t != 0.0).count();
+        let slot_count = u32::try_from(active_count)
+            .ok()
+            .and_then(|count| 1usize.checked_shl(count))
+            .filter(|count| *count <= MAX_RUNTIME_KEYFORM_SLOTS)?;
+        slots.try_reserve(slot_count).ok()?;
+
+        for mask in 0..slot_count {
+            let mut flat_index = 0usize;
+            let mut weight = 1.0f32;
+            let mut bit = 0usize;
+
+            for axis in axes {
+                if axis.t == 0.0 {
+                    let next = axis
+                        .left_index
+                        .checked_mul(axis.stride)
+                        .and_then(|offset| flat_index.checked_add(offset))?;
+                    flat_index = next;
+                    continue;
+                }
+
+                let use_right = ((mask >> bit) & 1) != 0;
+                bit += 1;
+
+                let axis_index = axis.left_index.checked_add(usize::from(use_right))?;
+                let next = axis_index
+                    .checked_mul(axis.stride)
+                    .and_then(|offset| flat_index.checked_add(offset))?;
+                flat_index = next;
+                if use_right {
+                    weight *= axis.t;
+                } else {
+                    weight *= 1.0 - axis.t;
+                }
+            }
+
+            slots.push(KeyformRuntimeSlot {
+                local_index: flat_index,
+                weight,
+            });
+        }
+
+        Some(())
+    })();
+    if result.is_none() {
+        slots.clear();
+    }
+    result
+}
+
+const MAX_RUNTIME_KEYFORM_SLOTS: usize = 65_536;
 
 #[cfg(test)]
 mod tests {
@@ -156,5 +163,19 @@ mod tests {
 
         assert_eq!(expand_keyform_runtime_slots(&axes).len(), 4);
     }
+
+    #[test]
+    fn reused_slot_storage_matches_owned_expansion() {
+        let axes = [KeyformAxis::new(0, 0.25, 1), KeyformAxis::new(1, 0.75, 3)];
+        let expected = expand_keyform_runtime_slots(&axes);
+        let mut slots = Vec::new();
+
+        expand_keyform_runtime_slots_into(&axes, &mut slots).expect("有效轴应能写入复用缓冲");
+        let pointer = slots.as_ptr();
+        assert_eq!(slots, expected);
+
+        expand_keyform_runtime_slots_into(&axes, &mut slots).expect("第二次写入复用缓冲应成功");
+        assert_eq!(slots.as_ptr(), pointer);
+        assert_eq!(slots, expected);
+    }
 }
-const MAX_RUNTIME_KEYFORM_SLOTS: usize = 65_536;

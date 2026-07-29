@@ -129,24 +129,25 @@ impl Moc3OffscreenInfo {
             .copied()
     }
 
-    pub(crate) fn effect_source_drawable_indices(&self, ids: &Moc3Ids) -> Vec<usize> {
-        if self.offscreen_count() == 0 {
-            return Vec::new();
-        }
-
-        let Some(effect_part_index) = ids.parts().iter().position(|id| id == EFFECT_PART_ID) else {
-            return Vec::new();
-        };
-
-        self.drawable_parent_part_indices
-            .iter()
-            .copied()
-            .enumerate()
-            .filter_map(|(drawable_index, parent_part_index)| {
-                self.is_part_descendant_of(parent_part_index, effect_part_index)
-                    .then_some(drawable_index)
+    pub(crate) fn effect_source_drawable_indices<'a>(
+        &'a self,
+        ids: &'a Moc3Ids,
+    ) -> impl Iterator<Item = usize> + 'a {
+        let effect_part_index = (self.offscreen_count() != 0)
+            .then(|| ids.parts().iter().position(|id| id == EFFECT_PART_ID))
+            .flatten();
+        effect_part_index
+            .into_iter()
+            .flat_map(move |effect_part_index| {
+                self.drawable_parent_part_indices
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter_map(move |(drawable_index, parent_part_index)| {
+                        self.is_part_descendant_of(parent_part_index, effect_part_index)
+                            .then_some(drawable_index)
+                    })
             })
-            .collect()
     }
 
     fn is_part_descendant_of(&self, part_index: i32, ancestor_index: usize) -> bool {

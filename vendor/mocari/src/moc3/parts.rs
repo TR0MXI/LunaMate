@@ -201,6 +201,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "依赖仓库不分发的 Hiyori Live2D 模型"]
     fn parses_hiyori_parts_with_default_opacity() {
         let bytes = std::fs::read("assets/models/Hiyori/Hiyori.moc3").unwrap();
         let parts = Moc3Parts::parse(&bytes).unwrap();
