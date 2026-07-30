@@ -27,6 +27,7 @@ use self::resources::{ResourceValidationError, validate_model_resources};
 /// 设置窗口可以向用户展示并触发的已加载模型能力。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ModelPreviewCapabilities {
+    idle_motions: Vec<ModelPreviewResource>,
     motions: Vec<ModelPreviewResource>,
     expressions: Vec<ModelPreviewExpression>,
 }
@@ -35,16 +36,23 @@ impl ModelPreviewCapabilities {
     /// 构造不依赖真实模型的能力快照，供设置界面状态测试使用。
     #[cfg(test)]
     pub(crate) fn new_for_test(
+        idle_motions: Vec<ModelPreviewResource>,
         motions: Vec<ModelPreviewResource>,
         expressions: Vec<ModelPreviewExpression>,
     ) -> Self {
         Self {
+            idle_motions,
             motions,
             expressions,
         }
     }
 
-    /// 返回至少包含一个有效动作的动作组。
+    /// 返回清单待机组与自动发现的循环外部动作。
+    pub(crate) fn idle_motions(&self) -> &[ModelPreviewResource] {
+        &self.idle_motions
+    }
+
+    /// 返回至少包含一个有效动作的非待机动作组。
     pub(crate) fn motions(&self) -> &[ModelPreviewResource] {
         &self.motions
     }
@@ -60,16 +68,19 @@ impl ModelPreviewCapabilities {
 pub(crate) struct ModelPreviewResource {
     runtime_id: String,
     default_name: String,
+    idle: bool,
 }
 
 impl ModelPreviewResource {
     pub(in crate::model) fn new(
         runtime_id: impl Into<String>,
         default_name: impl Into<String>,
+        idle: bool,
     ) -> Self {
         Self {
             runtime_id: runtime_id.into(),
             default_name: default_name.into(),
+            idle,
         }
     }
 
@@ -81,9 +92,18 @@ impl ModelPreviewResource {
         &self.default_name
     }
 
+    pub(in crate::model) fn is_idle(&self) -> bool {
+        self.idle
+    }
+
     #[cfg(test)]
     pub(crate) fn new_for_test(runtime_id: &str, default_name: &str) -> Self {
-        Self::new(runtime_id, default_name)
+        Self::new(runtime_id, default_name, false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_idle_for_test(runtime_id: &str, default_name: &str) -> Self {
+        Self::new(runtime_id, default_name, true)
     }
 }
 
@@ -101,7 +121,7 @@ impl ModelPreviewExpression {
         movable_to_outfit: bool,
     ) -> Self {
         Self {
-            resource: ModelPreviewResource::new(runtime_id, default_name),
+            resource: ModelPreviewResource::new(runtime_id, default_name, false),
             movable_to_outfit,
         }
     }
@@ -320,8 +340,14 @@ impl AnimatedModel {
 
     /// 返回设置窗口可实际触发的动作与表情名称。
     pub(crate) fn preview_capabilities(&self) -> ModelPreviewCapabilities {
+        let (idle_motions, motions) = self
+            .animation
+            .available_resources()
+            .into_iter()
+            .partition(ModelPreviewResource::is_idle);
         ModelPreviewCapabilities {
-            motions: self.animation.available_resources(),
+            idle_motions,
+            motions,
             expressions: self.expression.available_resources(),
         }
     }

@@ -320,7 +320,10 @@ impl DesktopPetView {
                         .iter()
                         .filter(|expression| expression.movable_to_outfit())
                         .count();
-                    let motion_count = capabilities.motions().len();
+                    let motion_count = capabilities
+                        .motions()
+                        .len()
+                        .saturating_add(capabilities.idle_motions().len());
                     let expression_count = capabilities.expressions().len();
                     this.model_state = ModelLoadState::ready(diagnostics);
                     log::info!(

@@ -292,7 +292,7 @@ fn available_groups_only_report_groups_with_usable_clips() {
 }
 
 #[test]
-fn external_motions_from_root_and_dedicated_directory_load_as_individual_actions() {
+fn looping_external_motions_load_as_idle_motions() {
     let directory = TestDirectory::new();
     fs::create_dir(directory.path().join("motions")).expect("动作专属目录应当可以创建");
     write_motion(&directory.path().join("declared.motion3.json"), 1.0);
@@ -320,12 +320,23 @@ fn external_motions_from_root_and_dedicated_directory_load_as_individual_actions
         controller.play_interaction("external:wave.motion3.json"),
         MotionPlayResult::Started
     );
-    // 外部动作始终保持预览的一次性语义，不采用 VTS 文件中的 Loop 标记。
-    assert_eq!(controller.active_is_looping(), Some(false));
+    assert_eq!(controller.active_is_looping(), Some(true));
+    assert!(
+        resources
+            .iter()
+            .find(|resource| resource.runtime_id() == "external:wave.motion3.json")
+            .is_some_and(|resource| resource.is_idle())
+    );
+    assert!(
+        resources
+            .iter()
+            .find(|resource| resource.runtime_id() == "external:motions/dance.motion3.json")
+            .is_some_and(|resource| !resource.is_idle())
+    );
 }
 
 #[test]
-fn vts_version_zero_external_motion_loads_as_one_shot_action() {
+fn vts_version_zero_looping_external_motion_loads_as_idle_motion() {
     let directory = TestDirectory::new();
     fs::write(
         directory.path().join("standby.motion3.json"),
@@ -367,7 +378,61 @@ fn vts_version_zero_external_motion_loads_as_one_shot_action() {
         controller.play_interaction("external:standby.motion3.json"),
         MotionPlayResult::Started
     );
-    assert_eq!(controller.active_is_looping(), Some(false));
+    assert_eq!(controller.active_is_looping(), Some(true));
+    assert_eq!(
+        controller.active_group_for_test(),
+        Some("external:standby.motion3.json")
+    );
+}
+
+#[test]
+fn manifest_idle_has_priority_over_named_and_ordered_external_idle_motions() {
+    let directory = TestDirectory::new();
+    write_motion(&directory.path().join("declared.motion3.json"), 1.0);
+    write_motion_with_loop(&directory.path().join("first.motion3.json"), 1.0, true);
+    write_motion_with_loop(&directory.path().join("idle.motion3.json"), 1.0, true);
+    let model = parse_model(r#"{"Idle":[{"File":"declared.motion3.json"}]}"#);
+
+    let (controller, diagnostics) =
+        AnimationController::load_manifest(&model, &directory.resolver());
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(controller.active_group_for_test(), Some("Idle"));
+}
+
+#[test]
+fn named_external_idle_has_priority_over_other_looping_external_motions() {
+    let directory = TestDirectory::new();
+    write_motion_with_loop(&directory.path().join("first.motion3.json"), 1.0, true);
+    write_motion_with_loop(&directory.path().join("IDLE.motion3.json"), 1.0, true);
+    let model = parse_model("{}");
+
+    let (controller, diagnostics) =
+        AnimationController::load_manifest(&model, &directory.resolver());
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(
+        controller.active_group_for_test(),
+        Some("external:IDLE.motion3.json")
+    );
+}
+
+#[test]
+fn first_looping_external_motion_is_the_last_idle_fallback() {
+    let directory = TestDirectory::new();
+    write_motion(&directory.path().join("idle.motion3.json"), 1.0);
+    write_motion_with_loop(&directory.path().join("alpha.motion3.json"), 1.0, true);
+    write_motion_with_loop(&directory.path().join("zeta.motion3.json"), 1.0, true);
+    let model = parse_model("{}");
+
+    let (controller, diagnostics) =
+        AnimationController::load_manifest(&model, &directory.resolver());
+
+    assert!(diagnostics.entries().is_empty());
+    assert_eq!(
+        controller.active_group_for_test(),
+        Some("external:alpha.motion3.json")
+    );
 }
 
 #[test]

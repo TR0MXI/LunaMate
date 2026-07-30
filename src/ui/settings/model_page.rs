@@ -321,6 +321,32 @@ impl SettingsView {
                     ),
             )
             .child(
+                control_section(t!("model.idle_motions").to_string(), palette).child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .when(
+                            self.preview_capabilities.idle_motions().is_empty(),
+                            |this| {
+                                this.child(empty_control_text(
+                                    t!("model.no_idle_motions").to_string(),
+                                    palette,
+                                ))
+                            },
+                        )
+                        .children(
+                            self.preview_capabilities
+                                .idle_motions()
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(index, motion)| {
+                                    self.render_motion_row(motion, index, true, palette, cx)
+                                }),
+                        ),
+                ),
+            )
+            .child(
                 div().flex().min_h_0().children([
                     control_section(t!("model.action_preview").to_string(), palette)
                         .flex_1()
@@ -342,7 +368,9 @@ impl SettingsView {
                                         .iter()
                                         .enumerate()
                                         .filter_map(|(index, motion)| {
-                                            self.render_motion_row(motion, index, palette, cx)
+                                            self.render_motion_row(
+                                                motion, index, false, palette, cx,
+                                            )
                                         }),
                                 ),
                         )
@@ -453,6 +481,7 @@ impl SettingsView {
         &self,
         motion: &ModelPreviewResource,
         index: usize,
+        idle: bool,
         palette: UiPalette,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -462,19 +491,34 @@ impl SettingsView {
         let requested_id = motion.runtime_id().to_owned();
         let requested_name = display_name.clone();
         let play_label = t!("model.play_motion").to_string();
+        let row_id = if idle {
+            ("idle-motion", index)
+        } else {
+            ("motion", index)
+        };
+        let name_id = if idle {
+            format!("idle-motion-{index}")
+        } else {
+            format!("motion-{index}")
+        };
+        let play_id = if idle {
+            ("play-idle-motion", index)
+        } else {
+            ("play-motion", index)
+        };
 
         Some(
-            self.resource_row(("motion", index), false, palette)
+            self.resource_row(row_id, false, palette)
                 .child(self.render_resource_name(
                     key,
                     default_name,
                     display_name,
-                    format!("motion-{index}"),
+                    name_id,
                     palette,
                     cx,
                 ))
                 .child(
-                    self.icon_button(("play-motion", index), "icons/play.svg", palette)
+                    self.icon_button(play_id, "icons/play.svg", palette)
                         .tooltip(move |window, cx| {
                             Tooltip::new(play_label.clone()).build(window, cx)
                         })

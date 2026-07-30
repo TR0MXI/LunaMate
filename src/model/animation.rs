@@ -51,6 +51,7 @@ struct ActiveMotion {
 struct MotionGroup {
     declared_count: usize,
     default_name: String,
+    idle: bool,
     motions: Vec<MotionPlayer>,
     next_index: usize,
 }
@@ -59,12 +60,13 @@ struct MotionGroup {
 pub(crate) struct AnimationController {
     group_indices: BTreeMap<String, usize>,
     groups: Vec<MotionGroup>,
+    default_idle_group: Option<usize>,
     active: Option<ActiveMotion>,
     settling: bool,
 }
 
 impl AnimationController {
-    /// 从已加载模型逐项解析动作；坏项只生成诊断，存在 `Idle` 组时自动循环首个成功项。
+    /// 从已加载模型逐项解析动作；坏项只生成诊断，并按待机优先级启动首个有效动作。
     #[cfg(test)]
     pub(in crate::model) fn load(
         model: &RuntimeModel,
@@ -120,6 +122,7 @@ impl AnimationController {
             .map(|(group, references)| MotionGroup {
                 declared_count: references.len(),
                 default_name: group.clone(),
+                idle: group == DEFAULT_MOTION_GROUP,
                 motions: Vec::new(),
                 next_index: 0,
             })
@@ -156,6 +159,8 @@ impl AnimationController {
         let mut processed_count = 0_usize;
         let mut reported_limit = false;
         let mut resource_budget_exhausted = false;
+        let mut named_external_idle = None;
+        let mut first_external_idle = None;
 
         'groups: for (group_index, (group, group_references)) in references.iter().enumerate() {
             if cancellation.is_cancelled() {
@@ -286,6 +291,7 @@ impl AnimationController {
                 groups.push(MotionGroup {
                     declared_count: 1,
                     default_name: reference.name().to_owned(),
+                    idle: false,
                     motions: Vec::new(),
                     next_index: 0,
                 });
@@ -344,15 +350,30 @@ impl AnimationController {
                     ));
                     continue;
                 }
+                let looping = motion.meta().is_looping();
+                groups[group_index].idle = looping;
                 groups[group_index]
                     .motions
-                    .push(MotionPlayer::with_looping(motion, false));
+                    .push(MotionPlayer::with_looping(motion, looping));
+                if looping {
+                    first_external_idle.get_or_insert(group_index);
+                    if reference.name().eq_ignore_ascii_case("idle") {
+                        named_external_idle.get_or_insert(group_index);
+                    }
+                }
             }
         }
 
+        let manifest_idle = group_indices
+            .get(DEFAULT_MOTION_GROUP)
+            .copied()
+            .filter(|index| !groups[*index].motions.is_empty());
         let mut controller = Self {
             group_indices,
             groups,
+            default_idle_group: manifest_idle
+                .or(named_external_idle)
+                .or(first_external_idle),
             active: None,
             settling: false,
         };
@@ -360,7 +381,7 @@ impl AnimationController {
         (controller, diagnostics)
     }
 
-    /// 以一次性动作播放指定交互组，并在组内轮换可用动作。
+    /// 播放指定动作组，并在组内轮换可用动作。
     pub(crate) fn play_interaction(&mut self, group: &str) -> MotionPlayResult {
         self.start_next(group)
     }
@@ -374,6 +395,7 @@ impl AnimationController {
                 ModelPreviewResource::new(
                     runtime_id.clone(),
                     self.groups[*index].default_name.clone(),
+                    self.groups[*index].idle,
                 )
             })
             .collect()
@@ -405,13 +427,19 @@ impl AnimationController {
     }
 
     fn start_idle(&mut self) {
-        let _ = self.start_next(DEFAULT_MOTION_GROUP);
+        if let Some(group_index) = self.default_idle_group {
+            let _ = self.start_next_by_index(group_index);
+        }
     }
 
     fn start_next(&mut self, group: &str) -> MotionPlayResult {
         let Some(group_index) = self.group_indices.get(group).copied() else {
             return MotionPlayResult::MissingGroup;
         };
+        self.start_next_by_index(group_index)
+    }
+
+    fn start_next_by_index(&mut self, group_index: usize) -> MotionPlayResult {
         let group = &mut self.groups[group_index];
         if group.declared_count == 0 {
             return MotionPlayResult::MissingGroup;
@@ -441,6 +469,14 @@ impl AnimationController {
                     .get(active.index)
             })
             .map(MotionPlayer::is_looping)
+    }
+
+    #[cfg(test)]
+    pub(in crate::model) fn active_group_for_test(&self) -> Option<&str> {
+        let group_index = self.active.as_ref()?.group_index;
+        self.group_indices
+            .iter()
+            .find_map(|(runtime_id, index)| (*index == group_index).then_some(runtime_id.as_str()))
     }
 
     #[cfg(test)]
