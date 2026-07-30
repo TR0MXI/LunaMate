@@ -282,6 +282,7 @@ mod imp {
                 .with_icon(icon)
                 .with_icon_as_template(cfg!(target_os = "macos"))
                 .with_menu(Box::new(menu))
+                .with_menu_on_left_click(false)
                 .with_menu_on_right_click(use_native_menu)
                 .build()
                 .map_err(|error| format!("无法创建系统托盘：{error}"))?;
@@ -307,24 +308,32 @@ mod imp {
                     id,
                     position,
                     rect,
-                    button: MouseButton::Right,
+                    button,
                     button_state: MouseButtonState::Up,
                     ..
                 } = event
                 else {
                     return;
                 };
-                if id != tray_id || native_menu_for_click.load(Ordering::Acquire) {
+                if id != tray_id {
                     return;
                 }
-                let scale_factor = tray_scale_factor(position.x, position.y);
-                let anchor = TrayMenuAnchor::from_physical(
-                    [position.x, position.y],
-                    [rect.position.x, rect.position.y],
-                    [rect.size.width, rect.size.height],
-                    scale_factor,
-                );
-                dispatch_action(&actions_for_click, SystemTrayAction::OpenMenu(anchor));
+                match button {
+                    MouseButton::Left => {
+                        dispatch_action(&actions_for_click, SystemTrayAction::OpenSettings);
+                    }
+                    MouseButton::Right if !native_menu_for_click.load(Ordering::Acquire) => {
+                        let scale_factor = tray_scale_factor(position.x, position.y);
+                        let anchor = TrayMenuAnchor::from_physical(
+                            [position.x, position.y],
+                            [rect.position.x, rect.position.y],
+                            [rect.size.width, rect.size.height],
+                            scale_factor,
+                        );
+                        dispatch_action(&actions_for_click, SystemTrayAction::OpenMenu(anchor));
+                    }
+                    _ => {}
+                }
             }));
 
             Ok(Self {
@@ -460,10 +469,12 @@ mod imp {
     }
 
     impl ksni::Tray for LinuxTray {
-        const MENU_ON_ACTIVATE: bool = true;
-
         fn id(&self) -> String {
             "lunamate".to_owned()
+        }
+
+        fn activate(&mut self, _x: i32, _y: i32) {
+            let _ = dispatch_action(&self.actions, SystemTrayAction::OpenSettings);
         }
 
         fn title(&self) -> String {
