@@ -23,14 +23,16 @@ LunaMate 尚未发布任何版本。首个公开版本发布前，配置、数�
 
 ## 项目边界
 
-LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅提供二进制应用；
-`src/main.rs` 是唯一 crate 入口，不要新增 `src/lib.rs` 或 `[lib]` target。
+LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根包 `lunamate` 只提供
+二进制应用，`src/main.rs` 是其唯一入口，不要为根包新增 `src/lib.rs` 或 `[lib]` target；
+可独立嵌入的 Agent 能力由工作空间成员 `crates/lunamate-agent` 提供。
 
 - UI/窗口、Live2D 运行时与渲染、互动状态、LLM、语音、配置和持久化保持职责边界。Provider
   细节不得进入 UI，Live2D 层不得发起网络请求，音频层不得访问 Agent 内部会话或 Provider。
-- 通用 GPUI 视图、主题和窗口布局通过 `src/ui` façade 暴露，Agent 对话、供应商与人格
-  设置视图通过 `src/agent` façade 暴露；原生窗口适配、underlay surface attachment
-  与对应 `unsafe` 收口在 `src/platform`。可持久化外观类型属于配置域，不得依赖 UI。
+- 通用 GPUI 视图、主题和窗口布局通过 `src/ui` façade 暴露；Agent 对话适配器位于
+  `src/ui/agent`，供应商与人格编辑器位于 `src/ui/settings/agent`。原生窗口适配、屏幕捕获、
+  用户图片读取、underlay surface attachment 与对应 `unsafe` 收口在 `src/platform`。
+  可持久化外观类型属于配置域，不得依赖 UI。
 - Live2D 运行时、模型目录、能力、交互命令、帧调度与 CPU/GPU 渲染统一通过
   `src/model` façade 暴露；外部模块不得依赖其动画、表情、资源解析、worker 或 renderer
   子模块。
@@ -40,18 +42,32 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 - 全局快捷键的系统注册、事件路由与 GPUI 按键转换统一收口在 `src/shortcut.rs`；可持久化的
   动作和按键组合属于配置域。设置录入期间必须释放已有注册，语音按住事件必须有独立于音频
   推进的超时释放兜底。
-- 对话能力、供应商与人格设置编辑器和人格记忆收口在 `src/agent`；应用与其他 UI 模块只
-  通过 `Agent`、`AgentView`、`AgentShutdown`、`AgentMemoryAccess`、`PersonaMemory` 与两个
-  设置编辑器的 `*View`、`*Draft`、`*Event` 交互，不得构造或依赖内部会话、存储、快照、
-  记忆记录或 Provider 配置类型。
-- 供应商与人格是两个独立配置域：供应商只描述连接与模型调用参数，人格描述身份、系统
+- `crates/lunamate-agent` 只拥有框架无关的 Agent 配置领域、会话状态机、Provider 服务、图片
+  规范化、记忆访问和持久化协议；不得依赖 GPUI、窗口、文件选择器、桌面 portal、`xcap`、
+  根包配置或数据库。`Agent` 及其运行时输入、快照和关键消息类型由 crate 根门面提供，配置、
+  媒体、记忆、持久化和工具领域保留命名模块；Provider 执行、session 状态机和 store 协调器是
+  私有实现，不得向宿主泄漏。
+- `Agent` 直接组合可热更新的 `genai::Client`、`ModelIden`、`ChatOptions`、system prompt 与
+  `AgentMemory`。Client 并发使用不加锁，运行时替换通过短持有的统一 `RwLock` 发布，请求启动后
+  使用自己的不可变 clone，任何同步锁不得跨网络、工具或持久化 `await`。
+- 根配置层仍用带单调 generation 的 `AgentConfigSnapshot` 保证自身域一致性，但只在宿主适配层
+  将其解析为 Client、模型、options、prompt、memory 等直接组件；`Agent` 公共 API 不依赖该快照
+  类型。配置编辑器直接写根配置层，不得重新引入拉取全局状态的配置回调或 service locator。
+  截图授权与捕获通过每次请求独立构造的 `ScreenshotCapability` 注入，会话加载、保存、删除和
+  记忆统计、清理通过完整的 `AgentPersistenceCallbacks` 注册。会话排序、取消与迟到 revision
+  隔离由 Agent 逻辑负责。
+- 根 UI 只负责 GPUI 实体、输入、布局、动画和后台任务接驳；不得复制 Provider adapter、请求
+  构建、会话裁剪或文档编码逻辑。设置页使用显示名呈现配置，但运行时能力请求必须携带稳定 ID。
+- 供应商与人格是两个独立 Agent 配置域，其配置模型由 `lunamate-agent` 单一拥有；Provider
+  与思考强度直接复用并经该 crate 重新导出 genai 类型，不得复制同构枚举。根配置层只负责
+  TOML 解析、原子写入与快照发布。供应商只描述连接与模型调用参数，人格描述身份、系统
   提示词、可选的供应商绑定与自己的记忆。人格 ID 同时是会话文档键与 `agent_memory.agent_id`，
   必须限制为安全字符集，人格列表始终至少保留一条。
 - 人格绑定的 Live2D 模型只持久化 `models/` 下经过校验的相对清单路径；切换人格时通过
   `src/model` façade 解析并切换。绑定缺失时保留原值并回退有效全局模型，不得静默清除绑定
   或把人格选择反写为全局模型选择。
 - `src/database` 统一提供嵌入式数据库 façade 和配置文件原子替换；外部模块不得依赖
-  SurrealDB 类型，调用方负责转换各自的领域错误。
+  SurrealDB 类型。只有根应用组合层把数据库操作注册为 Agent 持久化回调，并负责转换领域错误。
 - 模块按稳定职责拆分，跨模块使用明确的状态、事件或接口；避免循环依赖、隐藏全局状态
   和双向调用。公共接口默认最小可见性，不为规划中的能力预建抽象。
 
@@ -59,6 +75,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 
 - 维护 `Cargo.lock`；新增依赖使用 `cargo add`，不要无目的执行 `cargo update`。引入
   crate 前评估现有方案、维护状态、安全、许可证、测试、体积、线程和系统依赖。
+- 项目维护的工作空间成员共同使用的依赖必须在根 `[workspace.dependencies]` 固定来源、版本与
+  基础 feature，成员清单通过 `workspace = true` 继承，避免 GPUI、Tokio、serde 等共享类型出现
+  版本分叉；保留原始 manifest 的 `vendor/mocari` 除外。
 - GPUI 相关 Git 依赖必须兼容并解析到同一 Zed commit，依赖图中只保留一套 GPUI 类型。
   Live2D 代码只使用 `gpui_wgpu::wgpu`，underlay GPU 资源不得传入 GPUI renderer；
   不要用个人 fork 或另一版 GPUI 绕过类型冲突。
@@ -71,8 +90,8 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
   `LUNAMATE.md`，本地修改限于当前集成、安全或性能所必需的修复，并同步记录差异。升级相关依赖时
   检查 `[patch.crates-io]` 是否可以移除。
 - `vendor/mocari` 同时是非默认 workspace 成员，以便不构建 LunaMate 的语音和桌面依赖就能独立
-  运行库测试与 Criterion 基准；根目录默认命令仍只针对 `lunamate`。`benchmark-support` 只能用于
-  合成数据基准，不得进入生产依赖 feature。
+  运行库测试与 Criterion 基准；根目录默认命令覆盖 `lunamate` 与 `lunamate-agent`，不自动运行
+  Mocari 基准。`benchmark-support` 只能用于合成数据基准，不得进入生产依赖 feature。
 - Silero VAD 只使用 whisper-rs 公开安全接口和有界滚动上下文，不 vendor 或 patch
   `whisper-rs-sys`。同步转写通过 whisper-rs 公开的 unsafe setter 安装有界生命周期的 abort
   callback；whisper-rs 修复 safe callback 的 trampoline 类型与所有权后，必须删除本地 abort FFI。
@@ -131,9 +150,12 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
 - 默认在用户配置目录保存 `config.toml`，不探测或迁移工作目录中的旧文件；每个人格的有界会话仅
   保存到工作目录下固定的 `./data/lunamate.db` 嵌入式数据库。配置写入必须原子化，数据库
   目录和配置文件必须限制本地访问权限。
-- Provider、endpoint、模型、模型调用参数和系统提示词来自配置；持久化 LunaMate 稳定
-  Provider ID 与思考强度标识，不直接序列化 `AdapterKind` 或 genai 选项类型，也不把用户
+- Provider、endpoint、模型、模型调用参数和系统提示词来自配置；持久化 ID 映射由 LunaMate
+  显式维护，不直接使用 `AdapterKind` 或 genai 选项类型的序列化格式，也不把用户
   输入当作环境变量名。未显式启用的可选请求参数不得发送，必须沿用 Provider 默认值。
+- Agent 配置校验、会话协议提示、媒体错误和 Provider 终态必须使用配置快照或单次请求携带的
+  `AppLanguage`，不得读取进程全局 locale。外观语言只有在配置持久化并发布成功后才能应用和
+  通知运行时，单次请求启动后继续使用自己的语言快照。
 - 记忆按人格隔离为短期上下文、中期条目与长期检索三层；删除人格必须同步删除其全部记忆，
   并在配置中保留待清理 ID 的 tombstone，清理完成且移除 tombstone 前不得复用该 ID。清除
   记忆等不可逆操作必须先经用户二次确认。记忆读写只经 `database` façade。
@@ -154,7 +176,7 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物，仅�
   处理、同步、资源生命周期、坐标变换和渲染不变量应说明原因，不复述代码。
 - 仅含单个源文件的模块使用同级 `name.rs`；只有模块需要拆分子模块时才使用
   `name/mod.rs` 目录结构，集中测试目录除外。
-- 单元测试集中在所属顶级模块的 `tests/mod.rs`，并通过 `tests/xxx.rs` 对应被测子模块；
+- 单元测试集中在所属顶级模块或 crate 的 `tests/mod.rs`，并通过 `tests/xxx.rs` 对应被测子模块；
   生产文件不保留内联 `mod tests`，也不为测试把内部实现扩大到顶级 façade 之外。
 - 为测试新增的构造器和访问器使用 `#[cfg(test)]` 并保持模块内可见性，命名以 `_for_test`
   结尾；不得因此放宽生产可见性或改变生产行为。
@@ -190,7 +212,7 @@ cargo bench --locked -p mocari --bench deformer_composition_allocations --featur
 - 实时状态测试覆盖取消、超时、迟到或乱序结果、大 frame delta、模型缺失和窗口关闭。
 - GPUI 视图测试使用无头 `TestAppContext`，且必须保持确定性：不得依赖 `gpui_tokio` 等
   测试线程之外的唤醒，否则测试调度器会判定为非确定性。跨 runtime 的流式行为改在
-  Provider 服务层用 fake backend 覆盖。
+  Agent 核心或私有 Provider 执行层用确定性驱动覆盖，不为测试重新公开 backend trait。
 - 依赖真实 Live2D 模型或桌面截屏授权的用例标注 `#[ignore]` 并写明原因；仓库不分发模型，
   由使用者自备模型后手动运行。
 - 依赖真实麦克风、Whisper 或 Silero 模型、GPU 后端的用例同样标注 `#[ignore]`；常规测试用

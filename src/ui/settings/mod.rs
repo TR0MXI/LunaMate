@@ -1,5 +1,6 @@
 //! 保存设置视图状态，处理用户动作，并向桌宠主视图发布热更新事件。
 
+mod agent;
 mod components;
 mod model_page;
 mod render;
@@ -21,13 +22,10 @@ use gpui::{
     PathPromptOptions, Subscription, Task, Window,
 };
 use gpui_component::input::{InputEvent, InputState, MaskPattern};
+use lunamate_agent::{Agent, chat_limits, tools::OutfitOption};
 use rust_i18n::t;
 
 use crate::{
-    agent::{
-        AgentMemoryAccess, AgentSettingsDraft, AgentSettingsEvent, AgentSettingsView,
-        ContextMutationCompletion, PersonaSettingsDraft, PersonaSettingsEvent, PersonaSettingsView,
-    },
     config::{
         AppLanguage, AppearanceSettings, CONFIG, CUSTOM_FRAME_RATE_MAX, CUSTOM_FRAME_RATE_MIN,
         ConfigWriteError, FrameRate, LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES,
@@ -43,6 +41,17 @@ use crate::{
 };
 
 use super::{apply, apply_language};
+pub(in crate::ui) use agent::{
+    ContextMutationCompletion, PersonaSettingsDraft, PersonaSettingsEvent, PersonaSettingsView,
+    ProviderSettingsDraft, ProviderSettingsEvent, ProviderSettingsView,
+};
+
+#[cfg(test)]
+pub(in crate::ui) use agent::{
+    MemoryScope, next_model_id_for_test, next_persona_id_for_test, non_empty_for_test,
+    provider_display_name_for_test, provider_from_display_name_for_test, provider_icon_for_test,
+    provider_option_index_for_test, reasoning_index_for_test, reasoning_option_count_for_test,
+};
 
 const CUSTOM_FRAME_RATE_SAVE_DELAY: Duration = Duration::from_millis(250);
 const LOGGING_SAVE_DELAY: Duration = Duration::from_millis(250);
@@ -78,24 +87,6 @@ pub(crate) enum SettingsEvent {
     AgentOutfitToolChanged(bool),
     /// 模型资源显示名或表达式分类已经持久化发布。
     ModelResourcesChanged,
-    /// 指定人格的短期上下文需要由持有会话的视图清除。
-    PersonaContextCleared {
-        persona: String,
-        completion: Option<ContextMutationCompletion>,
-    },
-    /// 请求会话持有者修改指定人格的一条上下文消息。
-    PersonaContextMessageEdited {
-        persona: String,
-        message_id: u64,
-        content: String,
-        completion: Option<ContextMutationCompletion>,
-    },
-    /// 请求会话持有者原子删除指定人格的一组上下文消息。
-    PersonaContextMessagesDeleted {
-        persona: String,
-        message_ids: Vec<u64>,
-        completion: Option<ContextMutationCompletion>,
-    },
     /// 外观设置已经发布，所有窗口应刷新主题和语言。
     AppearanceChanged(AppearanceSettings),
     /// 本地语音配置已经持久化并发布。
@@ -124,7 +115,8 @@ enum AgentOutfitTarget {
 }
 
 struct AgentOutfitCandidate {
-    name: String,
+    id: String,
+    label: String,
     target: AgentOutfitTarget,
 }
 
@@ -154,8 +146,8 @@ enum ConfigSection {
     Debug,
 }
 
-struct RetiredAgentSettingsEditor {
-    view: Entity<AgentSettingsView>,
+struct RetiredProviderSettingsEditor {
+    view: Entity<ProviderSettingsView>,
     _subscription: Subscription,
 }
 
@@ -167,9 +159,9 @@ struct RetiredPersonaSettingsEditor {
 /// 独立设置窗口的主体状态。
 pub(crate) struct SettingsView {
     catalog: ModelCatalog,
-    memory: AgentMemoryAccess,
-    agent_settings_view: Option<Entity<AgentSettingsView>>,
-    agent_settings_draft: Option<AgentSettingsDraft>,
+    agent: Arc<Agent>,
+    provider_settings_view: Option<Entity<ProviderSettingsView>>,
+    provider_settings_draft: Option<ProviderSettingsDraft>,
     persona_settings_view: Option<Entity<PersonaSettingsView>>,
     persona_settings_draft: Option<PersonaSettingsDraft>,
     custom_accent_input: Option<Entity<InputState>>,
@@ -213,9 +205,9 @@ pub(crate) struct SettingsView {
     refresh_task: Option<Task<()>>,
     refresh_window_scoped: bool,
     write_tasks: Vec<Task<()>>,
-    agent_settings_subscription: Option<Subscription>,
+    provider_settings_subscription: Option<Subscription>,
     persona_settings_subscription: Option<Subscription>,
-    retired_agent_settings_editors: Vec<RetiredAgentSettingsEditor>,
+    retired_provider_settings_editors: Vec<RetiredProviderSettingsEditor>,
     retired_persona_settings_editors: Vec<RetiredPersonaSettingsEditor>,
     custom_frame_rate_subscription: Option<Subscription>,
     custom_frame_rate_input_revision: u64,
@@ -245,7 +237,7 @@ impl SettingsView {
     /// 使用启动阶段得到的模型目录和配置诊断创建界面。
     pub(crate) fn new(
         catalog: ModelCatalog,
-        memory: AgentMemoryAccess,
+        agent: Arc<Agent>,
         status: Option<String>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -258,9 +250,9 @@ impl SettingsView {
         .detach();
         let mut view = Self {
             catalog,
-            memory,
-            agent_settings_view: None,
-            agent_settings_draft: None,
+            agent,
+            provider_settings_view: None,
+            provider_settings_draft: None,
             persona_settings_view: None,
             persona_settings_draft: None,
             custom_accent_input: None,
@@ -305,9 +297,9 @@ impl SettingsView {
             refresh_task: None,
             refresh_window_scoped: false,
             write_tasks: Vec::new(),
-            agent_settings_subscription: None,
+            provider_settings_subscription: None,
             persona_settings_subscription: None,
-            retired_agent_settings_editors: Vec::new(),
+            retired_provider_settings_editors: Vec::new(),
             retired_persona_settings_editors: Vec::new(),
             custom_frame_rate_subscription: None,
             custom_frame_rate_input_revision: 0,
@@ -341,8 +333,9 @@ impl SettingsView {
 
     /// 启动时幂等清理持久化 tombstone，避免必须再次打开设置窗口才删除旧记忆。
     fn start_pending_persona_cleanup(&mut self, cx: &mut Context<Self>) {
+        let memory = self.agent.memory();
         for persona in CONFIG.persona_settings().pending_deletions.clone() {
-            let memory = self.memory.clone();
+            let memory = memory.clone();
             if !memory.claim_deleted_persona_cleanup(&persona) {
                 continue;
             }
@@ -376,7 +369,8 @@ impl SettingsView {
 
     fn finish_deleted_persona_cleanup(&mut self, _persona: String, cx: &mut Context<Self>) {
         let completed = self
-            .memory
+            .agent
+            .memory()
             .completed_deleted_persona_cleanups()
             .into_iter()
             .filter(|persona| {
@@ -425,7 +419,8 @@ impl SettingsView {
     fn release_published_persona_cleanups(&mut self, cx: &mut Context<Self>) {
         let pending = CONFIG.persona_settings().pending_deletions.clone();
         let published = self
-            .memory
+            .agent
+            .memory()
             .completed_deleted_persona_cleanups()
             .into_iter()
             .filter(|persona| !pending.contains(persona))
@@ -445,8 +440,9 @@ impl SettingsView {
                 draft.persona_cleanup_was_published(persona);
             }
         }
+        let memory = self.agent.memory();
         for persona in published {
-            self.memory.release_deleted_persona_cleanup(&persona);
+            memory.release_deleted_persona_cleanup(&persona);
         }
     }
 
@@ -455,6 +451,7 @@ impl SettingsView {
         self.allow_agent_screenshot = CONFIG.requested_allow_agent_screenshot();
         self.screenshot_permission_retry_required =
             CONFIG.agent_screenshot_permission_retry_required();
+        self.appearance = CONFIG.appearance().as_ref().clone();
         apply_language(self.appearance.language);
         apply(&self.appearance, Some(window), cx);
         let shortcut_focus = cx.focus_handle();
@@ -464,10 +461,10 @@ impl SettingsView {
             }));
         self.shortcut_focus = Some(shortcut_focus);
         let draft = self
-            .agent_settings_draft
+            .provider_settings_draft
             .take()
-            .unwrap_or_else(AgentSettingsDraft::current);
-        let agent_settings_view = cx.new(|cx| AgentSettingsView::new(draft, window, cx));
+            .unwrap_or_else(ProviderSettingsDraft::current);
+        let provider_settings_view = cx.new(|cx| ProviderSettingsView::new(draft, window, cx));
         self.activate_persona_settings(window, cx);
         self.custom_accent_input = Some(cx.new(|cx| {
             InputState::new(window, cx).default_value(self.appearance.custom.accent.clone())
@@ -596,18 +593,18 @@ impl SettingsView {
             }),
         ];
         // 供应商目录变化会改变人格可绑定的候选项，两个编辑器必须保持同步。
-        self.agent_settings_subscription = Some(cx.subscribe(
-            &agent_settings_view,
-            |this, editor, event: &AgentSettingsEvent, cx| {
+        self.provider_settings_subscription = Some(cx.subscribe(
+            &provider_settings_view,
+            |this, editor, event: &ProviderSettingsEvent, cx| {
                 let editor_id = editor.entity_id();
-                this.retired_agent_settings_editors
+                this.retired_provider_settings_editors
                     .retain(|retired| retired.view.entity_id() != editor_id);
-                if matches!(event, AgentSettingsEvent::Saved) {
+                if matches!(event, ProviderSettingsEvent::Saved) {
                     cx.emit(SettingsEvent::AgentChanged);
                 }
             },
         ));
-        self.agent_settings_view = Some(agent_settings_view);
+        self.provider_settings_view = Some(provider_settings_view);
         cx.notify();
     }
 
@@ -617,7 +614,7 @@ impl SettingsView {
             .persona_settings_draft
             .take()
             .unwrap_or_else(PersonaSettingsDraft::current);
-        let memory = self.memory.clone();
+        let memory = self.agent.memory();
         let live2d_models = self.persona_live2d_models();
         let view = cx.new(|cx| PersonaSettingsView::new(draft, memory, live2d_models, window, cx));
         self.persona_settings_subscription = Some(cx.subscribe(
@@ -638,30 +635,29 @@ impl SettingsView {
                 PersonaSettingsEvent::ClearContext {
                     persona,
                     completion,
-                } => cx.emit(SettingsEvent::PersonaContextCleared {
-                    persona: persona.clone(),
-                    completion: completion.clone(),
-                }),
+                } => this.clear_agent_context(persona, completion.clone(), cx),
                 PersonaSettingsEvent::EditContextMessage {
                     persona,
                     message_id,
                     content,
                     completion,
-                } => cx.emit(SettingsEvent::PersonaContextMessageEdited {
-                    persona: persona.clone(),
-                    message_id: *message_id,
-                    content: content.clone(),
-                    completion: completion.clone(),
-                }),
+                } => this.edit_agent_context_message(
+                    persona,
+                    *message_id,
+                    content.clone(),
+                    completion.clone(),
+                    cx,
+                ),
                 PersonaSettingsEvent::DeleteContextMessages {
                     persona,
                     message_ids,
                     completion,
-                } => cx.emit(SettingsEvent::PersonaContextMessagesDeleted {
-                    persona: persona.clone(),
-                    message_ids: message_ids.clone(),
-                    completion: completion.clone(),
-                }),
+                } => this.delete_agent_context_messages(
+                    persona,
+                    message_ids.clone(),
+                    completion.clone(),
+                    cx,
+                ),
             },
         ));
         self.persona_settings_view = Some(view.clone());
@@ -669,7 +665,11 @@ impl SettingsView {
             .persona_settings()
             .pending_deletions
             .iter()
-            .filter(|persona| self.memory.deleted_persona_cleanup_is_completed(persona))
+            .filter(|persona| {
+                self.agent
+                    .memory()
+                    .deleted_persona_cleanup_is_completed(persona)
+            })
             .cloned()
             .collect::<Vec<_>>();
         view.update(cx, |view, cx| {
@@ -679,6 +679,71 @@ impl SettingsView {
             view.resume_pending_work(cx);
         });
         self.release_published_persona_cleanups(cx);
+    }
+
+    fn clear_agent_context(
+        &self,
+        persona: &str,
+        completion: Option<ContextMutationCompletion>,
+        cx: &Context<Self>,
+    ) {
+        let agent = self.agent.clone();
+        let persona = persona.to_owned();
+        gpui_tokio::Tokio::spawn(cx, async move {
+            let result = agent
+                .clear_context(&persona)
+                .await
+                .map_err(|error| error.to_string());
+            complete_agent_context_mutation(completion.as_ref(), result);
+        })
+        .detach();
+    }
+
+    fn edit_agent_context_message(
+        &self,
+        persona: &str,
+        message_id: u64,
+        content: String,
+        completion: Option<ContextMutationCompletion>,
+        cx: &Context<Self>,
+    ) {
+        let Some(limits) = agent_context_limits(persona) else {
+            complete_agent_context_mutation(completion.as_ref(), Err("人格不存在".to_owned()));
+            return;
+        };
+        let agent = self.agent.clone();
+        let persona = persona.to_owned();
+        gpui_tokio::Tokio::spawn(cx, async move {
+            let result = agent
+                .edit_context_message(&persona, limits, message_id, content)
+                .await
+                .map_err(|error| error.to_string());
+            complete_agent_context_mutation(completion.as_ref(), result);
+        })
+        .detach();
+    }
+
+    fn delete_agent_context_messages(
+        &self,
+        persona: &str,
+        message_ids: Vec<u64>,
+        completion: Option<ContextMutationCompletion>,
+        cx: &Context<Self>,
+    ) {
+        let Some(limits) = agent_context_limits(persona) else {
+            complete_agent_context_mutation(completion.as_ref(), Err("人格不存在".to_owned()));
+            return;
+        };
+        let agent = self.agent.clone();
+        let persona = persona.to_owned();
+        gpui_tokio::Tokio::spawn(cx, async move {
+            let result = agent
+                .delete_context_messages(&persona, limits, message_ids)
+                .await
+                .map_err(|error| error.to_string());
+            complete_agent_context_mutation(completion.as_ref(), result);
+        })
+        .detach();
     }
 
     fn persona_live2d_models(&self) -> Vec<(String, PathBuf)> {
@@ -844,16 +909,16 @@ impl SettingsView {
             self.is_refreshing = false;
             self.refresh_window_scoped = false;
         }
-        if let Some(agent_settings_view) = self.agent_settings_view.take() {
+        if let Some(provider_settings_view) = self.provider_settings_view.take() {
             let (draft, pending) =
-                agent_settings_view.update(cx, |view, cx| view.take_window_state(cx));
-            self.agent_settings_draft = Some(draft);
+                provider_settings_view.update(cx, |view, cx| view.take_window_state(cx));
+            self.provider_settings_draft = Some(draft);
             let has_pending = pending.iter().any(|task| !task.is_ready());
-            let subscription = self.agent_settings_subscription.take();
+            let subscription = self.provider_settings_subscription.take();
             if has_pending && let Some(subscription) = subscription {
-                self.retired_agent_settings_editors
-                    .push(RetiredAgentSettingsEditor {
-                        view: agent_settings_view,
+                self.retired_provider_settings_editors
+                    .push(RetiredProviderSettingsEditor {
+                        view: provider_settings_view,
                         _subscription: subscription,
                     });
             }
@@ -896,7 +961,7 @@ impl SettingsView {
         self.shortcut_focus_subscription = None;
         self.voice_picker_revision = self.voice_picker_revision.wrapping_add(1).max(1);
         self.voice_picker_task = None;
-        self.agent_settings_subscription = None;
+        self.provider_settings_subscription = None;
         self.persona_settings_subscription = None;
         self.custom_frame_rate_subscription = None;
         self.logging_input_subscriptions.clear();
@@ -914,18 +979,18 @@ impl SettingsView {
         }
     }
 
-    /// 取出设置主体和 Agent 编辑器中尚未完成的写入任务。
+    /// 取出设置主体、供应商与人格编辑器中尚未完成的写入任务。
     pub(crate) fn take_pending_write_tasks(&mut self, cx: &mut Context<Self>) -> Vec<Task<()>> {
         self.flush_custom_frame_rate_input(cx);
         self.flush_logging_inputs(cx);
         if let Some(input) = self.model_resource_name_input.clone() {
             self.commit_model_resource_name(&input, cx);
         }
-        if let Some(agent_settings_view) = &self.agent_settings_view {
-            let agent_settings_view = agent_settings_view.clone();
+        if let Some(provider_settings_view) = &self.provider_settings_view {
+            let provider_settings_view = provider_settings_view.clone();
             let (draft, pending) =
-                agent_settings_view.update(cx, |view, cx| view.take_window_state(cx));
-            self.agent_settings_draft = Some(draft);
+                provider_settings_view.update(cx, |view, cx| view.take_window_state(cx));
+            self.provider_settings_draft = Some(draft);
             self.write_tasks.extend(pending);
         }
         if let Some(persona_settings_view) = &self.persona_settings_view {
@@ -1139,6 +1204,17 @@ impl SettingsView {
         self.status.as_deref()
     }
 
+    /// 注入尚未发布的外观草稿，验证窗口激活只采用已发布配置。
+    #[cfg(test)]
+    pub(in crate::ui) fn set_appearance_language_for_test(&mut self, language: AppLanguage) {
+        self.appearance.language = language;
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn appearance_language_for_test(&self) -> AppLanguage {
+        self.appearance.language
+    }
+
     /// 返回已发现的模型家族与服装总数。
     #[cfg(test)]
     pub(in crate::ui) fn catalog_counts_for_test(&self) -> (usize, usize) {
@@ -1228,7 +1304,7 @@ impl SettingsView {
     /// 返回设置窗口是否已经创建输入组件。
     #[cfg(test)]
     pub(in crate::ui) fn window_is_active_for_test(&self) -> bool {
-        self.agent_settings_view.is_some()
+        self.provider_settings_view.is_some()
             && self.persona_settings_view.is_some()
             && self.custom_frame_rate_input.is_some()
             && self.voice_whisper_model_input.is_some()
@@ -1537,20 +1613,23 @@ impl SettingsView {
         self.track_write_task(task);
     }
 
-    /// 返回当前已加载模型可交给 Agent 选择的本地化服装名称。
-    pub(in crate::ui) fn available_agent_outfits(&self) -> Vec<String> {
+    /// 返回当前已加载模型可交给 Agent 选择的稳定 ID 与本地化显示名。
+    pub(in crate::ui) fn available_agent_outfits(&self) -> Vec<OutfitOption> {
         self.agent_outfit_candidates()
             .into_iter()
-            .map(|candidate| candidate.name)
+            .map(|candidate| OutfitOption::new(candidate.id, candidate.label))
             .collect()
     }
 
-    /// 将 Agent 传回的枚举名称解析为当前目录和 generation 下的语义动作。
-    pub(in crate::ui) fn resolve_agent_outfit(&self, requested: &str) -> Option<AgentOutfitAction> {
+    /// 将 Agent 传回的稳定 ID 解析为当前目录和 generation 下的语义动作。
+    pub(in crate::ui) fn resolve_agent_outfit(
+        &self,
+        requested_id: &str,
+    ) -> Option<AgentOutfitAction> {
         let candidate = self
             .agent_outfit_candidates()
             .into_iter()
-            .find(|candidate| candidate.name == requested)?;
+            .find(|candidate| candidate.id == requested_id)?;
         Some(match candidate.target {
             AgentOutfitTarget::Variant(relative_path) => {
                 if self.catalog.selected_relative_path() == Some(relative_path.as_path()) {
@@ -1688,7 +1767,8 @@ impl SettingsView {
             };
             let key = Self::variant_resource_key(variant.relative_path());
             candidates.push(AgentOutfitCandidate {
-                name: self.model_resource_name(&key, &default_name),
+                id: format!("variant:{}", variant.relative_path().to_string_lossy()),
+                label: self.model_resource_name(&key, &default_name),
                 target: AgentOutfitTarget::Variant(variant.relative_path().to_path_buf()),
             });
         }
@@ -1703,13 +1783,14 @@ impl SettingsView {
                 continue;
             };
             candidates.push(AgentOutfitCandidate {
-                name: self.model_resource_name(&key, resource.default_name()),
+                id: format!("expression:{}", resource.runtime_id()),
+                label: self.model_resource_name(&key, resource.default_name()),
                 target: AgentOutfitTarget::Expression(resource.runtime_id().to_owned()),
             });
         }
         let mut used_names = HashSet::with_capacity(candidates.len());
         for candidate in &mut candidates {
-            candidate.name = unique_outfit_name(&candidate.name, &mut used_names);
+            candidate.label = unique_outfit_name(&candidate.label, &mut used_names);
         }
         candidates
     }
@@ -2596,7 +2677,7 @@ impl SettingsView {
         &mut self,
         appearance: AppearanceSettings,
         show_feedback: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let appearance = match appearance.normalized() {
@@ -2606,10 +2687,9 @@ impl SettingsView {
                 return;
             }
         };
+        let published_before_request = CONFIG.appearance().as_ref().clone();
         self.appearance = appearance.clone();
-        apply_language(appearance.language);
-        apply(&appearance, Some(window), cx);
-        cx.emit(SettingsEvent::AppearanceChanged(appearance.clone()));
+        let requested = appearance.clone();
         self.revision = self.revision.wrapping_add(1);
         let revision = self.revision;
         cx.notify();
@@ -2622,17 +2702,41 @@ impl SettingsView {
                 )
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.revision == revision {
-                    if let Err(error) = result {
-                        this.set_status(
-                            t!("status.appearance_failed", error = error.to_string()).to_string(),
-                            cx,
-                        );
-                    } else if show_feedback {
-                        this.set_status(t!("status.appearance_saved").to_string(), cx);
-                    } else {
+                let request_can_update_draft =
+                    this.appearance == requested || this.appearance == published_before_request;
+                match result {
+                    Ok(Some(published)) => {
+                        let published = published.as_ref().clone();
+                        if request_can_update_draft {
+                            this.appearance = published.clone();
+                        }
+                        apply_language(published.language);
+                        apply(&published, None, cx);
+                        cx.emit(SettingsEvent::AppearanceChanged(published));
+                        if request_can_update_draft && this.revision == revision && show_feedback {
+                            this.set_status(t!("status.appearance_saved").to_string(), cx);
+                        } else {
+                            cx.notify();
+                        }
+                    }
+                    Ok(None) if request_can_update_draft => {
+                        this.appearance = CONFIG.appearance().as_ref().clone();
                         cx.notify();
                     }
+                    Ok(None) => {}
+                    Err(error) if request_can_update_draft => {
+                        this.appearance = CONFIG.appearance().as_ref().clone();
+                        if this.revision == revision {
+                            this.set_status(
+                                t!("status.appearance_failed", error = error.to_string())
+                                    .to_string(),
+                                cx,
+                            );
+                        } else {
+                            cx.notify();
+                        }
+                    }
+                    Err(_) => {}
                 }
             });
         });
@@ -2676,6 +2780,25 @@ fn unique_outfit_name(base: &str, used_names: &mut HashSet<String>) -> String {
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
+
+fn agent_context_limits(persona_id: &str) -> Option<lunamate_agent::ChatLimits> {
+    let settings = CONFIG.llm_settings();
+    CONFIG
+        .persona_settings()
+        .personas
+        .iter()
+        .find(|persona| persona.id == persona_id)
+        .map(|persona| chat_limits(persona, &settings))
+}
+
+fn complete_agent_context_mutation(
+    completion: Option<&ContextMutationCompletion>,
+    result: Result<(), String>,
+) {
+    if let Some(completion) = completion {
+        let _ = completion.try_send(result);
+    }
+}
 
 pub(in crate::ui) fn parse_custom_frame_rate(value: &str) -> Option<FrameRate> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {

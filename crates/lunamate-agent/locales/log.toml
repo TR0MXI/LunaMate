@@ -1,0 +1,217 @@
+_version = 2
+
+[log.apply_settings_failed]
+"zh-CN" = "应用日志配置失败，继续使用启动配置：%{error}"
+"zh-TW" = "套用日誌設定失敗，繼續使用啟動設定：%{error}"
+"en" = "Failed to apply logging settings; continuing with startup settings: %{error}"
+"ja" = "ログ設定の適用に失敗しました。起動時の設定を使用します: %{error}"
+
+[log.async_runtime_init_failed]
+"zh-CN" = "无法初始化异步运行时，应用未启动：%{error}"
+"zh-TW" = "無法初始化非同步執行環境，應用程式未啟動：%{error}"
+"en" = "Could not initialize the async runtime; the application was not started: %{error}"
+"ja" = "非同期ランタイムを初期化できないため、アプリケーションを起動しませんでした: %{error}"
+
+[log.database_init_failed]
+"zh-CN" = "嵌入式数据库初始化失败，存储功能已禁用：%{error}"
+"zh-TW" = "嵌入式資料庫初始化失敗，儲存功能已停用：%{error}"
+"en" = "The embedded database could not be initialized; persistence is disabled: %{error}"
+"ja" = "組み込みデータベースを初期化できないため、永続化を無効にしました: %{error}"
+
+[log.file_fallback]
+"zh-CN" = "无法写入日志文件，已降级为 stderr：%{reason}"
+"zh-TW" = "無法寫入日誌檔案，已改用 stderr：%{reason}"
+"en" = "Could not write to the log file; falling back to stderr: %{reason}"
+"ja" = "ログファイルに書き込めないため、stderr にフォールバックしました: %{reason}"
+
+[log.config_rebuilt]
+"zh-CN" = "配置文件 %{path} 已损坏，原文件已备份到 %{backup}，本次保存将重建有效 TOML：%{error}"
+"zh-TW" = "設定檔 %{path} 已損壞，原檔案已備份到 %{backup}，本次儲存將重建有效的 TOML：%{error}"
+"en" = "Configuration file %{path} is corrupt; the original was backed up to %{backup} and this save will rebuild valid TOML: %{error}"
+"ja" = "設定ファイル %{path} が破損しています。元のファイルを %{backup} にバックアップし、今回の保存で有効な TOML を再構築します: %{error}"
+
+[log.config_backup_failed]
+"zh-CN" = "无法备份损坏的配置文件到 %{path}：%{error}"
+"zh-TW" = "無法備份損壞的設定檔到 %{path}：%{error}"
+"en" = "Could not back up the corrupt configuration file to %{path}: %{error}"
+"ja" = "破損した設定ファイルを %{path} にバックアップできませんでした: %{error}"
+
+[log.config_parent_sync_failed]
+"zh-CN" = "配置文件已替换，但无法同步目录 %{path}；异常断电时可能丢失本次修改：%{error}"
+"zh-TW" = "設定檔已取代，但無法同步目錄 %{path}；異常斷電時可能遺失本次修改：%{error}"
+"en" = "The configuration file was replaced, but directory %{path} could not be synced; this update may be lost after an abrupt power failure: %{error}"
+"ja" = "設定ファイルは置き換えられましたが、ディレクトリ %{path} を同期できませんでした。突然の電源断では変更が失われる可能性があります: %{error}"
+
+[log.gpu_device_lost]
+"zh-CN" = "Live2D GPU device 已丢失：%{reason}：%{message}"
+"zh-TW" = "Live2D GPU device 已遺失：%{reason}：%{message}"
+"en" = "The Live2D GPU device was lost: %{reason}: %{message}"
+"ja" = "Live2D GPU device が失われました: %{reason}: %{message}"
+
+[log.gpu_shutdown_wait_timeout]
+"zh-CN" = "等待 Live2D GPU worker 退出超时，继续关闭应用"
+"zh-TW" = "等待 Live2D GPU worker 結束逾時，繼續關閉應用程式"
+"en" = "Timed out waiting for the Live2D GPU worker to exit; continuing to shut down"
+"ja" = "Live2D GPU worker の終了待ちがタイムアウトしました。アプリの終了を続行します"
+
+[log.gpu_worker_panicked]
+"zh-CN" = "Live2D GPU worker 在退出时发生 panic"
+"zh-TW" = "Live2D GPU worker 結束時發生 panic"
+"en" = "The Live2D GPU worker panicked while exiting"
+"ja" = "Live2D GPU worker の終了時に panic が発生しました"
+
+[log.model_capability_warning]
+"zh-CN" = "Live2D 模型能力警告：%{diagnostic}"
+"zh-TW" = "Live2D 模型能力警告：%{diagnostic}"
+"en" = "Live2D model capability warning: %{diagnostic}"
+"ja" = "Live2D モデル機能の警告: %{diagnostic}"
+
+[log.chat_close_save_failed]
+"zh-CN" = "聊天视图关闭时保存会话失败：%{error}"
+"zh-TW" = "聊天檢視關閉時儲存工作階段失敗：%{error}"
+"en" = "Failed to save the chat session while closing the chat view: %{error}"
+"ja" = "チャットビューの終了時にセッションを保存できませんでした: %{error}"
+
+[log.chat_save_failed]
+"zh-CN" = "保存聊天会话失败：%{error}"
+"zh-TW" = "儲存聊天工作階段失敗：%{error}"
+"en" = "Failed to save the chat session: %{error}"
+"ja" = "チャットセッションを保存できませんでした: %{error}"
+
+[log.frame_render_stopped]
+"zh-CN" = "Live2D 帧渲染已停止：%{error}"
+"zh-TW" = "Live2D 幀算繪已停止：%{error}"
+"en" = "Live2D frame rendering stopped: %{error}"
+"ja" = "Live2D フレームのレンダリングを停止しました: %{error}"
+
+[log.pet_move_unsupported]
+"zh-CN" = "当前窗口系统不允许应用主动移动桌宠窗口"
+"zh-TW" = "目前的視窗系統不允許應用程式主動移動桌寵視窗"
+"en" = "The current window system does not allow the application to move the desktop pet window"
+"ja" = "現在のウィンドウシステムでは、アプリケーションからデスクトップペットウィンドウを移動できません"
+
+[log.startup_config_warning]
+"zh-CN" = "启动配置警告：%{warning}"
+"zh-TW" = "啟動設定警告：%{warning}"
+"en" = "Startup configuration warning: %{warning}"
+"ja" = "起動設定の警告: %{warning}"
+
+[log.pet_window_config_failed]
+"zh-CN" = "配置桌宠原生窗口失败：%{error}"
+"zh-TW" = "設定桌寵原生視窗失敗：%{error}"
+"en" = "Failed to configure the native desktop pet window: %{error}"
+"ja" = "デスクトップペットのネイティブウィンドウ設定に失敗しました: %{error}"
+
+[log.exit_chat_save_failed]
+"zh-CN" = "应用退出时保存聊天会话失败：%{error}"
+"zh-TW" = "應用程式結束時儲存聊天工作階段失敗：%{error}"
+"en" = "Failed to save the chat session while exiting the application: %{error}"
+"ja" = "アプリケーション終了時にチャットセッションを保存できませんでした: %{error}"
+
+[log.exit_position_save_failed]
+"zh-CN" = "应用退出时保存窗口位置失败：%{error}"
+"zh-TW" = "應用程式結束時儲存視窗位置失敗：%{error}"
+"en" = "Failed to save window positions while exiting the application: %{error}"
+"ja" = "アプリケーション終了時にウィンドウ位置を保存できませんでした: %{error}"
+
+[log.main_window_create_failed]
+"zh-CN" = "无法创建 LunaMate 窗口：%{error}"
+"zh-TW" = "無法建立 LunaMate 視窗：%{error}"
+"en" = "Could not create the LunaMate window: %{error}"
+"ja" = "LunaMate ウィンドウを作成できませんでした: %{error}"
+
+[log.gpu_underlay_init_failed]
+"zh-CN" = "Live2D GPU underlay 初始化失败，已回退 CPU：%{error}"
+"zh-TW" = "Live2D GPU underlay 初始化失敗，已改用 CPU：%{error}"
+"en" = "Failed to initialize the Live2D GPU underlay; falling back to the CPU renderer: %{error}"
+"ja" = "Live2D GPU underlay の初期化に失敗したため、CPU レンダラーにフォールバックします: %{error}"
+
+[log.gpu_worker_exited]
+"zh-CN" = "Live2D GPU worker 意外退出，切换到 CPU renderer"
+"zh-TW" = "Live2D GPU worker 意外結束，切換至 CPU renderer"
+"en" = "The Live2D GPU worker exited unexpectedly; switching to the CPU renderer"
+"ja" = "Live2D GPU worker が予期せず終了したため、CPU レンダラーに切り替えます"
+
+[log.gpu_model_cpu_fallback]
+"zh-CN" = "%{message}；切换到 CPU renderer"
+"zh-TW" = "%{message}；切換至 CPU renderer"
+"en" = "%{message}; switching to the CPU renderer"
+"ja" = "%{message}。CPU レンダラーに切り替えます"
+
+[log.gpu_underlay_cpu_fallback]
+"zh-CN" = "Live2D GPU underlay 已失效，切换到 CPU renderer：%{error}"
+"zh-TW" = "Live2D GPU underlay 已失效，切換至 CPU renderer：%{error}"
+"en" = "The Live2D GPU underlay is no longer available; switching to the CPU renderer: %{error}"
+"ja" = "Live2D GPU underlay が無効になったため、CPU レンダラーに切り替えます: %{error}"
+
+[log.settings_window_config_failed]
+"zh-CN" = "配置设置原生窗口失败：%{error}"
+"zh-TW" = "設定原生設定視窗失敗：%{error}"
+"en" = "Failed to configure the native settings window: %{error}"
+"ja" = "設定用ネイティブウィンドウの構成に失敗しました: %{error}"
+
+[log.settings_window_create_failed]
+"zh-CN" = "无法创建 LunaMate 设置窗口：%{error}"
+"zh-TW" = "無法建立 LunaMate 設定視窗：%{error}"
+"en" = "Could not create the LunaMate settings window: %{error}"
+"ja" = "LunaMate 設定ウィンドウを作成できませんでした: %{error}"
+
+[log.image_release_failed]
+"zh-CN" = "回收旧 Live2D 图像失败：%{error}"
+"zh-TW" = "回收舊 Live2D 圖像失敗：%{error}"
+"en" = "Failed to release the previous Live2D image: %{error}"
+"ja" = "以前の Live2D 画像を解放できませんでした: %{error}"
+
+[log.logging_update_failed]
+"zh-CN" = "更新日志配置失败：%{error}"
+"zh-TW" = "更新日誌設定失敗：%{error}"
+"en" = "Failed to update logging settings: %{error}"
+"ja" = "ログ設定を更新できませんでした: %{error}"
+
+[log.settings_move_unsupported]
+"zh-CN" = "当前窗口系统不允许应用主动移动设置窗口"
+"zh-TW" = "目前的視窗系統不允許應用程式主動移動設定視窗"
+"en" = "The current window system does not allow the application to move the settings window"
+"ja" = "現在のウィンドウシステムでは、アプリケーションから設定ウィンドウを移動できません"
+
+[log.tray_init_failed]
+"zh-CN" = "系统托盘初始化失败：%{error}"
+"zh-TW" = "系統匣初始化失敗：%{error}"
+"en" = "Failed to initialize the system tray: %{error}"
+"ja" = "システムトレイを初期化できませんでした: %{error}"
+
+[log.tray_visibility_failed]
+"zh-CN" = "切换桌宠窗口显隐失败：%{error}"
+"zh-TW" = "切換桌寵視窗顯示狀態失敗：%{error}"
+"en" = "Failed to change desktop pet window visibility: %{error}"
+"ja" = "デスクトップペットウィンドウの表示状態を変更できませんでした: %{error}"
+
+[log.tray_action_queue_full]
+"zh-CN" = "系统托盘动作队列已满，本次操作已忽略"
+"zh-TW" = "系統匣動作佇列已滿，已忽略本次操作"
+"en" = "The system tray action queue is full; this action was ignored"
+"ja" = "システムトレイの操作キューが満杯のため、この操作を無視しました"
+
+[log.tray_appearance_failed]
+"zh-CN" = "同步系统托盘外观失败：%{error}"
+"zh-TW" = "同步系統匣外觀失敗：%{error}"
+"en" = "Failed to synchronize the system tray appearance: %{error}"
+"ja" = "システムトレイの外観を同期できませんでした: %{error}"
+
+[log.tray_update_stopped]
+"zh-CN" = "系统托盘服务已停止，后续状态更新将不再生效"
+"zh-TW" = "系統匣服務已停止，後續狀態更新將不再生效"
+"en" = "The system tray service stopped; subsequent state updates will not take effect"
+"ja" = "システムトレイサービスが停止したため、以降の状態更新は反映されません"
+
+[log.tray_menu_create_failed]
+"zh-CN" = "无法创建自定义托盘菜单，已回退系统菜单：%{error}"
+"zh-TW" = "無法建立自訂系統匣選單，已改用系統選單：%{error}"
+"en" = "Could not create the custom tray menu; falling back to the native menu: %{error}"
+"ja" = "カスタムトレイメニューを作成できないため、システムメニューにフォールバックしました: %{error}"
+
+[log.tray_menu_window_config_failed]
+"zh-CN" = "配置自定义托盘菜单原生窗口失败：%{error}"
+"zh-TW" = "設定自訂系統匣選單原生視窗失敗：%{error}"
+"en" = "Failed to configure the native custom tray menu window: %{error}"
+"ja" = "カスタムトレイメニューのネイティブウィンドウ設定に失敗しました: %{error}"

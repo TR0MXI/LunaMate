@@ -5,10 +5,12 @@ use std::path::Path;
 use toml_edit::DocumentMut;
 
 use crate::config::{
-    CONTEXT_MESSAGES_MIN, CONTEXT_TOKENS_MAX, DEFAULT_CONTEXT_MESSAGES, DEFAULT_CONTEXT_TOKENS,
-    DEFAULT_PERSONA_ID, PersonaConfig, PersonaContextLimits, PersonaSettings,
-    parse_persona_settings, write_persona_settings,
+    AppLanguage, CONTEXT_MESSAGES_MIN, CONTEXT_TOKENS_MAX, DEFAULT_CONTEXT_MESSAGES,
+    DEFAULT_CONTEXT_TOKENS, DEFAULT_PERSONA_ID, PersonaConfig, PersonaContextLimits,
+    PersonaSettings, parse_persona_settings, write_persona_settings,
 };
+
+const LANGUAGE: AppLanguage = AppLanguage::SimplifiedChinese;
 
 fn document(source: &str) -> DocumentMut {
     source.parse::<DocumentMut>().expect("测试配置应当可以解析")
@@ -16,7 +18,7 @@ fn document(source: &str) -> DocumentMut {
 
 #[test]
 fn an_empty_configuration_still_yields_one_persona() {
-    let settings = parse_persona_settings(&DocumentMut::new(), &mut Vec::new());
+    let settings = parse_persona_settings(&DocumentMut::new(), &mut Vec::new(), LANGUAGE);
 
     assert_eq!(settings.personas.len(), 1);
     assert_eq!(settings.selected.as_deref(), Some(DEFAULT_PERSONA_ID));
@@ -54,7 +56,7 @@ name = "学习助手"
     );
     let mut warnings = Vec::new();
 
-    let settings = parse_persona_settings(&source, &mut warnings);
+    let settings = parse_persona_settings(&source, &mut warnings, LANGUAGE);
 
     assert!(warnings.is_empty(), "警告：{warnings:?}");
     assert_eq!(settings.personas.len(), 2);
@@ -81,7 +83,10 @@ name = "学习助手"
 
     write_persona_settings(&mut source, &settings);
     let mut rewritten = Vec::new();
-    assert_eq!(parse_persona_settings(&source, &mut rewritten), settings);
+    assert_eq!(
+        parse_persona_settings(&source, &mut rewritten, LANGUAGE),
+        settings
+    );
     assert!(rewritten.is_empty());
     let saved = source.to_string();
     assert!(saved.contains("future_option = \"keep\""));
@@ -105,16 +110,19 @@ name = "露娜"
     );
     let mut warnings = Vec::new();
 
-    let settings = parse_persona_settings(&source, &mut warnings);
+    let settings = parse_persona_settings(&source, &mut warnings, LANGUAGE);
 
     assert_eq!(settings.pending_deletions, ["removed"]);
     assert_eq!(warnings.len(), 3);
     write_persona_settings(&mut source, &settings);
-    assert_eq!(parse_persona_settings(&source, &mut Vec::new()), settings);
+    assert_eq!(
+        parse_persona_settings(&source, &mut Vec::new(), LANGUAGE),
+        settings
+    );
 
     let mut conflicting = settings;
     conflicting.pending_deletions.push("moon".to_owned());
-    assert!(conflicting.normalized().is_err());
+    assert!(conflicting.normalized(LANGUAGE).is_err());
 }
 
 #[test]
@@ -127,7 +135,7 @@ pending_deletions = ["removed"]
     );
     let mut warnings = Vec::new();
 
-    let settings = parse_persona_settings(&source, &mut warnings);
+    let settings = parse_persona_settings(&source, &mut warnings, LANGUAGE);
 
     assert_eq!(settings.personas.len(), 1);
     assert_eq!(settings.pending_deletions, ["removed"]);
@@ -160,7 +168,7 @@ name = "可用人格"
     );
     let mut warnings = Vec::new();
 
-    let settings = parse_persona_settings(&document, &mut warnings);
+    let settings = parse_persona_settings(&document, &mut warnings, LANGUAGE);
 
     assert_eq!(settings.personas.len(), 1);
     assert_eq!(settings.personas[0].id, "good");
@@ -185,7 +193,7 @@ name = "重复 ID"
     );
     let mut warnings = Vec::new();
 
-    let settings = parse_persona_settings(&document, &mut warnings);
+    let settings = parse_persona_settings(&document, &mut warnings, LANGUAGE);
 
     assert_eq!(settings.personas.len(), 1);
     assert_eq!(settings.selected, None);
@@ -205,7 +213,7 @@ fn normalization_rejects_an_empty_list_and_out_of_range_limits() {
             selected: None,
             pending_deletions: Vec::new(),
         }
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
 
@@ -216,7 +224,10 @@ fn normalization_rejects_an_empty_list_and_out_of_range_limits() {
         selected: None,
         pending_deletions: Vec::new(),
     };
-    assert!(many.normalized().is_ok(), "人格目录不再设置固定数量上限");
+    assert!(
+        many.normalized(LANGUAGE).is_ok(),
+        "人格目录不再设置固定数量上限"
+    );
 
     let with_limits = |context: PersonaContextLimits| {
         let mut persona = PersonaConfig::new("moon", "露娜");
@@ -232,7 +243,7 @@ fn normalization_rejects_an_empty_list_and_out_of_range_limits() {
             max_messages: Some(CONTEXT_MESSAGES_MIN - 1),
             max_tokens: None,
         })
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
     assert!(
@@ -240,7 +251,7 @@ fn normalization_rejects_an_empty_list_and_out_of_range_limits() {
             max_messages: None,
             max_tokens: Some(CONTEXT_TOKENS_MAX + 1),
         })
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
     assert!(
@@ -248,7 +259,7 @@ fn normalization_rejects_an_empty_list_and_out_of_range_limits() {
             max_messages: Some(CONTEXT_MESSAGES_MIN),
             max_tokens: Some(CONTEXT_TOKENS_MAX),
         })
-        .normalized()
+        .normalized(LANGUAGE)
         .is_ok()
     );
 }
@@ -263,7 +274,7 @@ fn live2d_binding_must_stay_inside_the_model_directory() {
             selected: Some("moon".to_owned()),
             pending_deletions: Vec::new(),
         }
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
 }
@@ -291,5 +302,5 @@ fn a_selection_pointing_at_a_removed_persona_is_rejected_on_publish() {
         pending_deletions: Vec::new(),
     };
 
-    assert!(settings.normalized().is_err());
+    assert!(settings.normalized(LANGUAGE).is_err());
 }

@@ -1,5 +1,6 @@
-//! 隔离原生窗口适配与 underlay surface attachment，并提供窄平台接口。
+//! 隔离原生窗口适配、屏幕捕获、用户图片读取与 underlay surface attachment，并提供窄平台接口。
 
+mod screenshot;
 mod tray;
 mod underlay;
 #[cfg(target_os = "linux")]
@@ -9,6 +10,7 @@ mod window;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use screenshot::{capture_primary_screen, load_agent_image};
 pub(crate) use tray::{SystemTray, SystemTrayAction, TrayIconStyle, TrayMenuAnchor};
 pub(crate) use underlay::{
     InitializationCancellation, NativeAttachment, SurfaceFactory, SurfaceOwner, SurfaceSeed,

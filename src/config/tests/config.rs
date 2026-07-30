@@ -3,6 +3,9 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, mpsc},
+    thread,
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -84,7 +87,7 @@ fn oversized_persona_directory_is_rejected_before_creating_an_unreadable_config(
 
     let revision = config.reserve_persona_settings_revision();
     let error = config
-        .set_persona_settings_at_revision(settings, revision)
+        .set_persona_settings_at_revision(settings, revision, AppLanguage::SimplifiedChinese)
         .expect_err("超过完整配置上限的人格目录必须拒绝写入");
 
     assert!(matches!(error, ConfigWriteError::InvalidValue(_)));
@@ -328,6 +331,146 @@ fn agent_screenshot_permission_revision_notifies_subscribers() {
 }
 
 #[test]
+fn screenshot_revocation_waits_for_an_in_flight_task_start() {
+    let directory = TestDirectory::new();
+    let config = Arc::new(LunaConfig::load_from(directory.config_path()));
+    let enable = config.reserve_allow_agent_screenshot_revision(true);
+    config
+        .set_allow_agent_screenshot_at_revision(true, enable)
+        .expect("测试截图授权应当可以持久化")
+        .expect("最新截图授权应当发布");
+    let authorization = config
+        .begin_agent_screenshot_capture(enable)
+        .expect("当前授权应当可以启动截图任务");
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (finished_tx, finished_rx) = mpsc::sync_channel(0);
+    let config_for_revocation = Arc::clone(&config);
+    let revoke = thread::spawn(move || {
+        started_tx.send(()).expect("测试线程应当报告已开始");
+        let revision = config_for_revocation.reserve_allow_agent_screenshot_revision(false);
+        finished_tx
+            .send(revision)
+            .expect("测试线程应当报告撤权完成");
+    });
+
+    started_rx.recv().expect("撤权线程应当启动");
+    assert!(
+        finished_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+        "截图启动租约释放前撤权不得完成"
+    );
+    drop(authorization);
+    let disable = finished_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("释放租约后撤权应当完成");
+    revoke.join().expect("撤权线程不应 panic");
+
+    assert!(!config.agent_screenshot_permission_is_current(enable));
+    assert!(
+        config.begin_agent_screenshot_capture(disable).is_none(),
+        "关闭 revision 不得取得截图启动租约"
+    );
+}
+
+#[test]
+fn agent_config_generation_and_domains_publish_as_one_snapshot() {
+    let directory = TestDirectory::new();
+    let config = LunaConfig::load_from(directory.config_path());
+    let initial = config.agent_config_snapshot();
+    let model = LlmModelConfig {
+        id: "local".to_owned(),
+        label: "Local".to_owned(),
+        provider: LlmProvider::Ollama,
+        model: "qwen3:8b".to_owned(),
+        endpoint: Some("http://localhost:11434/".to_owned()),
+        api_key: None,
+        advanced: LlmAdvancedOptions::default(),
+    };
+    let llm_revision = config.reserve_llm_settings_revision();
+    config
+        .set_llm_settings_at_revision(
+            LlmSettings {
+                models: vec![model],
+                selected_model: Some("local".to_owned()),
+            },
+            llm_revision,
+            AppLanguage::SimplifiedChinese,
+        )
+        .expect("测试 Provider 配置应当可以保存")
+        .expect("最新 Provider 配置应当发布");
+    let with_model = config.agent_config_snapshot();
+    assert!(with_model.generation() > initial.generation());
+    assert_eq!(
+        with_model
+            .settings()
+            .selected()
+            .map(|model| model.id.as_str()),
+        Some("local")
+    );
+    assert_eq!(
+        with_model
+            .personas()
+            .active()
+            .map(|persona| persona.id.as_str()),
+        Some(DEFAULT_PERSONA_ID)
+    );
+
+    let persona_revision = config.reserve_persona_settings_revision();
+    config
+        .set_persona_settings_at_revision(
+            PersonaSettings {
+                personas: vec![PersonaConfig::new("other", "Other")],
+                selected: Some("other".to_owned()),
+                pending_deletions: Vec::new(),
+            },
+            persona_revision,
+            AppLanguage::SimplifiedChinese,
+        )
+        .expect("测试人格配置应当可以保存")
+        .expect("最新人格配置应当发布");
+    let with_persona = config.agent_config_snapshot();
+    assert!(with_persona.generation() > with_model.generation());
+    assert_eq!(
+        with_persona
+            .settings()
+            .selected()
+            .map(|model| model.id.as_str()),
+        Some("local")
+    );
+    assert_eq!(
+        with_persona
+            .personas()
+            .active()
+            .map(|persona| persona.id.as_str()),
+        Some("other")
+    );
+
+    let mut appearance = config.appearance().as_ref().clone();
+    appearance.language = AppLanguage::Japanese;
+    let appearance_revision = config.reserve_appearance_revision();
+    config
+        .set_appearance_at_revision(appearance, appearance_revision)
+        .expect("测试语言配置应当可以保存")
+        .expect("最新语言配置应当发布");
+    let japanese = config.agent_config_snapshot();
+    assert!(japanese.generation() > with_persona.generation());
+    assert_eq!(japanese.language(), AppLanguage::Japanese);
+    assert_eq!(
+        japanese
+            .settings()
+            .selected()
+            .map(|model| model.id.as_str()),
+        Some("local")
+    );
+    assert_eq!(
+        japanese
+            .personas()
+            .active()
+            .map(|persona| persona.id.as_str()),
+        Some("other")
+    );
+}
+
+#[test]
 fn invalid_tool_switches_use_their_defaults() {
     let directory = TestDirectory::new();
     directory.write(
@@ -563,6 +706,35 @@ custom_background = "#f8fafc"
         AppLanguage::TraditionalChinese
     );
     assert_eq!(reloaded.appearance().theme, ThemePreset::Ocean);
+}
+
+#[test]
+fn agent_config_parsing_uses_the_stored_appearance_language() {
+    let directory = TestDirectory::new();
+    directory.write(
+        r#"[appearance]
+language = "ja"
+
+[[llm.models]]
+id = "bad/id"
+label = "Broken"
+provider = "ollama"
+model = "model"
+"#,
+    );
+
+    let config = LunaConfig::load_from(directory.config_path());
+
+    assert_eq!(
+        config
+            .persona_settings()
+            .active()
+            .map(|persona| persona.name.as_str()),
+        Some("既定のペルソナ")
+    );
+    assert!(config.startup_warning().is_some_and(|warning| {
+        warning.contains("モデル IDには ASCII の英字、数字、-、_ のみ使用できます")
+    }));
 }
 
 #[test]
@@ -934,7 +1106,7 @@ future_option = "keep"
     }
     let revision = config.reserve_llm_settings_revision();
     config
-        .set_llm_settings_at_revision(edited, revision)
+        .set_llm_settings_at_revision(edited, revision, AppLanguage::SimplifiedChinese)
         .expect("有效语言模型配置应当可以保存")
         .expect("最新语言模型配置不应被丢弃");
 
@@ -962,7 +1134,7 @@ future_option = "keep"
         Some("cloud")
     );
     assert_eq!(
-        reloaded.model("local").map(|model| model.advanced),
+        reloaded.model("local").map(|model| model.advanced.clone()),
         Some(LlmAdvancedOptions {
             context_window_tokens: Some(32_768),
             reasoning_effort: Some(ReasoningEffort::Budget(2_048)),
@@ -998,7 +1170,7 @@ fn inline_llm_table_becomes_a_table_before_models_are_added() {
     };
     let revision = config.reserve_llm_settings_revision();
     config
-        .set_llm_settings_at_revision(settings, revision)
+        .set_llm_settings_at_revision(settings, revision, AppLanguage::SimplifiedChinese)
         .expect("内联表配置应当可以保存")
         .expect("最新配置不应被丢弃");
 
@@ -1033,7 +1205,7 @@ fn stale_llm_write_cannot_replace_newer_selection() {
         models: vec![LlmModelConfig {
             id: "cloud".to_owned(),
             label: "云端模型".to_owned(),
-            provider: LlmProvider::OpenAi,
+            provider: LlmProvider::OpenAI,
             model: "gpt-5-mini".to_owned(),
             endpoint: None,
             api_key: Some("test-token".to_owned()),
@@ -1046,13 +1218,13 @@ fn stale_llm_write_cannot_replace_newer_selection() {
 
     assert!(
         config
-            .set_llm_settings_at_revision(cloud, new_revision)
+            .set_llm_settings_at_revision(cloud, new_revision, AppLanguage::SimplifiedChinese,)
             .expect("新配置应当可以保存")
             .is_some()
     );
     assert!(
         config
-            .set_llm_settings_at_revision(local, old_revision)
+            .set_llm_settings_at_revision(local, old_revision, AppLanguage::SimplifiedChinese,)
             .expect("迟到配置应当被无害丢弃")
             .is_none()
     );

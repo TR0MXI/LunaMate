@@ -3,20 +3,26 @@ use std::collections::HashSet;
 use toml_edit::DocumentMut;
 
 use crate::config::{
-    LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
+    AppLanguage, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
     MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, REASONING_EFFORT_LEVELS, ReasoningEffort,
-    TEMPERATURE_MAX, llm::normalize_endpoint, parse_llm_settings, write_llm_settings,
+    TEMPERATURE_MAX, llm::normalize_endpoint, llm_provider_from_id, llm_provider_id,
+    parse_llm_settings, write_llm_settings,
 };
+
+const LANGUAGE: AppLanguage = AppLanguage::SimplifiedChinese;
 
 #[test]
 fn provider_ids_are_unique_and_round_trip() {
     let ids = LLM_PROVIDERS
         .into_iter()
-        .map(LlmProvider::id)
+        .map(llm_provider_id)
         .collect::<HashSet<_>>();
     assert_eq!(ids.len(), LLM_PROVIDERS.len());
     for provider in LLM_PROVIDERS {
-        assert_eq!(LlmProvider::from_id(provider.id()), Some(provider));
+        assert_eq!(
+            llm_provider_from_id(llm_provider_id(provider)),
+            Some(provider)
+        );
     }
 }
 
@@ -35,13 +41,13 @@ fn settings_reject_missing_selection_and_duplicate_ids() {
         models: vec![model.clone(), model],
         selected_model: Some("local".to_owned()),
     };
-    assert!(duplicate.normalized().is_err());
+    assert!(duplicate.normalized(LANGUAGE).is_err());
 
     let missing = LlmSettings {
         selected_model: Some("missing".to_owned()),
         ..LlmSettings::default()
     };
-    assert!(missing.normalized().is_err());
+    assert!(missing.normalized(LANGUAGE).is_err());
 }
 
 #[test]
@@ -50,7 +56,7 @@ fn direct_api_key_is_normalized_and_redacted_in_debug() {
         models: vec![LlmModelConfig {
             id: "cloud".to_owned(),
             label: "Cloud".to_owned(),
-            provider: LlmProvider::OpenAi,
+            provider: LlmProvider::OpenAI,
             model: "gpt-5-mini".to_owned(),
             endpoint: None,
             api_key: Some(" 1/key+=value ".to_owned()),
@@ -59,7 +65,7 @@ fn direct_api_key_is_normalized_and_redacted_in_debug() {
         selected_model: Some("cloud".to_owned()),
     };
     let normalized = settings
-        .normalized()
+        .normalized(LANGUAGE)
         .expect("直接填写的 API key 应当可以规范化");
     let model = normalized.models.first().expect("测试模型应当存在");
 
@@ -92,7 +98,7 @@ api_key = "keep-me"
     .parse::<DocumentMut>()
     .expect("语言模型配置应当可以解析");
     let mut warnings = Vec::new();
-    let settings = parse_llm_settings(&document, &mut warnings);
+    let settings = parse_llm_settings(&document, &mut warnings, LANGUAGE);
 
     assert_eq!(warnings.len(), 1);
     assert_eq!(settings.models.len(), 1);
@@ -107,47 +113,48 @@ api_key = "keep-me"
 #[test]
 fn endpoint_normalization_preserves_base_path() {
     assert_eq!(
-        normalize_endpoint(LlmProvider::OpenAi, Some("https://example.com/v1"))
-            .expect("HTTPS endpoint 应当有效")
-            .as_deref(),
+        normalize_endpoint(
+            LlmProvider::OpenAI,
+            Some("https://example.com/v1"),
+            LANGUAGE,
+        )
+        .expect("HTTPS endpoint 应当有效")
+        .as_deref(),
         Some("https://example.com/v1/")
     );
-    assert!(normalize_endpoint(LlmProvider::OpenAi, Some("http://example.com/v1")).is_err());
-    assert!(normalize_endpoint(LlmProvider::Ollama, Some("http://example.com")).is_err());
+    assert_eq!(
+        normalize_endpoint(LlmProvider::OpenAI, Some("http://example.com/v1"), LANGUAGE,)
+            .expect("HTTP endpoint 应当有效")
+            .as_deref(),
+        Some("http://example.com/v1/")
+    );
 }
 
 #[test]
 fn blank_endpoints_are_treated_as_provider_defaults() {
     for endpoint in [None, Some(""), Some("   ")] {
         assert_eq!(
-            normalize_endpoint(LlmProvider::OpenAi, endpoint).expect("空 endpoint 应当合法"),
+            normalize_endpoint(LlmProvider::OpenAI, endpoint, LANGUAGE)
+                .expect("空 endpoint 应当合法"),
             None
         );
     }
 }
 
 #[test]
-fn plain_http_is_only_allowed_for_loopback_hosts() {
+fn plain_http_is_allowed_for_local_and_remote_hosts() {
     for endpoint in [
         "http://localhost:11434",
         "http://LOCALHOST:11434",
         "http://127.0.0.1:11434",
         "http://[::1]:11434",
-    ] {
-        assert!(
-            normalize_endpoint(LlmProvider::Ollama, Some(endpoint)).is_ok(),
-            "本地回环 {endpoint} 应当允许明文 HTTP"
-        );
-    }
-
-    for endpoint in [
         "http://192.168.1.10:11434",
         "http://example.com",
         "http://[2001:db8::1]:11434",
     ] {
         assert!(
-            normalize_endpoint(LlmProvider::Ollama, Some(endpoint)).is_err(),
-            "非回环 {endpoint} 不应允许明文 HTTP"
+            normalize_endpoint(LlmProvider::Ollama, Some(endpoint), LANGUAGE).is_ok(),
+            "HTTP endpoint {endpoint} 应当有效"
         );
     }
 }
@@ -161,9 +168,10 @@ fn endpoints_carrying_credentials_or_extra_url_parts_are_rejected() {
         "https://example.com/v1#fragment",
         "not-a-url",
         "file:///etc/hosts",
+        "ftp://example.com/model",
     ] {
         assert!(
-            normalize_endpoint(LlmProvider::OpenAi, Some(endpoint)).is_err(),
+            normalize_endpoint(LlmProvider::OpenAI, Some(endpoint), LANGUAGE).is_err(),
             "{endpoint} 不应作为 Provider endpoint 接受"
         );
     }
@@ -172,7 +180,7 @@ fn endpoints_carrying_credentials_or_extra_url_parts_are_rejected() {
 #[test]
 fn providers_with_fixed_endpoints_reject_overrides() {
     for provider in [LlmProvider::Zai, LlmProvider::Baidu] {
-        let error = normalize_endpoint(provider, Some("https://example.com/v1"))
+        let error = normalize_endpoint(provider, Some("https://example.com/v1"), LANGUAGE)
             .expect_err("固定 endpoint 的 Provider 不应接受覆盖");
         assert!(!error.to_string().is_empty());
     }
@@ -182,21 +190,29 @@ fn providers_with_fixed_endpoints_reject_overrides() {
 fn oversized_endpoints_are_rejected_before_parsing() {
     let endpoint = format!("https://example.com/{}", "a".repeat(2_048));
 
-    assert!(normalize_endpoint(LlmProvider::OpenAi, Some(&endpoint)).is_err());
+    assert!(normalize_endpoint(LlmProvider::OpenAI, Some(&endpoint), LANGUAGE).is_err());
 }
 
 #[test]
 fn trailing_slashes_are_collapsed_into_one_base_path() {
     assert_eq!(
-        normalize_endpoint(LlmProvider::OpenAi, Some("https://example.com///"))
-            .expect("根路径 endpoint 应当有效")
-            .as_deref(),
+        normalize_endpoint(
+            LlmProvider::OpenAI,
+            Some("https://example.com///"),
+            LANGUAGE,
+        )
+        .expect("根路径 endpoint 应当有效")
+        .as_deref(),
         Some("https://example.com/")
     );
     assert_eq!(
-        normalize_endpoint(LlmProvider::OpenAi, Some(" https://example.com/v1//// "))
-            .expect("带空白与多余斜杠的 endpoint 应当有效")
-            .as_deref(),
+        normalize_endpoint(
+            LlmProvider::OpenAI,
+            Some(" https://example.com/v1//// "),
+            LANGUAGE,
+        )
+        .expect("带空白与多余斜杠的 endpoint 应当有效")
+        .as_deref(),
         Some("https://example.com/v1/")
     );
 }
@@ -244,7 +260,7 @@ fn required_model_fields_are_trimmed_and_bounded() {
         models: vec![base.clone()],
         selected_model: Some(" local ".to_owned()),
     }
-    .normalized()
+    .normalized(LANGUAGE)
     .expect("去除空白后的配置应当有效");
 
     assert_eq!(normalized.models[0].id, "local");
@@ -297,7 +313,7 @@ fn required_model_fields_are_trimmed_and_bounded() {
                 models: vec![invalid.clone()],
                 selected_model: None,
             }
-            .normalized()
+            .normalized(LANGUAGE)
             .is_err(),
             "{invalid:?} 应当被拒绝"
         );
@@ -321,7 +337,7 @@ fn model_count_has_a_hard_limit() {
             models: (0..64).map(model).collect(),
             selected_model: None,
         }
-        .normalized()
+        .normalized(LANGUAGE)
         .is_ok()
     );
     assert!(
@@ -329,7 +345,7 @@ fn model_count_has_a_hard_limit() {
             models: (0..65).map(model).collect(),
             selected_model: None,
         }
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
 }
@@ -352,10 +368,10 @@ fn advanced_options_outside_their_range_are_rejected() {
     for level in REASONING_EFFORT_LEVELS {
         assert!(
             with_advanced(LlmAdvancedOptions {
-                reasoning_effort: Some(level),
+                reasoning_effort: Some(level.clone()),
                 ..LlmAdvancedOptions::default()
             })
-            .normalized()
+            .normalized(LANGUAGE)
             .is_ok(),
             "{level:?} 应当是合法档位"
         );
@@ -365,7 +381,7 @@ fn advanced_options_outside_their_range_are_rejected() {
             context_window_tokens: Some(MODEL_CONTEXT_TOKENS_MAX + 1),
             ..LlmAdvancedOptions::default()
         })
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
     assert!(
@@ -373,7 +389,7 @@ fn advanced_options_outside_their_range_are_rejected() {
             max_output_tokens: Some(0),
             ..LlmAdvancedOptions::default()
         })
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
     assert!(
@@ -381,7 +397,7 @@ fn advanced_options_outside_their_range_are_rejected() {
             max_output_tokens: Some(MAX_OUTPUT_TOKENS_MAX + 1),
             ..LlmAdvancedOptions::default()
         })
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
     assert!(
@@ -390,7 +406,7 @@ fn advanced_options_outside_their_range_are_rejected() {
             max_output_tokens: Some(4_096),
             ..LlmAdvancedOptions::default()
         })
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
     assert!(
@@ -398,7 +414,7 @@ fn advanced_options_outside_their_range_are_rejected() {
             temperature: Some(TEMPERATURE_MAX + 0.1),
             ..LlmAdvancedOptions::default()
         })
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
     // 非有限值来自手写配置，必须在发布前挡住而不是发给 Provider。
@@ -407,7 +423,7 @@ fn advanced_options_outside_their_range_are_rejected() {
             top_p: Some(f64::NAN),
             ..LlmAdvancedOptions::default()
         })
-        .normalized()
+        .normalized(LANGUAGE)
         .is_err()
     );
 }
@@ -423,7 +439,7 @@ models = "not-an-array"
     .expect("测试配置应当可以解析");
     let mut warnings = Vec::new();
 
-    let settings = parse_llm_settings(&document, &mut warnings);
+    let settings = parse_llm_settings(&document, &mut warnings, LANGUAGE);
 
     assert_eq!(settings, LlmSettings::default());
     assert_eq!(warnings.len(), 2);
@@ -455,7 +471,7 @@ model = "qwen3:8b"
     .expect("测试配置应当可以解析");
     let mut warnings = Vec::new();
 
-    let settings = parse_llm_settings(&document, &mut warnings);
+    let settings = parse_llm_settings(&document, &mut warnings, LANGUAGE);
 
     assert_eq!(settings.models.len(), 1);
     assert_eq!(settings.selected_model, None);
@@ -488,13 +504,13 @@ top_p = 0.5
     .expect("测试配置应当可以解析");
     let mut warnings = Vec::new();
 
-    let settings = parse_llm_settings(&document, &mut warnings);
+    let settings = parse_llm_settings(&document, &mut warnings, LANGUAGE);
 
     assert_eq!(settings.models.len(), 1);
     assert_eq!(warnings.len(), 1);
     let advanced = settings
         .model("good")
-        .map(|model| model.advanced)
+        .map(|model| model.advanced.clone())
         .expect("合法条目必须保留");
     assert_eq!(
         advanced,
@@ -511,7 +527,7 @@ top_p = 0.5
     write_llm_settings(&mut document, &settings);
     let mut rewritten_warnings = Vec::new();
     assert_eq!(
-        parse_llm_settings(&document, &mut rewritten_warnings),
+        parse_llm_settings(&document, &mut rewritten_warnings, LANGUAGE),
         settings
     );
     assert!(rewritten_warnings.is_empty());
@@ -536,7 +552,7 @@ model = "qwen3:8b"
     .expect("测试配置应当可以解析");
     let mut warnings = Vec::new();
 
-    let settings = parse_llm_settings(&document, &mut warnings);
+    let settings = parse_llm_settings(&document, &mut warnings, LANGUAGE);
 
     assert_eq!(settings.models.len(), 1);
     assert_eq!(settings.models[0].id, "local");
@@ -555,7 +571,7 @@ fn documents_without_an_llm_table_parse_as_default_settings() {
     let mut warnings = Vec::new();
 
     assert_eq!(
-        parse_llm_settings(&document, &mut warnings),
+        parse_llm_settings(&document, &mut warnings, LANGUAGE),
         LlmSettings::default()
     );
     assert!(warnings.is_empty());

@@ -1,5 +1,6 @@
 //! 组合桌宠与设置窗口视图，并向其他子系统提供窄 UI 接口。
 
+mod agent;
 mod desktop_pet;
 mod settings;
 mod theme;
@@ -9,6 +10,8 @@ mod window;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use agent::AgentView;
+pub(in crate::ui) use agent::AgentViewEvent;
 pub(crate) use desktop_pet::DesktopPetView;
 pub(in crate::ui) use settings::AgentOutfitAction;
 pub(crate) use settings::{SettingsEvent, SettingsView, SettingsWindowView};

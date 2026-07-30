@@ -1,12 +1,46 @@
 [workspace]
-members = [".", "vendor/mocari"]
-default-members = ["."]
+members = [".", "crates/lunamate-agent", "vendor/mocari"]
+default-members = [".", "crates/lunamate-agent"]
 resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+arc-swap = "1.9.2"
+ashpd = { version = "0.13.13", default-features = false }
+async-channel = "2.5.0"
+base64 = "0.22.1"
+flexi_logger = { version = "0.31.9", features = ["async", "compress"] }
+futures = "0.3.33"
+genai = "0.6.5"
+global-hotkey = "0.8.0"
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", version = "0.5.2" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland", "x11"] }
+gpui_tokio = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
+gpui_wgpu = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+log = "0.4.33"
+lunamate-agent = { path = "crates/lunamate-agent" }
+mocari = { version = "0.4.0", path = "vendor/mocari", features = ["wgpu"] }
+parking_lot = "0.12.5"
+raw-window-handle = "0.6.2"
+ringbuf = "0.4.8"
+rust-i18n = "4.2.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+surrealdb = { version = "3.2.3", default-features = false, features = ["kv-surrealkv"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync"] }
+toml_edit = "0.25.13"
+url = "2.5.8"
+xcap = { version = "0.9.7", default-features = false }
 
 [package]
 name = "lunamate"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 
 [lints.rust]
 # objc 0.2.7 的宏会在调用 crate 中检查这个旧版 Clippy feature。
@@ -16,35 +50,33 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 unwrap_used = "deny"
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland", "x11"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", version = "0.5.2" }
-genai = "0.6.5"
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
-async-channel = "2.5.0"
-arc-swap = "1.9.2"
-toml_edit = "0.25.13"
-gpui_tokio = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
-futures = "0.3.33"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync"] }
-url = "2.5.8"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
-raw-window-handle = "0.6.2"
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui-component.workspace = true
+image.workspace = true
+async-channel.workspace = true
+arc-swap.workspace = true
+toml_edit.workspace = true
+gpui_tokio.workspace = true
+futures.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+raw-window-handle.workspace = true
 mimalloc = "0.1.52"
-parking_lot = "0.12.5"
-rust-i18n = "4.2.1"
-mocari = { version = "0.4.0", path = "vendor/mocari", features = ["wgpu"] }
-gpui_wgpu = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
-log = "0.4.33"
-flexi_logger = { version = "0.31.9", features = ["async", "compress"] }
+parking_lot.workspace = true
+rust-i18n.workspace = true
+mocari.workspace = true
+gpui_wgpu.workspace = true
+log.workspace = true
+flexi_logger.workspace = true
+lunamate-agent.workspace = true
 # 生产构建仅包含本地 SurrealKV，不引入远程协议、原生 TLS、脚本或 ML。
-surrealdb = { version = "3.2.3", default-features = false, features = ["kv-surrealkv"] }
-base64 = "0.22.1"
-ringbuf = "0.4.8"
+surrealdb.workspace = true
+ringbuf.workspace = true
 cpal = "0.18.1"
 rubato = "0.16.2"
-global-hotkey = "0.8.0"
+global-hotkey.workspace = true
 
 [patch.crates-io]
 # 上游 PR #14 修复了 2.0.1 中的 Rust future-incompatibility 警告。
@@ -62,10 +94,11 @@ objc = "0.2.7"
 whisper-rs = { version = "0.16.0", features = ["log_backend", "metal"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Linux 截屏交给桌面门户，避免静态截图无条件引入 PipeWire/GBM 开发依赖。
-ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "global_shortcuts", "screenshot"] }
+# 根应用同时使用 GlobalShortcuts 与 Screenshot portal。
+ashpd = { workspace = true, features = ["async-io", "global_shortcuts", "screenshot"] }
 # 托盘使用 StatusNotifierItem，避免为 GPUI 引入另一套 GTK 事件循环。
 ksni = { version = "0.3.6", default-features = false, features = ["tokio"] }
+url.workspace = true
 wayland-client = { version = "0.31.15", features = ["system"] }
 wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 # 通用产物固定包含 Vulkan。
@@ -75,7 +108,7 @@ whisper-rs = { version = "0.16.0", features = ["log_backend", "vulkan"] }
 # Windows 与 macOS 直接复用各自原生事件循环，不启用 GTK 相关默认 feature。
 tray-icon = { version = "0.24.1", default-features = false }
 # 只启用静态截图 API；不启用全格式 image 或 Windows Graphics Capture feature。
-xcap = { version = "0.9.7", default-features = false }
+xcap.workspace = true
 
 [profile.release]
 opt-level = 3
@@ -91,8 +124,8 @@ strip = "none"
 
 [dev-dependencies]
 # 仅测试目标需要 GPUI 的无头 TestAppContext；必须与生产依赖解析到同一 Zed commit。
-gpui = { git = "https://github.com/zed-industries/zed", features = ["test-support"] }
+gpui = { workspace = true, features = ["test-support"] }
 # 内存引擎只在本 crate 的测试目标中启用，常规 build 不会统一该 feature。
-surrealdb = { version = "3.2.3", default-features = false, features = ["kv-mem"] }
+surrealdb = { workspace = true, features = ["kv-mem"] }
 # 仅为无图形会话的 pipeline 单元测试启用同一份 WGPU 29 noop backend。
 wgpu = { version = "=29.0.4", features = ["noop"] }

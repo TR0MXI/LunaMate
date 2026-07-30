@@ -113,7 +113,7 @@ impl Render for SettingsView {
                     .child(match self.section {
                         ConfigSection::Model => self.render_model_page(cx),
                         ConfigSection::Provider => self
-                            .agent_settings_view
+                            .provider_settings_view
                             .clone()
                             .map(embedded_page)
                             .unwrap_or_else(|| uninitialized_page(palette)),

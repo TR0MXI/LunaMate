@@ -25,35 +25,34 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use tokio::sync::watch;
 use toml_edit::{DocumentMut, Value};
 
-pub(crate) use appearance::{AppLanguage, AppearanceSettings, CustomThemeSettings, ThemePreset};
+pub(crate) use appearance::{AppearanceSettings, CustomThemeSettings, ThemePreset};
 use document::{
     default_config_path, document_for_update, ensure_table_like, read_config_file, remove_key,
     set_item_value, validate_relative_path, write_appearance, write_config_file,
     write_logging_settings, write_window_position,
 };
-pub(crate) use llm::{
-    DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MODEL_CONTEXT_TOKENS, DEFAULT_REASONING_BUDGET,
-    DEFAULT_TEMPERATURE, DEFAULT_TOP_P, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig,
-    LlmProvider, LlmSettings, MAX_OUTPUT_TOKENS_MAX, MAX_OUTPUT_TOKENS_MIN,
-    MODEL_CONTEXT_RESERVE_TOKENS, MODEL_CONTEXT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MIN,
-    REASONING_BUDGET_MAX, REASONING_BUDGET_MIN, REASONING_EFFORT_LEVELS, ReasoningEffort,
-    SharedLlmSettings, TEMPERATURE_MAX, TEMPERATURE_MIN, TOP_P_MAX, TOP_P_MIN,
-};
 use llm::{parse_llm_settings, write_llm_settings};
+pub(crate) use lunamate_agent::config::{
+    AgentConfigSnapshot, AppLanguage, LlmSettings, PersonaSettings, SharedLlmSettings,
+    SharedPersonaSettings,
+};
+#[cfg(test)]
+pub(crate) use lunamate_agent::config::{
+    CONTEXT_MESSAGES_MIN, CONTEXT_TOKENS_MAX, DEFAULT_CONTEXT_MESSAGES, DEFAULT_CONTEXT_TOKENS,
+    DEFAULT_PERSONA_ID, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider,
+    MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, PersonaConfig, PersonaContextLimits,
+    REASONING_EFFORT_LEVELS, ReasoningEffort, TEMPERATURE_MAX, llm_provider_from_id,
+    llm_provider_id,
+};
 pub(crate) use model::{
     ModelExpressionCategory, ModelResourceKey, ModelResourceKind, ModelResourceSettings,
     SharedModelResourceSettings,
 };
 use model::{parse_model_resource_settings, write_model_resource_settings};
-pub(crate) use persona::{
-    CONTEXT_MESSAGES_MAX, CONTEXT_MESSAGES_MIN, CONTEXT_TOKENS_MAX, CONTEXT_TOKENS_MIN,
-    DEFAULT_CONTEXT_MESSAGES, DEFAULT_CONTEXT_TOKENS, DEFAULT_PERSONA_ID, PersonaConfig,
-    PersonaContextLimits, PersonaSettings, SharedPersonaSettings,
-};
 use persona::{parse_persona_settings, write_persona_settings};
 pub(crate) use shortcut::{KeyboardShortcut, ShortcutAction, ShortcutSettings};
 use shortcut::{parse_shortcut_settings, write_shortcut_settings};
@@ -136,7 +135,7 @@ impl Default for LoadedConfig {
             snapshot: ConfigSnapshot::default(),
             window_positions: WindowPositions::default(),
             llm: LlmSettings::default(),
-            persona: PersonaSettings::default(),
+            persona: PersonaSettings::default_for(AppLanguage::default()),
             shortcuts: ShortcutSettings::default(),
             voice: VoiceSettings::default(),
             model_resources: ModelResourceSettings::default(),
@@ -159,6 +158,7 @@ pub(crate) struct LunaConfig {
     agent_screenshot_permission_retry_required: AtomicBool,
     applied_allow_agent_screenshot_revision: AtomicU64,
     agent_screenshot_permission_revision_sender: watch::Sender<u64>,
+    agent_screenshot_execution_gate: RwLock<()>,
     logging: ArcSwap<LoggingSettings>,
     appearance: ArcSwap<AppearanceSettings>,
     snapshot: ArcSwap<ConfigSnapshot>,
@@ -168,6 +168,7 @@ pub(crate) struct LunaConfig {
     shortcuts: ArcSwap<ShortcutSettings>,
     voice: ArcSwap<VoiceSettings>,
     model_resources: ArcSwap<ModelResourceSettings>,
+    agent_config: ArcSwap<AgentConfigSnapshot>,
     llm_request_revision: AtomicU64,
     persona_request_revision: AtomicU64,
     shortcut_request_revision: AtomicU64,
@@ -201,6 +202,13 @@ impl LunaConfig {
     fn load_from(path: PathBuf) -> Self {
         let (loaded, startup_warning) = read_config_file(&path);
         let (agent_screenshot_permission_revision_sender, _) = watch::channel(0);
+        let agent_config = AgentConfigSnapshot::try_new(
+            1,
+            Arc::new(loaded.llm.clone()),
+            Arc::new(loaded.persona.clone()),
+            loaded.appearance.language,
+        )
+        .expect("启动配置读取器必须产出经过规范化的 Agent 配置");
         Self {
             path,
             frame_rate: AtomicU32::new(loaded.frame_rate.atomic_value()),
@@ -215,6 +223,7 @@ impl LunaConfig {
             agent_screenshot_permission_retry_required: AtomicBool::new(false),
             applied_allow_agent_screenshot_revision: AtomicU64::new(0),
             agent_screenshot_permission_revision_sender,
+            agent_screenshot_execution_gate: RwLock::new(()),
             logging: ArcSwap::from_pointee(loaded.logging),
             appearance: ArcSwap::from_pointee(loaded.appearance),
             snapshot: ArcSwap::from_pointee(loaded.snapshot),
@@ -224,6 +233,7 @@ impl LunaConfig {
             shortcuts: ArcSwap::from_pointee(loaded.shortcuts),
             voice: ArcSwap::from_pointee(loaded.voice),
             model_resources: ArcSwap::from_pointee(loaded.model_resources),
+            agent_config: ArcSwap::from_pointee(agent_config),
             llm_request_revision: AtomicU64::new(0),
             persona_request_revision: AtomicU64::new(0),
             shortcut_request_revision: AtomicU64::new(0),
@@ -356,6 +366,16 @@ impl LunaConfig {
         self.agent_screenshot_permission_revision() == Some(revision)
     }
 
+    /// 在授权 revision 仍有效时取得一次截图任务启动租约。
+    pub(crate) fn begin_agent_screenshot_capture(
+        &self,
+        revision: u64,
+    ) -> Option<RwLockReadGuard<'_, ()>> {
+        let guard = self.agent_screenshot_execution_gate.read();
+        self.agent_screenshot_permission_is_current(revision)
+            .then_some(guard)
+    }
+
     /// 返回当前日志过滤与轮转配置快照。
     pub(crate) fn logging_settings(&self) -> Arc<LoggingSettings> {
         self.logging.load_full()
@@ -386,6 +406,11 @@ impl LunaConfig {
         self.persona.load_full()
     }
 
+    /// 返回一次原子发布的 Agent 配置与 generation。
+    pub(crate) fn agent_config_snapshot(&self) -> AgentConfigSnapshot {
+        self.agent_config.load_full().as_ref().clone()
+    }
+
     /// 返回四个应用动作的一次性快捷键配置快照。
     pub(crate) fn shortcut_settings(&self) -> Arc<ShortcutSettings> {
         self.shortcuts.load_full()
@@ -394,20 +419,6 @@ impl LunaConfig {
     /// 返回一次性发布的本地语音配置快照。
     pub(crate) fn voice_settings(&self) -> SharedVoiceSettings {
         self.voice.load_full()
-    }
-
-    /// 只替换进程内已发布的 LLM 快照，不触碰配置文件。
-    ///
-    /// 视图实体从全局配置读取模型，测试需要在不写入用户配置的前提下准备可用模型。
-    #[cfg(test)]
-    pub(crate) fn publish_llm_settings_for_test(&self, settings: LlmSettings) {
-        self.llm.store(Arc::new(settings));
-    }
-
-    /// 只替换进程内已发布的人格快照，不触碰配置文件。
-    #[cfg(test)]
-    pub(crate) fn publish_persona_settings_for_test(&self, settings: PersonaSettings) {
-        self.persona.store(Arc::new(settings));
     }
 
     /// 返回指定窗口最近一次观察到的位置。
@@ -554,6 +565,8 @@ impl LunaConfig {
 
     /// 为 Agent 截屏授权写入分配单调 revision。
     pub(crate) fn reserve_allow_agent_screenshot_revision(&self, allowed: bool) -> u64 {
+        // 撤权必须与截图任务启动互斥；返回后不得再按旧 revision 派发平台捕获。
+        let _execution_guard = self.agent_screenshot_execution_gate.write();
         let _guard = self.revision_lock.lock();
         let revision = reserve_revision(&self.allow_agent_screenshot_request_revision);
         self.agent_screenshot_permission_revision_sender
@@ -773,7 +786,15 @@ impl LunaConfig {
             if !revision_is_current(&self.appearance_request_revision, revision) {
                 return Ok(None);
             }
+            let language_changed = self.appearance.load().language != settings.language;
             self.appearance.store(settings.clone());
+            if language_changed {
+                self.publish_agent_config(
+                    self.llm.load_full(),
+                    self.persona.load_full(),
+                    settings.language,
+                );
+            }
             Ok(Some(settings))
         })();
         log_config_update(
@@ -908,9 +929,10 @@ impl LunaConfig {
         &self,
         settings: LlmSettings,
         revision: u64,
+        validation_language: AppLanguage,
     ) -> Result<Option<SharedLlmSettings>, ConfigWriteError> {
         let result = (|| {
-            let settings = Arc::new(settings.normalized()?);
+            let settings = Arc::new(settings.normalized(validation_language)?);
             let _guard = self.write_lock.lock();
             if self.llm_request_revision.load(Ordering::Relaxed) != revision {
                 return Ok(None);
@@ -922,6 +944,11 @@ impl LunaConfig {
                 return Ok(None);
             }
             self.llm.store(settings.clone());
+            self.publish_agent_config(
+                settings.clone(),
+                self.persona.load_full(),
+                self.appearance.load().language,
+            );
             Ok(Some(settings))
         })();
         log_config_update(
@@ -946,9 +973,10 @@ impl LunaConfig {
         &self,
         settings: PersonaSettings,
         revision: u64,
+        validation_language: AppLanguage,
     ) -> Result<Option<SharedPersonaSettings>, ConfigWriteError> {
         let result = (|| {
-            let settings = Arc::new(settings.normalized()?);
+            let settings = Arc::new(settings.normalized(validation_language)?);
             let _guard = self.write_lock.lock();
             if self.persona_request_revision.load(Ordering::Relaxed) != revision {
                 return Ok(None);
@@ -960,6 +988,11 @@ impl LunaConfig {
                 return Ok(None);
             }
             self.persona.store(settings.clone());
+            self.publish_agent_config(
+                self.llm.load_full(),
+                settings.clone(),
+                self.appearance.load().language,
+            );
             Ok(Some(settings))
         })();
         log_config_update(
@@ -1109,6 +1142,19 @@ impl LunaConfig {
     fn reserve_request_revision(&self, counter: &AtomicU64) -> u64 {
         let _guard = self.revision_lock.lock();
         reserve_revision(counter)
+    }
+
+    /// 调用方已持有 revision 锁，所有配置域先规范化再作为一个不可变快照发布。
+    fn publish_agent_config(
+        &self,
+        settings: SharedLlmSettings,
+        personas: SharedPersonaSettings,
+        language: AppLanguage,
+    ) {
+        let generation = self.agent_config.load().generation().wrapping_add(1).max(1);
+        let snapshot = AgentConfigSnapshot::try_new(generation, settings, personas, language)
+            .expect("根配置层只能发布已经通过领域校验的 Agent 配置");
+        self.agent_config.store(Arc::new(snapshot));
     }
 
     fn edit_document_locked(

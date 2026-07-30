@@ -399,3 +399,9 @@ impl Error for ConfigWriteError {
         }
     }
 }
+
+impl From<lunamate_agent::config::AgentConfigError> for ConfigWriteError {
+    fn from(error: lunamate_agent::config::AgentConfigError) -> Self {
+        Self::InvalidValue(error.to_string())
+    }
+}

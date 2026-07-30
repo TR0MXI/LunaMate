@@ -40,11 +40,15 @@ GPUI 点击
 - [x] 建立模型能力模块，集中保存已解析的 HitArea 及后续能力诊断。
 - [x] 建立模型预览命令模块，隔离 GPUI、Live2D runtime 和动作控制器。
 - [x] 建立 HitArea 帧快照模块，保存与当前图像一致的命中区域。
-- [x] 通过 Agent façade 将 HitArea 点击作为当前人格会话事件发送。
-- [x] 将 crate 根收敛为 `agent`、`app`、`config`、`database`、`logging`、`model`、
-  `platform` 和 `ui`，由各顶级模块提供稳定 façade。
-- [x] Agent 对外隐藏 session、store、Provider adapter 和配置草稿，只暴露对话、设置视图
-  与关闭接口。
+- [x] 通过根包 Agent UI 适配器将 HitArea 点击作为当前人格会话事件发送。
+- [x] 将根包提升为 package workspace，并建立不依赖 GPUI 或平台 API 的
+  `crates/lunamate-agent` 纯逻辑 crate；对话和设置视图保留在根包 `src/ui`。
+- [x] 将 `Agent` 直接定义在 `lunamate-agent` crate 根门面，删除 `AgentParts`、启动拆包、公开
+  backend、Client 缓存和退出包装；Provider/session/store 保持私有，仅导出宿主需要的领域 API。
+- [x] `Agent` 直接组合并热更新 `genai::Client`、`ModelIden`、`ChatOptions`、system prompt 和
+  `AgentMemory`；请求冻结运行时 clone，连续人格切换只允许最新 revision 安装恢复结果。
+- [x] 根配置层通过带 generation 的不可变快照发布自身配置，宿主将其解析为直接 Agent 组件；
+  截图权限按请求注入，根应用只接入 `CONFIG`、平台能力与 `database` façade，换装使用稳定 ID。
 - [x] 将模型运行时、资源、交互、帧调度和 CPU/GPU 渲染收口到 `model`，原生窗口与
   underlay attachment 收口到 `platform`。
 - [x] 将配置领域与 GPUI 设置视图分离，并把可持久化外观类型保留在配置域。
@@ -87,6 +91,8 @@ GPUI 点击
 - [x] 点击事件作为当前人格会话的一轮消息，沿用会话限制、持久化和迟到结果隔离。
 - [x] 事件提示按本次点击时的应用语言生成。
 - [x] Tool 描述和截图交接提示使用同一请求语言快照，不读取会变化的后台全局 locale。
+- [x] 配置校验、图片与会话错误、Provider 终态和语音打断协议统一使用单次请求语言；语言配置
+  仅在持久化发布成功后应用，异步请求不读取进程全局 locale。
 - [x] 上一轮仍在流式回复时忽略连续点击，不用 Busy 状态覆盖可见回复。
 
 ### 当前里程碑测试
@@ -96,6 +102,7 @@ GPUI 点击
 - [x] 测试 HitArea 包围盒内部、边界和外部命中。
 - [x] 测试命中结果保留模型声明的部位名称。
 - [x] 测试事件提示与 Tool 提示覆盖全部应用语言。
+- [x] 测试并发 Agent 加载、Provider 失败、纯图片消息和媒体错误不会串用其他请求语言。
 - [x] 测试一次性动作忽略资源的循环声明。
 - [x] 测试动作完成后恢复 Idle。
 - [ ] 测试模型切换后旧命令不会影响新模型。

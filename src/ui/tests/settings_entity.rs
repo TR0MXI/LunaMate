@@ -6,14 +6,15 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
+use lunamate_agent::{Agent, AgentMemory, ChatLimits, Client, tools::OutfitOption};
 
 use crate::{
-    agent::AgentMemoryAccess,
-    config::{ConfigWriteError, ModelExpressionCategory, ModelResourceKind},
+    config::{AppLanguage, CONFIG, ConfigWriteError, ModelExpressionCategory, ModelResourceKind},
     model::{ModelCatalog, ModelPreviewCapabilities, ModelPreviewExpression, ModelPreviewResource},
     ui::settings::{AgentOutfitAction, SettingsView, SettingsWindowView},
 };
@@ -43,6 +44,20 @@ impl Drop for TestDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+fn unavailable_agent() -> Arc<Agent> {
+    Agent::new(
+        Client::default(),
+        None,
+        None,
+        "",
+        AgentMemory::unavailable(),
+        "default",
+        ChatLimits::default(),
+        AppLanguage::default(),
+        None,
+    )
 }
 
 /// 后台扫描运行在 GPUI executor 上，这里在有限时间内驱动到稳定状态。
@@ -79,9 +94,7 @@ fn mount(
         gpui_component::init(cx);
         gpui_tokio::init(cx);
     });
-    cx.add_window_view(|_window, cx| {
-        SettingsView::new(catalog, AgentMemoryAccess::default(), status, cx)
-    })
+    cx.add_window_view(|_window, cx| SettingsView::new(catalog, unavailable_agent(), status, cx))
 }
 
 fn mount_settings_window(
@@ -97,9 +110,8 @@ fn mount_settings_window(
         gpui_component::init(cx);
         gpui_tokio::init(cx);
     });
-    let view = cx.update(|cx| {
-        cx.new(|cx| SettingsView::new(catalog, AgentMemoryAccess::default(), status, cx))
-    });
+    let view =
+        cx.update(|cx| cx.new(|cx| SettingsView::new(catalog, unavailable_agent(), status, cx)));
     let config = view.clone();
     let (window, cx) =
         cx.add_window_view(move |window, cx| SettingsWindowView::new(config, window, cx));
@@ -152,7 +164,7 @@ fn activating_and_deactivating_the_window_manages_input_components(cx: &mut Test
 }
 
 #[gpui::test]
-fn reactivating_the_window_restores_the_agent_draft(cx: &mut TestAppContext) {
+fn reactivating_the_window_restores_the_provider_and_persona_drafts(cx: &mut TestAppContext) {
     let directory = TestDirectory::new();
     let catalog = ModelCatalog::empty(directory.path().to_path_buf());
     let (view, cx) = mount(cx, catalog, None);
@@ -167,6 +179,28 @@ fn reactivating_the_window_restores_the_agent_draft(cx: &mut TestAppContext) {
 
     view.update(cx, |view, cx| {
         assert!(view.take_pending_write_tasks(cx).is_empty());
+    });
+}
+
+#[gpui::test]
+fn activating_the_window_discards_an_unpublished_appearance_language(cx: &mut TestAppContext) {
+    let directory = TestDirectory::new();
+    let catalog = ModelCatalog::empty(directory.path().to_path_buf());
+    let (view, cx) = mount(cx, catalog, None);
+    let published = CONFIG.appearance().language;
+    let unpublished = if published == AppLanguage::English {
+        AppLanguage::Japanese
+    } else {
+        AppLanguage::English
+    };
+
+    view.update(cx, |view, _cx| {
+        view.set_appearance_language_for_test(unpublished);
+        assert_eq!(view.appearance_language_for_test(), unpublished);
+    });
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.activate_window(window, cx);
+        assert_eq!(view.appearance_language_for_test(), published);
     });
 }
 
@@ -383,6 +417,33 @@ async fn a_scan_discovers_models_written_after_the_view_was_created(cx: &mut Tes
             "external:侦探.exp3.json",
             ModelExpressionCategory::Outfit,
         );
+        let variant_id = format!("variant:{}", relative_manifest.to_string_lossy());
+        let expression_id = "expression:external:侦探.exp3.json".to_owned();
+        let initial_outfits = view.available_agent_outfits();
+        let initial_ids = initial_outfits
+            .iter()
+            .map(|outfit| outfit.id().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(initial_ids, [variant_id.clone(), expression_id.clone()]);
+
+        view.set_model_resource_name_for_test(
+            ModelResourceKind::Expression,
+            "external:侦探.exp3.json",
+            "同名套装",
+        );
+        view.set_model_resource_name_for_test(
+            ModelResourceKind::Variant,
+            &relative_manifest.to_string_lossy(),
+            "同名套装",
+        );
+        assert_eq!(
+            view.available_agent_outfits(),
+            vec![
+                OutfitOption::new(variant_id.clone(), "同名套装"),
+                OutfitOption::new(expression_id.clone(), "同名套装 (2)"),
+            ]
+        );
+
         view.set_model_resource_name_for_test(
             ModelResourceKind::Expression,
             "external:侦探.exp3.json",
@@ -394,20 +455,36 @@ async fn a_scan_discovers_models_written_after_the_view_was_created(cx: &mut Tes
             "基础套装",
         );
         let outfits = view.available_agent_outfits();
-        assert_eq!(outfits.len(), 2);
-        assert!(outfits.iter().any(|outfit| outfit == "基础套装"));
-        assert!(outfits.iter().any(|outfit| outfit == "侦探套装"));
         assert_eq!(
-            view.resolve_agent_outfit("侦探套装"),
+            outfits,
+            vec![
+                OutfitOption::new(variant_id.clone(), "基础套装"),
+                OutfitOption::new(expression_id.clone(), "侦探套装"),
+            ]
+        );
+        assert_eq!(
+            outfits
+                .iter()
+                .map(|outfit| outfit.id().to_owned())
+                .collect::<Vec<_>>(),
+            initial_ids,
+            "本地化或重命名显示标签不得改变稳定 ID"
+        );
+        assert_eq!(
+            view.resolve_agent_outfit(&variant_id),
+            Some(AgentOutfitAction::Unchanged)
+        );
+        assert_eq!(
+            view.resolve_agent_outfit(&expression_id),
             Some(AgentOutfitAction::PreviewExpression(
                 "external:侦探.exp3.json".to_owned()
             ))
         );
-        assert!(view.resolve_agent_outfit("侦探").is_none());
+        assert!(view.resolve_agent_outfit("侦探套装").is_none());
 
         view.set_agent_outfit_tool_enabled_for_test(false);
         assert!(view.available_agent_outfits().is_empty());
-        assert!(view.resolve_agent_outfit("侦探套装").is_none());
+        assert!(view.resolve_agent_outfit(&expression_id).is_none());
     });
 }
 

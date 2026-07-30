@@ -193,10 +193,10 @@ _version = 2
 "ja" = "%{field} は UTF-8 で %{max} バイト以内にしてください"
 
 [llm.error.id_characters]
-"zh-CN" = "模型配置 ID 只能包含 ASCII 字母、数字、- 和 _"
-"zh-TW" = "模型設定 ID 只能包含 ASCII 字母、數字、- 和 _"
-"en" = "Model configuration IDs may contain only ASCII letters, digits, - and _"
-"ja" = "モデル設定 ID には ASCII の英字、数字、-、_ のみ使用できます"
+"zh-CN" = "%{field} 只能包含 ASCII 字母、数字、- 和 _"
+"zh-TW" = "%{field} 只能包含 ASCII 字母、數字、- 和 _"
+"en" = "%{field} may contain only ASCII letters, digits, - and _"
+"ja" = "%{field}には ASCII の英字、数字、-、_ のみ使用できます"
 
 [llm.error.duplicate_id]
 "zh-CN" = "模型配置 ID 重复：%{id}"
@@ -209,6 +209,18 @@ _version = 2
 "zh-TW" = "目前模型不存在：%{id}"
 "en" = "Selected model does not exist: %{id}"
 "ja" = "選択したモデルが存在しません: %{id}"
+
+[llm.error.unknown_provider]
+"zh-CN" = "未知 Provider：%{provider}"
+"zh-TW" = "未知 Provider：%{provider}"
+"en" = "Unknown Provider: %{provider}"
+"ja" = "不明な Provider です：%{provider}"
+
+[llm.error.unknown_reasoning_effort]
+"zh-CN" = "未知思考强度：%{effort}"
+"zh-TW" = "未知思考強度：%{effort}"
+"en" = "Unknown reasoning effort: %{effort}"
+"ja" = "不明な推論強度です：%{effort}"
 
 [llm.error.endpoint_unsupported]
 "zh-CN" = "%{provider} 在当前 genai 版本中不支持可靠的自定义 endpoint"
@@ -228,11 +240,11 @@ _version = 2
 "en" = "Endpoint must include a host and cannot contain credentials, query parameters, or fragments"
 "ja" = "Endpoint にはホストが必要で、認証情報、クエリパラメータ、フラグメントは使用できません"
 
-[llm.error.endpoint_https]
-"zh-CN" = "远端 Endpoint 必须使用 HTTPS"
-"zh-TW" = "遠端 Endpoint 必須使用 HTTPS"
-"en" = "Remote endpoints must use HTTPS"
-"ja" = "リモート Endpoint には HTTPS が必要です"
+[llm.error.endpoint_scheme]
+"zh-CN" = "Endpoint 必须使用 HTTP 或 HTTPS"
+"zh-TW" = "Endpoint 必須使用 HTTP 或 HTTPS"
+"en" = "Endpoint must use HTTP or HTTPS"
+"ja" = "Endpoint には HTTP または HTTPS が必要です"
 
 [llm.new_model]
 "zh-CN" = "新模型"

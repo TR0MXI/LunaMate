@@ -285,8 +285,9 @@ fn parse_document(document: &DocumentMut) -> (LoadedConfig, Option<String>) {
     loaded.model_resources = parse_model_resource_settings(document, &mut warnings);
 
     loaded.appearance = parse_appearance(document, &mut warnings);
-    loaded.llm = parse_llm_settings(document, &mut warnings);
-    loaded.persona = parse_persona_settings(document, &mut warnings);
+    let language = loaded.appearance.language;
+    loaded.llm = parse_llm_settings(document, &mut warnings, language);
+    loaded.persona = parse_persona_settings(document, &mut warnings, language);
     loaded.shortcuts = parse_shortcut_settings(document, &mut warnings);
     loaded.voice = parse_voice_settings(document, &mut warnings);
     loaded.window_positions.desktop_pet =
@@ -294,7 +295,12 @@ fn parse_document(document: &DocumentMut) -> (LoadedConfig, Option<String>) {
     loaded.window_positions.settings =
         parse_window_position(document, ConfigWindow::Settings, &mut warnings);
 
-    let warning = (!warnings.is_empty()).then(|| warnings.join("；"));
+    let warning = (!warnings.is_empty()).then(|| {
+        warnings.join(&rust_i18n::t!(
+            "common.status_separator",
+            locale = loaded.appearance.language.id()
+        ))
+    });
     (loaded, warning)
 }
 

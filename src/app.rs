@@ -17,18 +17,25 @@ use gpui::{
 use gpui_component::Root;
 use gpui_platform::application;
 use gpui_tokio::Tokio;
+use lunamate_agent::{
+    Agent, AgentMemory, Client, chat_limits, client_from_model, model_and_options_from_config,
+    persistence::{
+        AgentPersistenceCallbacks, PersistenceError, PersistentMemoryTier, PersistentMemoryUsage,
+        SessionDocument,
+    },
+};
 use parking_lot::Mutex;
 use rust_i18n::t;
 
 use crate::{
-    agent::{Agent, AgentShutdown},
     config::{CONFIG, ConfigWindow},
-    database::Database,
+    database::{Database, DatabaseError, MemoryTier},
     model::ModelCatalog,
     platform::{APPLICATION_ID, SystemTray, SystemTrayAction, configure_desktop_pet_window},
     ui::{
-        DesktopPetView, SettingsView, apply, apply_language, desktop_pet_window_min_size,
-        desktop_pet_window_size, raster_dimensions_for_window, restored_window_bounds,
+        AgentView, DesktopPetView, SettingsView, apply, apply_language,
+        desktop_pet_window_min_size, desktop_pet_window_size, raster_dimensions_for_window,
+        restored_window_bounds,
     },
     voice::{VoiceController, VoiceShutdown},
 };
@@ -37,8 +44,99 @@ const MODELS_DIRECTORY: &str = "models";
 const ASYNC_WORKER_THREADS: usize = 2;
 const FINAL_AGENT_SAVE_TIMEOUT: Duration = Duration::from_secs(5);
 const VOICE_SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const AGENT_DOCUMENT_SCOPE: &str = "agent";
+const AGENT_SESSION_KEY_PREFIX: &str = "chat-session/";
 
 type FinalAgentSave = Arc<Mutex<Option<tokio::task::JoinHandle<Result<(), String>>>>>;
+
+fn agent_session_key(persona: &str) -> String {
+    format!("{AGENT_SESSION_KEY_PREFIX}{persona}")
+}
+
+fn agent_persistence_error(error: DatabaseError) -> PersistenceError {
+    let diagnostic_kind = error.diagnostic_kind();
+    if matches!(&error, DatabaseError::InvalidStoredDocument) {
+        PersistenceError::invalid_document(diagnostic_kind, error)
+    } else {
+        PersistenceError::new(diagnostic_kind, error)
+    }
+}
+
+fn agent_persistence_callbacks(
+    database: Result<Arc<Database>, DatabaseError>,
+) -> Result<AgentPersistenceCallbacks, PersistenceError> {
+    let database = database.map_err(agent_persistence_error)?;
+    let load_database = database.clone();
+    let save_database = database.clone();
+    let delete_database = database.clone();
+    let usage_database = database.clone();
+    Ok(AgentPersistenceCallbacks::new(
+        move |persona| {
+            let database = load_database.clone();
+            async move {
+                database
+                    .read_document(AGENT_DOCUMENT_SCOPE, &agent_session_key(&persona))
+                    .await
+                    .map(|document| {
+                        document.map(|document| {
+                            SessionDocument::new(
+                                document.format_version(),
+                                document.contents().to_vec(),
+                            )
+                        })
+                    })
+                    .map_err(agent_persistence_error)
+            }
+        },
+        move |persona, document| {
+            let database = save_database.clone();
+            async move {
+                let (format_version, contents) = document.into_parts();
+                database
+                    .write_document(
+                        AGENT_DOCUMENT_SCOPE,
+                        &agent_session_key(&persona),
+                        format_version,
+                        &contents,
+                    )
+                    .await
+                    .map_err(agent_persistence_error)
+            }
+        },
+        move |persona| {
+            let database = delete_database.clone();
+            async move {
+                database
+                    .delete_document(AGENT_DOCUMENT_SCOPE, &agent_session_key(&persona))
+                    .await
+                    .map_err(agent_persistence_error)
+            }
+        },
+        move |persona| {
+            let database = usage_database.clone();
+            async move {
+                database
+                    .agent_memory_usage(&persona)
+                    .await
+                    .map(|usage| PersistentMemoryUsage::new(usage.medium, usage.long))
+                    .map_err(agent_persistence_error)
+            }
+        },
+        move |persona, tier| {
+            let database = database.clone();
+            async move {
+                let tier = tier.map(|tier| match tier {
+                    PersistentMemoryTier::Medium => MemoryTier::Medium,
+                    PersistentMemoryTier::Long => MemoryTier::Long,
+                });
+                database
+                    .delete_agent_memories(&persona, tier)
+                    .await
+                    .map_err(agent_persistence_error)
+            }
+        },
+    ))
+}
 
 /// 把资源路径与编译期内容绑定在一处，避免新增图标时漏改其中一侧。
 macro_rules! app_assets {
@@ -161,11 +259,11 @@ fn join_status(first: Option<String>, second: Option<String>) -> Option<String> 
 }
 
 fn spawn_final_agent_save(
-    shutdown: AgentShutdown,
+    agent: Arc<Agent>,
     runtime: &tokio::runtime::Handle,
     final_save: &FinalAgentSave,
 ) {
-    let task = runtime.spawn(async move { shutdown.persist().await });
+    let task = runtime.spawn(async move { agent.shutdown().await });
     *final_save.lock() = Some(task);
 }
 
@@ -276,8 +374,62 @@ pub(super) fn run() {
     };
     log::info!("异步运行时已就绪：worker_threads={ASYNC_WORKER_THREADS}");
     let database = async_runtime.block_on(Database::open_default());
-    let agent = async_runtime.block_on(Agent::load(database));
-    let agent_memory = agent.memory_access();
+    let persistence = agent_persistence_callbacks(database);
+    let snapshot = CONFIG.agent_config_snapshot();
+    let persona = snapshot
+        .personas()
+        .active()
+        .expect("Agent 配置快照必须至少包含一个经过校验的人格");
+    let model = persona
+        .model
+        .as_deref()
+        .and_then(|id| snapshot.settings().model(id))
+        .or_else(|| snapshot.settings().selected())
+        .cloned();
+    let client = model
+        .as_ref()
+        .map_or_else(Client::default, client_from_model);
+    let (model_iden, options) = model
+        .as_ref()
+        .map(model_and_options_from_config)
+        .map_or((None, None), |(model, options)| (Some(model), options));
+    let limits = chat_limits(persona, snapshot.settings());
+    let (agent_memory, agent_status) = match persistence {
+        Ok(persistence) => (AgentMemory::new(Some(persistence)), None),
+        Err(error) => {
+            log::error!(
+                "{}",
+                t!(
+                    "log.database_init_failed",
+                    locale = snapshot.language().id(),
+                    error = error.diagnostic_kind()
+                )
+            );
+            (
+                AgentMemory::unavailable(),
+                Some(
+                    t!(
+                        "chat.persistence_unavailable",
+                        locale = snapshot.language().id(),
+                        error = error.diagnostic_kind()
+                    )
+                    .to_string(),
+                ),
+            )
+        }
+    };
+    let agent = async_runtime.block_on(Agent::load(
+        client,
+        model_iden,
+        options,
+        persona.system_prompt.clone(),
+        agent_memory,
+        persona.id.clone(),
+        limits,
+        snapshot.language(),
+        agent_status,
+    ));
+    let agent_generation = snapshot.generation();
     let async_handle = async_runtime.handle().clone();
     let final_agent_save: FinalAgentSave = Arc::new(Mutex::new(None));
     let final_agent_save_for_app = final_agent_save.clone();
@@ -342,13 +494,15 @@ pub(super) fn run() {
                         window.scale_factor(),
                     );
                     let config = cx.new(|cx| {
-                        SettingsView::new(model_catalog, agent_memory, config_status, cx)
+                        SettingsView::new(model_catalog, agent.clone(), config_status, cx)
                     });
                     let system_tray = create_system_tray(&async_handle);
                     let config_for_quit = config.downgrade();
-                    let agent_view = agent.mount(window, cx);
-                    let agent_for_quit = agent_view.downgrade();
-                    let agent_for_window_close = agent_view.downgrade();
+                    let agent_view =
+                        cx.new(|cx| AgentView::new(agent.clone(), agent_generation, window, cx));
+                    agent_view.update(cx, |view, cx| view.start_initial_reply_fade(cx));
+                    let agent_for_quit = agent.clone();
+                    let agent_for_window_close = agent.clone();
                     let final_agent_save_for_quit = final_agent_save.clone();
                     let async_handle_for_quit = async_handle.clone();
                     cx.on_app_quit(move |cx| {
@@ -356,15 +510,11 @@ pub(super) fn run() {
                         let config_tasks = config_for_quit
                             .update(cx, |config, cx| config.take_pending_write_tasks(cx))
                             .unwrap_or_default();
-                        if let Ok(shutdown) =
-                            agent_for_quit.update(cx, |agent, _| agent.shutdown_snapshot())
-                        {
-                            spawn_final_agent_save(
-                                shutdown,
-                                &async_handle_for_quit,
-                                &final_agent_save_for_quit,
-                            );
-                        }
+                        spawn_final_agent_save(
+                            agent_for_quit.clone(),
+                            &async_handle_for_quit,
+                            &final_agent_save_for_quit,
+                        );
                         let persistence_task = Tokio::spawn(cx, async move {
                             tokio::task::spawn_blocking(|| {
                                 CONFIG
@@ -410,15 +560,11 @@ pub(super) fn run() {
                     let final_agent_save_for_window_close = final_agent_save.clone();
                     let async_handle_for_window_close = async_handle.clone();
                     window.on_window_should_close(cx, move |_, cx| {
-                        if let Ok(shutdown) =
-                            agent_for_window_close.update(cx, |agent, _| agent.shutdown_snapshot())
-                        {
-                            spawn_final_agent_save(
-                                shutdown,
-                                &async_handle_for_window_close,
-                                &final_agent_save_for_window_close,
-                            );
-                        }
+                        spawn_final_agent_save(
+                            agent_for_window_close.clone(),
+                            &async_handle_for_window_close,
+                            &final_agent_save_for_window_close,
+                        );
                         model_for_window_close
                             .update(cx, |model, cx| model.request_window_close(cx))
                             .unwrap_or(true)

@@ -1,544 +1,49 @@
-//! 定义语言模型配置、稳定 Provider 标识与输入校验。
+//! 解析并写回 Agent crate 拥有的语言模型配置。
 
-use std::{collections::HashSet, fmt, net::IpAddr, sync::Arc};
+use std::collections::HashSet;
 
+#[cfg(test)]
+use lunamate_agent::config::LlmProvider;
+use lunamate_agent::config::{
+    AppLanguage, LlmAdvancedOptions, LlmModelConfig, LlmSettings, llm_provider_from_id,
+    llm_provider_id, reasoning_budget, reasoning_effort_from_id, reasoning_effort_id,
+};
 use rust_i18n::t;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
-use url::{Host, Url};
 
 use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value};
 
 const MAX_MODELS: usize = 64;
-pub(super) const MAX_ID_BYTES: usize = 64;
-const MAX_LABEL_BYTES: usize = 128;
-const MAX_MODEL_NAME_BYTES: usize = 256;
-const MAX_ENDPOINT_BYTES: usize = 2_048;
-const MAX_API_KEY_BYTES: usize = 4 * 1024;
-pub(super) const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
 
-/// 输出长度上限的可接受区间；上界只用于挡住明显的手写错误，实际上限由 Provider 决定。
-pub(crate) const MAX_OUTPUT_TOKENS_MIN: u32 = 1;
-pub(crate) const MAX_OUTPUT_TOKENS_MAX: u32 = 1_000_000;
-/// 本地用于约束历史消息的模型上下文窗口区间；该值不会作为请求参数发送。
-pub(crate) const MODEL_CONTEXT_TOKENS_MIN: u32 = 256;
-pub(crate) const MODEL_CONTEXT_TOKENS_MAX: u32 = 10_000_000;
-/// 思考预算 token 数区间，仅在思考强度取 `Budget` 时有效。
-pub(crate) const REASONING_BUDGET_MIN: u32 = 0;
-pub(crate) const REASONING_BUDGET_MAX: u32 = 1_000_000;
-pub(crate) const TEMPERATURE_MIN: f64 = 0.0;
-pub(crate) const TEMPERATURE_MAX: f64 = 2.0;
-pub(crate) const TOP_P_MIN: f64 = 0.0;
-pub(crate) const TOP_P_MAX: f64 = 1.0;
-
-/// 设置界面在启用某个高级参数时预填的建议值；未启用时不会发送该参数。
-pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 4_096;
-pub(crate) const DEFAULT_MODEL_CONTEXT_TOKENS: u32 = 128_000;
-pub(crate) const DEFAULT_REASONING_BUDGET: u32 = 8_192;
-pub(crate) const DEFAULT_TEMPERATURE: f64 = 1.0;
-pub(crate) const DEFAULT_TOP_P: f64 = 1.0;
-/// 为系统提示词、消息包装与常规工具 schema 保留的本地上下文空间。
-pub(crate) const MODEL_CONTEXT_RESERVE_TOKENS: u32 = 512;
-
-/// LunaMate 配置 schema 支持的稳定 Provider。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum LlmProvider {
-    OpenAi,
-    OpenAiResponses,
-    Gemini,
-    Anthropic,
-    Fireworks,
-    Together,
-    Groq,
-    Aihubmix,
-    Mimo,
-    Moonshot,
-    Nebius,
-    Xai,
-    DeepSeek,
-    Zai,
-    BigModel,
-    Aliyun,
-    Baidu,
-    Cohere,
-    Ollama,
-    OllamaCloud,
-    Vertex,
-    GithubModels,
-    OpenCodeGo,
-    BedrockApi,
-    OpenRouter,
-    Minimax,
-}
-
-/// 保持持久化 ID 与上游 Rust 枚举解耦的完整 Provider 目录。
-pub(crate) const LLM_PROVIDERS: [LlmProvider; 26] = [
-    LlmProvider::OpenAi,
-    LlmProvider::OpenAiResponses,
-    LlmProvider::Gemini,
-    LlmProvider::Anthropic,
-    LlmProvider::Fireworks,
-    LlmProvider::Together,
-    LlmProvider::Groq,
-    LlmProvider::Aihubmix,
-    LlmProvider::Mimo,
-    LlmProvider::Moonshot,
-    LlmProvider::Nebius,
-    LlmProvider::Xai,
-    LlmProvider::DeepSeek,
-    LlmProvider::Zai,
-    LlmProvider::BigModel,
-    LlmProvider::Aliyun,
-    LlmProvider::Baidu,
-    LlmProvider::Cohere,
-    LlmProvider::Ollama,
-    LlmProvider::OllamaCloud,
-    LlmProvider::Vertex,
-    LlmProvider::GithubModels,
-    LlmProvider::OpenCodeGo,
-    LlmProvider::BedrockApi,
-    LlmProvider::OpenRouter,
-    LlmProvider::Minimax,
-];
-
-impl LlmProvider {
-    /// 返回写入配置文件的稳定小写标识。
-    pub(crate) const fn id(self) -> &'static str {
-        match self {
-            Self::OpenAi => "openai",
-            Self::OpenAiResponses => "openai-responses",
-            Self::Gemini => "gemini",
-            Self::Anthropic => "anthropic",
-            Self::Fireworks => "fireworks",
-            Self::Together => "together",
-            Self::Groq => "groq",
-            Self::Aihubmix => "aihubmix",
-            Self::Mimo => "mimo",
-            Self::Moonshot => "moonshot",
-            Self::Nebius => "nebius",
-            Self::Xai => "xai",
-            Self::DeepSeek => "deepseek",
-            Self::Zai => "zai",
-            Self::BigModel => "bigmodel",
-            Self::Aliyun => "aliyun",
-            Self::Baidu => "baidu",
-            Self::Cohere => "cohere",
-            Self::Ollama => "ollama",
-            Self::OllamaCloud => "ollama-cloud",
-            Self::Vertex => "vertex",
-            Self::GithubModels => "github-models",
-            Self::OpenCodeGo => "opencode-go",
-            Self::BedrockApi => "bedrock-api-key",
-            Self::OpenRouter => "openrouter",
-            Self::Minimax => "minimax",
-        }
-    }
-
-    /// 从持久化 ID 恢复 Provider；未知 ID 保持为配置错误而不是回退到 Ollama。
-    pub(crate) fn from_id(id: &str) -> Option<Self> {
-        LLM_PROVIDERS
-            .into_iter()
-            .find(|provider| provider.id() == id)
-    }
-
-    fn allows_endpoint_override(self) -> bool {
-        !matches!(self, Self::Zai | Self::Baidu)
-    }
-}
-
-/// 供应商的思考强度档位；`Budget` 用 token 数直接表达思考预算。
-///
-/// `Off` 对应上游"显式关闭思考"，与"不发送该参数"是两种不同语义，因此高级设置里
-/// 用 `Option<ReasoningEffort>` 的 `None` 表示沿用 Provider 默认值。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ReasoningEffort {
-    Off,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    XHigh,
-    Max,
-    Budget(u32),
-}
-
-/// 除 `Budget` 外的全部档位，供设置界面按固定顺序渲染选择器。
-pub(crate) const REASONING_EFFORT_LEVELS: [ReasoningEffort; 7] = [
-    ReasoningEffort::Off,
-    ReasoningEffort::Minimal,
-    ReasoningEffort::Low,
-    ReasoningEffort::Medium,
-    ReasoningEffort::High,
-    ReasoningEffort::XHigh,
-    ReasoningEffort::Max,
-];
-
-impl ReasoningEffort {
-    /// 返回写入配置文件的稳定小写标识；`Budget` 的 token 数单独存放在同级键。
-    pub(crate) const fn id(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Minimal => "minimal",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::XHigh => "xhigh",
-            Self::Max => "max",
-            Self::Budget(_) => "budget",
-        }
-    }
-
-    /// 从持久化标识与可选预算恢复档位；未知标识保持为配置错误。
-    fn from_id(id: &str, budget: Option<u32>) -> Option<Self> {
-        if id == "budget" {
-            return Some(Self::Budget(budget.unwrap_or(DEFAULT_REASONING_BUDGET)));
-        }
-        REASONING_EFFORT_LEVELS
-            .into_iter()
-            .find(|level| level.id() == id)
-    }
-
-    /// 返回 `Budget` 携带的 token 数，供设置界面回填数值输入框。
-    pub(crate) const fn budget(self) -> Option<u32> {
-        match self {
-            Self::Budget(tokens) => Some(tokens),
-            _ => None,
-        }
-    }
-}
-
-/// 供应商的高级模型参数。
-///
-/// `context_window_tokens` 只参与 LunaMate 本地历史裁剪，不会随请求发送；其余字段的
-/// `None` 表示不发送并沿用 Provider 默认值。
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct LlmAdvancedOptions {
-    pub(crate) context_window_tokens: Option<u32>,
-    pub(crate) reasoning_effort: Option<ReasoningEffort>,
-    pub(crate) max_output_tokens: Option<u32>,
-    pub(crate) temperature: Option<f64>,
-    pub(crate) top_p: Option<f64>,
-}
-
-impl LlmAdvancedOptions {
-    /// 校验各高级参数落在可接受区间内。
-    fn normalize(&mut self) -> Result<(), ConfigWriteError> {
-        if let Some(tokens) = self.context_window_tokens
-            && !(MODEL_CONTEXT_TOKENS_MIN..=MODEL_CONTEXT_TOKENS_MAX).contains(&tokens)
-        {
-            return Err(invalid(
-                t!(
-                    "llm.error.out_of_range",
-                    field = t!("llm.context_window_tokens"),
-                    min = MODEL_CONTEXT_TOKENS_MIN,
-                    max = MODEL_CONTEXT_TOKENS_MAX
-                )
-                .to_string(),
-            ));
-        }
-        if let Some(ReasoningEffort::Budget(tokens)) = self.reasoning_effort
-            && !(REASONING_BUDGET_MIN..=REASONING_BUDGET_MAX).contains(&tokens)
-        {
-            return Err(invalid(
-                t!(
-                    "llm.error.out_of_range",
-                    field = t!("llm.reasoning_budget"),
-                    min = REASONING_BUDGET_MIN,
-                    max = REASONING_BUDGET_MAX
-                )
-                .to_string(),
-            ));
-        }
-        if let Some(tokens) = self.max_output_tokens
-            && !(MAX_OUTPUT_TOKENS_MIN..=MAX_OUTPUT_TOKENS_MAX).contains(&tokens)
-        {
-            return Err(invalid(
-                t!(
-                    "llm.error.out_of_range",
-                    field = t!("llm.max_output_tokens"),
-                    min = MAX_OUTPUT_TOKENS_MIN,
-                    max = MAX_OUTPUT_TOKENS_MAX
-                )
-                .to_string(),
-            ));
-        }
-        if let Some(window) = self.context_window_tokens {
-            let output = self.max_output_tokens.unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
-            if output
-                .saturating_add(MODEL_CONTEXT_RESERVE_TOKENS)
-                .saturating_add(8)
-                > window
-            {
-                return Err(invalid(
-                    t!(
-                        "llm.error.context_window_output",
-                        context = window,
-                        output = output
-                    )
-                    .to_string(),
-                ));
-            }
-        }
-        check_ratio(
-            self.temperature,
-            TEMPERATURE_MIN,
-            TEMPERATURE_MAX,
-            t!("llm.temperature").as_ref(),
-        )?;
-        check_ratio(self.top_p, TOP_P_MIN, TOP_P_MAX, t!("llm.top_p").as_ref())?;
-        Ok(())
-    }
-}
-
-fn check_ratio(
-    value: Option<f64>,
-    min: f64,
-    max: f64,
-    field: &str,
-) -> Result<(), ConfigWriteError> {
-    let Some(value) = value else {
-        return Ok(());
-    };
-    if !value.is_finite() || value < min || value > max {
-        return Err(invalid(
-            t!(
-                "llm.error.out_of_range",
-                field = field,
-                min = format!("{min}"),
-                max = format!("{max}")
-            )
-            .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-/// 一个可选择的语言模型配置；API key 由用户直接填写并保存在本地配置中。
-#[derive(Clone, PartialEq)]
-pub(crate) struct LlmModelConfig {
-    pub(crate) id: String,
-    pub(crate) label: String,
-    pub(crate) provider: LlmProvider,
-    pub(crate) model: String,
-    pub(crate) endpoint: Option<String>,
-    pub(crate) api_key: Option<String>,
-    pub(crate) advanced: LlmAdvancedOptions,
-}
-
-impl LlmModelConfig {
-    /// 就地规范化并校验单个模型条目，不涉及跨条目的唯一性约束。
-    fn normalize(&mut self) -> Result<(), ConfigWriteError> {
-        self.id = normalized_required(&self.id, t!("llm.model_id").as_ref(), MAX_ID_BYTES)?;
-        if !self
-            .id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        {
-            return Err(invalid(t!("llm.error.id_characters").to_string()));
-        }
-        self.label = normalized_required(&self.label, t!("llm.name").as_ref(), MAX_LABEL_BYTES)?;
-        self.model = normalized_required(
-            &self.model,
-            t!("llm.provider_model_id").as_ref(),
-            MAX_MODEL_NAME_BYTES,
-        )?;
-        self.api_key =
-            normalize_optional(&self.api_key, MAX_API_KEY_BYTES, t!("llm.api_key").as_ref())?;
-        self.endpoint = normalize_endpoint(self.provider, self.endpoint.as_deref())?;
-        self.advanced.normalize()?;
-        Ok(())
-    }
-}
-
-impl fmt::Debug for LlmModelConfig {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("LlmModelConfig")
-            .field("id", &self.id)
-            .field("label", &self.label)
-            .field("provider", &self.provider)
-            .field("model", &self.model)
-            .field("endpoint", &self.endpoint)
-            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
-            .field("advanced", &self.advanced)
-            .finish()
-    }
-}
-
-/// 一次性发布的供应商目录与当前默认供应商。
-///
-/// 系统提示词属于人格配置域，未绑定供应商的人格才会回退到这里的默认选择。
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct LlmSettings {
-    pub(crate) models: Vec<LlmModelConfig>,
-    pub(crate) selected_model: Option<String>,
-}
-
-impl LlmSettings {
-    /// 返回当前选择且仍存在的模型。
-    pub(crate) fn selected(&self) -> Option<&LlmModelConfig> {
-        let selected = self.selected_model.as_deref()?;
-        self.models.iter().find(|model| model.id == selected)
-    }
-
-    /// 按 ID 查找供应商条目，供已绑定供应商的人格解析实际连接配置。
-    pub(crate) fn model(&self, id: &str) -> Option<&LlmModelConfig> {
-        self.models.iter().find(|model| model.id == id)
-    }
-
-    /// 规范化并校验准备发布的完整配置。
-    pub(crate) fn normalized(mut self) -> Result<Self, ConfigWriteError> {
-        if self.models.len() > MAX_MODELS {
-            return Err(invalid(
-                t!("llm.error.max_models", max = MAX_MODELS).to_string(),
-            ));
-        }
-
-        let mut ids = HashSet::with_capacity(self.models.len());
-        for model in &mut self.models {
-            model.normalize()?;
-            if !ids.insert(model.id.clone()) {
-                return Err(invalid(
-                    t!("llm.error.duplicate_id", id = &model.id).to_string(),
-                ));
-            }
-        }
-
-        self.selected_model = normalize_optional(
-            &self.selected_model,
-            MAX_ID_BYTES,
-            t!("llm.selected").as_ref(),
-        )?;
-        if let Some(selected) = &self.selected_model
-            && !ids.contains(selected)
-        {
-            return Err(invalid(
-                t!("llm.error.missing_selected", id = selected).to_string(),
-            ));
-        }
-        Ok(self)
-    }
-}
-
-fn normalized_required(
-    value: &str,
-    field: &str,
-    max_bytes: usize,
-) -> Result<String, ConfigWriteError> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Err(invalid(t!("llm.error.required", field = field).to_string()));
-    }
-    if value.len() > max_bytes {
-        return Err(invalid(
-            t!("llm.error.too_long", field = field, max = max_bytes).to_string(),
-        ));
-    }
-    Ok(value.to_owned())
-}
-
-fn normalize_optional(
-    value: &Option<String>,
-    max_bytes: usize,
-    field: &str,
-) -> Result<Option<String>, ConfigWriteError> {
-    let value = value
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    match value {
-        Some(value) if value.len() > max_bytes => Err(invalid(
-            t!("llm.error.too_long", field = field, max = max_bytes).to_string(),
-        )),
-        Some(value) => Ok(Some(value.to_owned())),
-        None => Ok(None),
-    }
-}
-
+#[cfg(test)]
 pub(in crate::config) fn normalize_endpoint(
     provider: LlmProvider,
     endpoint: Option<&str>,
+    language: AppLanguage,
 ) -> Result<Option<String>, ConfigWriteError> {
-    let Some(endpoint) = endpoint
-        .map(str::trim)
-        .filter(|endpoint| !endpoint.is_empty())
-    else {
-        return Ok(None);
-    };
-    if endpoint.len() > MAX_ENDPOINT_BYTES {
-        return Err(invalid(
-            t!(
-                "llm.error.too_long",
-                field = "Endpoint",
-                max = MAX_ENDPOINT_BYTES
-            )
-            .to_string(),
-        ));
-    }
-    if !provider.allows_endpoint_override() {
-        let provider_name = match provider {
-            LlmProvider::Zai => "ZAI",
-            LlmProvider::Baidu => "Baidu",
-            _ => provider.id(),
-        };
-        return Err(invalid(
-            t!("llm.error.endpoint_unsupported", provider = provider_name).to_string(),
-        ));
-    }
-
-    let mut url = Url::parse(endpoint)
-        .map_err(|error| invalid(t!("llm.error.endpoint_invalid", error = error).to_string()))?;
-    if url.host().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(invalid(t!("llm.error.endpoint_requirements").to_string()));
-    }
-    let allows_http = endpoint_is_loopback(&url);
-    if url.scheme() != "https" && !(url.scheme() == "http" && allows_http) {
-        return Err(invalid(t!("llm.error.endpoint_https").to_string()));
-    }
-
-    let path = url.path().trim_end_matches('/');
-    let normalized_path = if path.is_empty() {
-        "/".to_owned()
-    } else {
-        format!("{path}/")
-    };
-    url.set_path(&normalized_path);
-    Ok(Some(url.into()))
+    lunamate_agent::config::normalize_endpoint(provider, endpoint, language).map_err(Into::into)
 }
-
-fn endpoint_is_loopback(url: &Url) -> bool {
-    match url.host() {
-        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(address)) => IpAddr::V4(address).is_loopback(),
-        Some(Host::Ipv6(address)) => IpAddr::V6(address).is_loopback(),
-        None => false,
-    }
-}
-
-fn invalid(message: impl Into<String>) -> ConfigWriteError {
-    ConfigWriteError::InvalidValue(message.into())
-}
-
-/// 为跨线程任务共享当前语言模型配置提供清晰的所有权类型。
-pub(crate) type SharedLlmSettings = Arc<LlmSettings>;
 
 pub(super) fn parse_llm_settings(
     document: &DocumentMut,
     warnings: &mut Vec<String>,
+    language: AppLanguage,
 ) -> LlmSettings {
     let mut settings = LlmSettings::default();
     let Some(llm) = document.get("llm") else {
         return settings;
     };
-
     if let Some(selected) = llm.get("selected") {
         match selected.as_str() {
             Some(selected) => settings.selected_model = Some(selected.to_owned()),
-            None => warnings.push("llm.selected 必须是字符串，已忽略".to_owned()),
+            None => warnings.push(
+                t!(
+                    "config.error.expected_string_ignored",
+                    locale = language.id(),
+                    field = "llm.selected"
+                )
+                .to_string(),
+            ),
         }
     }
     if let Some(models) = llm.get("models") {
@@ -546,36 +51,64 @@ pub(super) fn parse_llm_settings(
             Some(models) => {
                 let mut ids = HashSet::with_capacity(models.len());
                 for (index, table) in models.iter().enumerate() {
-                    // 逐条规范化并跳过无效条目，避免一处手写错误丢弃其余模型和已保存的 API key。
-                    let mut model = match parse_llm_model(table) {
+                    let entry = format!("llm.models[{index}]");
+                    let model = match parse_llm_model(table, language).and_then(|model| {
+                        model.normalized(language).map_err(ConfigWriteError::from)
+                    }) {
                         Ok(model) => model,
                         Err(error) => {
-                            warnings.push(format!("llm.models[{index}] 已忽略：{error}"));
+                            warnings.push(
+                                t!(
+                                    "config.error.entry_ignored",
+                                    locale = language.id(),
+                                    entry = &entry,
+                                    error = error
+                                )
+                                .to_string(),
+                            );
                             continue;
                         }
                     };
-                    if let Err(error) = model.normalize() {
-                        warnings.push(format!("llm.models[{index}] 已忽略：{error}"));
-                        continue;
-                    }
                     if !ids.insert(model.id.clone()) {
-                        warnings.push(format!(
-                            "llm.models[{index}] 已忽略：{}",
-                            t!("llm.error.duplicate_id", id = &model.id)
-                        ));
+                        warnings.push(
+                            t!(
+                                "config.error.entry_ignored",
+                                locale = language.id(),
+                                entry = &entry,
+                                error = t!(
+                                    "llm.error.duplicate_id",
+                                    locale = language.id(),
+                                    id = &model.id
+                                )
+                            )
+                            .to_string(),
+                        );
                         continue;
                     }
                     if settings.models.len() == MAX_MODELS {
-                        warnings.push(t!("llm.error.max_models", max = MAX_MODELS).to_string());
+                        warnings.push(
+                            t!(
+                                "llm.error.max_models",
+                                locale = language.id(),
+                                max = MAX_MODELS
+                            )
+                            .to_string(),
+                        );
                         break;
                     }
                     settings.models.push(model);
                 }
             }
-            None => warnings.push("llm.models 必须是 TOML 表数组，已忽略".to_owned()),
+            None => warnings.push(
+                t!(
+                    "config.error.expected_table_array_ignored",
+                    locale = language.id(),
+                    field = "llm.models"
+                )
+                .to_string(),
+            ),
         }
     }
-
     settings.selected_model = settings
         .selected_model
         .map(|selected| selected.trim().to_owned())
@@ -583,25 +116,56 @@ pub(super) fn parse_llm_settings(
     if let Some(selected) = settings.selected_model.as_deref()
         && !settings.models.iter().any(|model| model.id == selected)
     {
-        warnings.push(format!("llm.selected 指向不存在的模型 {selected}，已忽略"));
+        warnings.push(
+            t!(
+                "config.error.entry_ignored",
+                locale = language.id(),
+                entry = "llm.selected",
+                error = t!(
+                    "llm.error.missing_selected",
+                    locale = language.id(),
+                    id = selected
+                )
+            )
+            .to_string(),
+        );
         settings.selected_model = None;
     }
     settings
 }
 
-fn parse_llm_model(table: &Table) -> Result<LlmModelConfig, ConfigWriteError> {
+fn parse_llm_model(
+    table: &Table,
+    language: AppLanguage,
+) -> Result<LlmModelConfig, ConfigWriteError> {
     let required = |key: &str| {
         table
             .get(key)
             .and_then(Item::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| ConfigWriteError::InvalidValue(format!("{key} 必须是字符串")))
+            .ok_or_else(|| {
+                ConfigWriteError::InvalidValue(
+                    t!(
+                        "config.error.expected_string",
+                        locale = language.id(),
+                        field = key
+                    )
+                    .to_string(),
+                )
+            })
     };
     let provider_id = required("provider")?;
-    let provider = LlmProvider::from_id(&provider_id)
-        .ok_or_else(|| ConfigWriteError::InvalidValue(format!("未知 Provider：{provider_id}")))?;
+    let provider = llm_provider_from_id(&provider_id).ok_or_else(|| {
+        ConfigWriteError::InvalidValue(
+            t!(
+                "llm.error.unknown_provider",
+                locale = language.id(),
+                provider = &provider_id
+            )
+            .to_string(),
+        )
+    })?;
     let optional = |key: &str| table.get(key).and_then(Item::as_str).map(str::to_owned);
-
     Ok(LlmModelConfig {
         id: required("id")?,
         label: required("label")?,
@@ -609,12 +173,14 @@ fn parse_llm_model(table: &Table) -> Result<LlmModelConfig, ConfigWriteError> {
         model: required("model")?,
         endpoint: optional("endpoint"),
         api_key: optional("api_key"),
-        advanced: parse_advanced_options(table)?,
+        advanced: parse_advanced_options(table, language)?,
     })
 }
 
-/// 单个高级参数写错时整条供应商都会被跳过，因此这里返回错误而不是静默降级。
-fn parse_advanced_options(table: &Table) -> Result<LlmAdvancedOptions, ConfigWriteError> {
+fn parse_advanced_options(
+    table: &Table,
+    language: AppLanguage,
+) -> Result<LlmAdvancedOptions, ConfigWriteError> {
     let integer = |key: &'static str| -> Result<Option<u32>, ConfigWriteError> {
         match table.get(key) {
             None => Ok(None),
@@ -622,35 +188,63 @@ fn parse_advanced_options(table: &Table) -> Result<LlmAdvancedOptions, ConfigWri
                 .as_integer()
                 .and_then(|value| u32::try_from(value).ok())
                 .map(Some)
-                .ok_or_else(|| ConfigWriteError::InvalidValue(format!("{key} 必须是非负整数"))),
+                .ok_or_else(|| {
+                    ConfigWriteError::InvalidValue(
+                        t!(
+                            "config.error.expected_nonnegative_integer",
+                            locale = language.id(),
+                            field = key
+                        )
+                        .to_string(),
+                    )
+                }),
         }
     };
     let ratio = |key: &'static str| -> Result<Option<f64>, ConfigWriteError> {
         match table.get(key) {
             None => Ok(None),
-            // 手写配置常把 1.0 写成 1，这里统一接受整数与浮点两种字面量。
             Some(item) => item
                 .as_float()
                 .or_else(|| item.as_integer().map(|value| value as f64))
                 .map(Some)
-                .ok_or_else(|| ConfigWriteError::InvalidValue(format!("{key} 必须是数字"))),
+                .ok_or_else(|| {
+                    ConfigWriteError::InvalidValue(
+                        t!(
+                            "config.error.expected_number",
+                            locale = language.id(),
+                            field = key
+                        )
+                        .to_string(),
+                    )
+                }),
         }
     };
-
     let budget = integer("reasoning_budget")?;
     let reasoning_effort = match table.get("reasoning_effort") {
         None => None,
         Some(item) => {
             let id = item.as_str().ok_or_else(|| {
-                ConfigWriteError::InvalidValue("reasoning_effort 必须是字符串".to_owned())
+                ConfigWriteError::InvalidValue(
+                    t!(
+                        "config.error.expected_string",
+                        locale = language.id(),
+                        field = "reasoning_effort"
+                    )
+                    .to_string(),
+                )
             })?;
-            Some(
-                ReasoningEffort::from_id(id, budget)
-                    .ok_or_else(|| ConfigWriteError::InvalidValue(format!("未知思考强度：{id}")))?,
-            )
+            Some(reasoning_effort_from_id(id, budget).ok_or_else(|| {
+                ConfigWriteError::InvalidValue(
+                    t!(
+                        "llm.error.unknown_reasoning_effort",
+                        locale = language.id(),
+                        effort = id
+                    )
+                    .to_string(),
+                )
+            })?)
         }
     };
-
     Ok(LlmAdvancedOptions {
         context_window_tokens: integer("context_window_tokens")?,
         reasoning_effort,
@@ -672,7 +266,6 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
         ),
         None => remove_key(document, "llm", "selected"),
     }
-
     let existing_models = document
         .get("llm")
         .and_then(|llm| llm.get("models"))
@@ -688,18 +281,21 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
             .unwrap_or_else(Table::new);
         set_item_value(&mut table["id"], Value::from(model.id.clone()));
         set_item_value(&mut table["label"], Value::from(model.label.clone()));
-        set_item_value(&mut table["provider"], Value::from(model.provider.id()));
+        set_item_value(
+            &mut table["provider"],
+            Value::from(llm_provider_id(model.provider)),
+        );
         set_item_value(&mut table["model"], Value::from(model.model.clone()));
-        if let Some(endpoint) = &model.endpoint {
-            set_item_value(&mut table["endpoint"], Value::from(endpoint.clone()));
-        } else {
-            table.remove("endpoint");
-        }
-        if let Some(api_key) = &model.api_key {
-            set_item_value(&mut table["api_key"], Value::from(api_key.clone()));
-        } else {
-            table.remove("api_key");
-        }
+        write_optional(
+            &mut table,
+            "endpoint",
+            model.endpoint.clone().map(Value::from),
+        );
+        write_optional(
+            &mut table,
+            "api_key",
+            model.api_key.clone().map(Value::from),
+        );
         write_advanced_options(&mut table, &model.advanced);
         models.push(table);
     }
@@ -707,37 +303,46 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
 }
 
 fn write_advanced_options(table: &mut Table, advanced: &LlmAdvancedOptions) {
-    let mut write_optional = |key: &str, value: Option<Value>| match value {
-        Some(value) => set_item_value(&mut table[key], value),
-        None => {
-            table.remove(key);
-        }
-    };
     write_optional(
+        table,
         "context_window_tokens",
         advanced
             .context_window_tokens
             .map(|tokens| Value::from(i64::from(tokens))),
     );
     write_optional(
+        table,
         "reasoning_effort",
         advanced
             .reasoning_effort
-            .map(|effort| Value::from(effort.id())),
+            .as_ref()
+            .map(|effort| Value::from(reasoning_effort_id(effort))),
     );
     write_optional(
+        table,
         "reasoning_budget",
         advanced
             .reasoning_effort
-            .and_then(ReasoningEffort::budget)
+            .as_ref()
+            .and_then(reasoning_budget)
             .map(|tokens| Value::from(i64::from(tokens))),
     );
     write_optional(
+        table,
         "max_output_tokens",
         advanced
             .max_output_tokens
             .map(|tokens| Value::from(i64::from(tokens))),
     );
-    write_optional("temperature", advanced.temperature.map(Value::from));
-    write_optional("top_p", advanced.top_p.map(Value::from));
+    write_optional(table, "temperature", advanced.temperature.map(Value::from));
+    write_optional(table, "top_p", advanced.top_p.map(Value::from));
+}
+
+fn write_optional(table: &mut Table, key: &str, value: Option<Value>) {
+    match value {
+        Some(value) => set_item_value(&mut table[key], value),
+        None => {
+            table.remove(key);
+        }
+    }
 }

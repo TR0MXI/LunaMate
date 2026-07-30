@@ -5191,12 +5191,10 @@ dependencies = [
  "arc-swap",
  "ashpd",
  "async-channel",
- "base64",
  "cocoa 0.26.0",
  "cpal",
  "flexi_logger",
  "futures",
- "genai",
  "global-hotkey",
  "gpui",
  "gpui-component",
@@ -5206,6 +5204,7 @@ dependencies = [
  "image",
  "ksni",
  "log",
+ "lunamate-agent",
  "mimalloc",
  "mocari",
  "objc",
@@ -5227,6 +5226,24 @@ dependencies = [
  "whisper-rs",
  "windows 0.61.3",
  "xcap",
+]
+
+[[package]]
+name = "lunamate-agent"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "base64",
+ "futures",
+ "genai",
+ "image",
+ "log",
+ "parking_lot",
+ "rust-i18n",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]

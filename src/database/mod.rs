@@ -13,8 +13,10 @@ mod tests;
 use std::{error::Error, fmt, io, path::PathBuf};
 
 pub(crate) use atomic_file::{AtomicReplaceOperation, atomic_replace};
-pub(crate) use engine::{Database, StoredDocument};
-pub(crate) use memory::{MemoryTier, MemoryUsage};
+pub(crate) use engine::Database;
+pub(crate) use memory::MemoryTier;
+#[cfg(test)]
+pub(crate) use memory::MemoryUsage;
 
 /// 描述嵌入式数据库初始化或文档访问失败。
 #[derive(Debug)]

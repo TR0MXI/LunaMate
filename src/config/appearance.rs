@@ -1,44 +1,8 @@
 //! 定义可持久化的界面语言、主题预设与自定义外观配置。
 
 use gpui_component::ThemeMode;
+use lunamate_agent::config::AppLanguage;
 use rust_i18n::t;
-
-/// 应用支持的界面语言。
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum AppLanguage {
-    /// 简体中文。
-    #[default]
-    SimplifiedChinese,
-    /// 繁体中文。
-    TraditionalChinese,
-    /// 英语。
-    English,
-    /// 日语。
-    Japanese,
-}
-
-impl AppLanguage {
-    /// 返回配置文件中稳定的语言标识。
-    pub(crate) const fn id(self) -> &'static str {
-        match self {
-            Self::SimplifiedChinese => "zh-CN",
-            Self::TraditionalChinese => "zh-TW",
-            Self::English => "en",
-            Self::Japanese => "ja",
-        }
-    }
-
-    /// 从配置文件标识恢复语言；未知值不影响其余配置。
-    pub(crate) fn from_id(value: &str) -> Option<Self> {
-        match value {
-            "zh-CN" => Some(Self::SimplifiedChinese),
-            "zh-TW" => Some(Self::TraditionalChinese),
-            "en" => Some(Self::English),
-            "ja" => Some(Self::Japanese),
-            _ => None,
-        }
-    }
-}
 
 /// 内置和用户自定义的主题预设。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

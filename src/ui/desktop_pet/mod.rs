@@ -18,11 +18,11 @@ use gpui::{
     WindowDecorations, WindowKind, WindowOptions, px, size, transparent_black,
 };
 use gpui_component::Root;
+use lunamate_agent::tools::AgentOutfitRequest;
 use parking_lot::{Condvar, Mutex};
 use rust_i18n::t;
 
 use crate::{
-    agent::{AgentOutfitRequest, AgentView, AgentViewEvent},
     config::{
         AppearanceSettings, CONFIG, ConfigWindow, ModelWindowSize, ThemePreset, VoiceMode,
         VoiceSettings,
@@ -42,10 +42,10 @@ use crate::{
 };
 
 use super::{
-    AgentOutfitAction, SettingsEvent, SettingsView, SettingsWindowView, TrayMenuView, UiPalette,
-    apply, apply_language, cache_window_position, desktop_pet_window_size, gpu_underlay_size,
-    gpu_underlay_size_for_window, raster_dimensions_for_window, restored_window_bounds,
-    settings_window_sizes, tray_menu_window_options,
+    AgentOutfitAction, AgentView, AgentViewEvent, SettingsEvent, SettingsView, SettingsWindowView,
+    TrayMenuView, UiPalette, apply, apply_language, cache_window_position, desktop_pet_window_size,
+    gpu_underlay_size, gpu_underlay_size_for_window, raster_dimensions_for_window,
+    restored_window_bounds, settings_window_sizes, tray_menu_window_options,
 };
 
 const FPS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
@@ -394,7 +394,7 @@ impl DesktopPetView {
                     let voice_settings = CONFIG.voice_settings();
                     this.apply_voice_settings(&voice_settings, cx);
                     this.chat.update(cx, |chat, cx| {
-                        chat.refresh_settings(cx);
+                        chat.refresh_settings(CONFIG.agent_config_snapshot(), cx);
                     });
                 }
                 SettingsEvent::AgentOutfitToolChanged(enabled) => {
@@ -405,44 +405,6 @@ impl DesktopPetView {
                     }
                 }
                 SettingsEvent::ModelResourcesChanged => this.sync_agent_outfits(cx),
-                SettingsEvent::PersonaContextCleared {
-                    persona,
-                    completion,
-                } => {
-                    this.chat.update(cx, |chat, cx| {
-                        chat.clear_persona_context(persona, completion.clone(), cx);
-                    });
-                }
-                SettingsEvent::PersonaContextMessageEdited {
-                    persona,
-                    message_id,
-                    content,
-                    completion,
-                } => {
-                    this.chat.update(cx, |chat, cx| {
-                        chat.edit_persona_context_message(
-                            persona,
-                            *message_id,
-                            content.clone(),
-                            completion.clone(),
-                            cx,
-                        );
-                    });
-                }
-                SettingsEvent::PersonaContextMessagesDeleted {
-                    persona,
-                    message_ids,
-                    completion,
-                } => {
-                    this.chat.update(cx, |chat, cx| {
-                        chat.delete_persona_context_messages(
-                            persona,
-                            message_ids.clone(),
-                            completion.clone(),
-                            cx,
-                        );
-                    });
-                }
                 SettingsEvent::WindowPositionsReset => {
                     this.position_controller.request_reset();
                     cx.notify();
@@ -454,6 +416,9 @@ impl DesktopPetView {
                     apply(settings, None, cx);
                     this.sync_system_tray_appearance(cx);
                     this.sync_agent_outfits(cx);
+                    this.chat.update(cx, |chat, cx| {
+                        chat.refresh_settings(CONFIG.agent_config_snapshot(), cx);
+                    });
                 }
                 SettingsEvent::VoiceChanged(settings) => {
                     this.apply_voice_settings(settings, cx);
@@ -961,7 +926,11 @@ impl DesktopPetView {
             request.complete(false);
             return;
         }
-        let Some(action) = self.config.read(cx).resolve_agent_outfit(request.outfit()) else {
+        let Some(action) = self
+            .config
+            .read(cx)
+            .resolve_agent_outfit(request.outfit_id())
+        else {
             request.complete(false);
             return;
         };
