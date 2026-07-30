@@ -80,8 +80,9 @@ using parameter IDs from another model may parse successfully without producing 
 
 ## Voice Input
 
-Voice input is disabled by default. Select a whisper.cpp GGML Whisper model and a compatible
-Silero VAD GGML model on the Voice settings page before enabling it.
+Voice input is disabled by default. Silero VAD v6.2.0 is embedded in LunaMate and is used
+automatically when automatic mode is enabled. Only a whisper.cpp GGML Whisper model needs to be
+selected on the Voice settings page.
 
 Automatic mode continuously listens and submits an utterance after VAD detects its endpoint. It
 also lets the global Voice Input shortcut take over the current candidate or active recording;

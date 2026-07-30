@@ -23,7 +23,6 @@ use super::{
     vad::{EndpointDetector, EndpointEvent, MAX_UTTERANCE_SAMPLES, RollingVad, VadEngine as _},
 };
 
-const MAX_VAD_MODEL_BYTES: u64 = 64 * 1024 * 1024;
 const MIN_MANUAL_SAMPLES: usize = 16_000 / 4;
 
 pub(super) fn spawn(
@@ -220,10 +219,9 @@ impl Worker {
             }
         }
         log::info!(
-            "语音配置已生效：revision={revision}, mode={}, whisper_configured={}, vad_configured={}, gpu_requested={}",
+            "语音配置已生效：revision={revision}, mode={}, whisper_configured={}, vad_embedded=true, gpu_requested={}",
             self.settings.mode.id(),
             self.settings.whisper_model.is_some(),
-            self.settings.vad_model.is_some(),
             self.settings.use_gpu
         );
     }
@@ -235,13 +233,7 @@ impl Worker {
             .as_deref()
             .ok_or_else(|| "自动语音模式需要先选择 Whisper 模型".to_owned())?;
         validate_model_file(whisper_path, MAX_WHISPER_MODEL_BYTES, "Whisper")?;
-        let vad_path = self
-            .settings
-            .vad_model
-            .as_deref()
-            .ok_or_else(|| "自动语音模式需要先选择 Silero VAD 模型".to_owned())?;
-        validate_model_file(vad_path, MAX_VAD_MODEL_BYTES, "Silero VAD")?;
-        self.vad = Some(RollingVad::load(vad_path)?);
+        self.vad = Some(RollingVad::load()?);
         Ok(())
     }
 

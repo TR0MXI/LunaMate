@@ -170,7 +170,6 @@ pub(crate) struct SettingsView {
     log_max_size_input: Option<Entity<InputState>>,
     log_keep_files_input: Option<Entity<InputState>>,
     voice_whisper_model_input: Option<Entity<InputState>>,
-    voice_vad_model_input: Option<Entity<InputState>>,
     model_resource_name_input: Option<Entity<InputState>>,
     shortcut_focus: Option<FocusHandle>,
     preview_capabilities: ModelPreviewCapabilities,
@@ -261,7 +260,6 @@ impl SettingsView {
             log_max_size_input: None,
             log_keep_files_input: None,
             voice_whisper_model_input: None,
-            voice_vad_model_input: None,
             model_resource_name_input: None,
             shortcut_focus: None,
             preview_capabilities: ModelPreviewCapabilities::default(),
@@ -555,17 +553,7 @@ impl SettingsView {
                     .unwrap_or_default(),
             )
         });
-        let voice_vad_model_input = cx.new(|cx| {
-            InputState::new(window, cx).default_value(
-                self.voice
-                    .vad_model
-                    .as_deref()
-                    .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            )
-        });
         self.voice_whisper_model_input = Some(voice_whisper_model_input.clone());
-        self.voice_vad_model_input = Some(voice_vad_model_input.clone());
         let model_resource_name_input = cx.new(|cx| InputState::new(window, cx));
         self.model_resource_name_subscription = Some(cx.subscribe_in(
             &model_resource_name_input,
@@ -577,21 +565,14 @@ impl SettingsView {
             },
         ));
         self.model_resource_name_input = Some(model_resource_name_input);
-        self.voice_input_subscriptions = vec![
-            cx.subscribe(
-                &voice_whisper_model_input,
-                |this, _, event: &InputEvent, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        this.capture_voice_draft(cx);
-                    }
-                },
-            ),
-            cx.subscribe(&voice_vad_model_input, |this, _, event: &InputEvent, cx| {
+        self.voice_input_subscriptions = vec![cx.subscribe(
+            &voice_whisper_model_input,
+            |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.capture_voice_draft(cx);
                 }
-            }),
-        ];
+            },
+        )];
         // 供应商目录变化会改变人格可绑定的候选项，两个编辑器必须保持同步。
         self.provider_settings_subscription = Some(cx.subscribe(
             &provider_settings_view,
@@ -953,7 +934,6 @@ impl SettingsView {
         self.log_keep_files_input = None;
         self.voice_input_subscriptions.clear();
         self.voice_whisper_model_input = None;
-        self.voice_vad_model_input = None;
         self.model_resource_name_input = None;
         self.model_resource_name_subscription = None;
         self.editing_model_resource = None;
@@ -1308,7 +1288,6 @@ impl SettingsView {
             && self.persona_settings_view.is_some()
             && self.custom_frame_rate_input.is_some()
             && self.voice_whisper_model_input.is_some()
-            && self.voice_vad_model_input.is_some()
             && self.model_resource_name_input.is_some()
             && self.shortcut_focus.is_some()
     }
@@ -2389,14 +2368,8 @@ impl SettingsView {
             let value = value.trim();
             (!value.is_empty()).then(|| PathBuf::from(value))
         });
-        let vad_model = self.voice_vad_model_input.as_ref().and_then(|input| {
-            let value = input.read(cx).value().to_string();
-            let value = value.trim();
-            (!value.is_empty()).then(|| PathBuf::from(value))
-        });
-        if self.voice.whisper_model != whisper_model || self.voice.vad_model != vad_model {
+        if self.voice.whisper_model != whisper_model {
             self.voice.whisper_model = whisper_model;
-            self.voice.vad_model = vad_model;
             self.voice_save_revision = self.voice_save_revision.wrapping_add(1).max(1);
         }
     }
@@ -2440,7 +2413,7 @@ impl SettingsView {
         self.track_write_task(task);
     }
 
-    fn choose_voice_model(&mut self, whisper: bool, cx: &mut Context<Self>) {
+    fn choose_voice_model(&mut self, cx: &mut Context<Self>) {
         self.voice_picker_revision = self.voice_picker_revision.wrapping_add(1).max(1);
         let revision = self.voice_picker_revision;
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -2454,10 +2427,7 @@ impl SettingsView {
                 Ok(Ok(Some(paths))) => paths.into_iter().next(),
                 Ok(Ok(None)) => return,
                 Ok(Err(_)) | Err(_) => {
-                    log::warn!(
-                        "语音模型文件选择器失败：kind={}",
-                        if whisper { "whisper" } else { "vad" }
-                    );
+                    log::warn!("Whisper 模型文件选择器失败");
                     let _ = this.update(cx, |this, cx| {
                         if this.voice_picker_revision == revision {
                             this.set_status(t!("voice.picker_failed").to_string(), cx);
@@ -2473,12 +2443,7 @@ impl SettingsView {
                 if this.voice_picker_revision != revision {
                     return;
                 }
-                let input = if whisper {
-                    this.voice_whisper_model_input.clone()
-                } else {
-                    this.voice_vad_model_input.clone()
-                };
-                if let Some(input) = input {
+                if let Some(input) = this.voice_whisper_model_input.clone() {
                     input.update(cx, |input, cx| {
                         input.set_value(path.to_string_lossy().into_owned(), window, cx);
                     });

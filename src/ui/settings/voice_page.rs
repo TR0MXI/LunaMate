@@ -1,4 +1,4 @@
-//! 渲染语音模式、本地模型路径、下载入口和推理设备草稿。
+//! 渲染语音模式、Whisper 模型路径、下载入口和推理设备草稿。
 
 use gpui::{AnyElement, Context, Entity, IntoElement, div, prelude::*, px, svg};
 use gpui_component::{
@@ -19,7 +19,6 @@ use super::{
 };
 
 const WHISPER_MODELS_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/tree/main";
-const SILERO_VAD_MODELS_URL: &str = "https://huggingface.co/ggml-org/whisper-vad/tree/main";
 
 impl SettingsView {
     pub(super) fn render_voice_page(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -86,26 +85,11 @@ impl SettingsView {
                                             row.child(model_path_control(
                                                 input,
                                                 "choose-whisper-model",
-                                                true,
                                                 palette,
                                                 cx,
                                             ))
                                         },
                                     ),
-                            )
-                            .child(
-                                setting_row(t!("voice.vad_model").to_string(), palette).when_some(
-                                    self.voice_vad_model_input.clone(),
-                                    |row, input| {
-                                        row.child(model_path_control(
-                                            input,
-                                            "choose-vad-model",
-                                            false,
-                                            palette,
-                                            cx,
-                                        ))
-                                    },
-                                ),
                             )
                             .child(system_section_label(
                                 t!("voice.inference").to_string(),
@@ -188,29 +172,15 @@ fn model_download_info(palette: UiPalette) -> gpui::Div {
                         .child(t!("voice.model_download_notice").to_string()),
                 )
                 .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            Link::new("whisper-model-list")
-                                .href(WHISPER_MODELS_URL)
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .child(t!("voice.whisper_model_list").to_string())
-                                .child(Icon::new(IconName::ExternalLink).xsmall()),
-                        )
-                        .child(
-                            Link::new("silero-vad-model-list")
-                                .href(SILERO_VAD_MODELS_URL)
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .child(t!("voice.vad_model_list").to_string())
-                                .child(Icon::new(IconName::ExternalLink).xsmall()),
-                        ),
+                    div().flex().flex_wrap().items_center().gap_3().child(
+                        Link::new("whisper-model-list")
+                            .href(WHISPER_MODELS_URL)
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(t!("voice.whisper_model_list").to_string())
+                            .child(Icon::new(IconName::ExternalLink).xsmall()),
+                    ),
                 ),
         )
 }
@@ -218,7 +188,6 @@ fn model_download_info(palette: UiPalette) -> gpui::Div {
 fn model_path_control(
     input: Entity<InputState>,
     button_id: &'static str,
-    whisper: bool,
     palette: UiPalette,
     cx: &mut Context<SettingsView>,
 ) -> gpui::Div {
@@ -246,7 +215,7 @@ fn model_path_control(
                 .hover(move |style| style.bg(palette.accent))
                 .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.choose_voice_model(whisper, cx);
+                    this.choose_voice_model(cx);
                 }))
                 .child(
                     svg()

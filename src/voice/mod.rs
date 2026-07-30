@@ -155,7 +155,6 @@ impl VoiceController {
         let completion = std::sync::mpsc::sync_channel(1);
         let initial_mode = settings.mode.id();
         let whisper_configured = settings.whisper_model.is_some();
-        let vad_configured = settings.vad_model.is_some();
         let gpu_requested = settings.use_gpu;
         let worker = worker::spawn(
             settings,
@@ -167,7 +166,7 @@ impl VoiceController {
             completion.0,
         )?;
         log::info!(
-            "语音控制端已创建：revision=1, mode={initial_mode}, whisper_configured={whisper_configured}, vad_configured={vad_configured}, gpu_requested={gpu_requested}"
+            "语音控制端已创建：revision=1, mode={initial_mode}, whisper_configured={whisper_configured}, vad_embedded=true, gpu_requested={gpu_requested}"
         );
         Ok((
             Self {

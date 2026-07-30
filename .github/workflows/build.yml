@@ -153,6 +153,8 @@ jobs:
           install -m 755 "${CARGO_TARGET_DIR}/${{ matrix.target }}/release/lunamate" "$package/lunamate"
           install -m 644 assets/linux/io.github.tr0mxi.lunamate.desktop "$package/share/applications/"
           install -m 644 README.md LICENSE "$package/"
+          install -m 644 assets/vad/LICENSE "$package/SILERO_VAD_LICENSE"
+          install -m 644 assets/vad/SOURCE.md "$package/SILERO_VAD_SOURCE.md"
           tar -C dist -czf "${{ matrix.archive }}" lunamate-linux-x86_64
 
       - name: 打包 Windows 产物
@@ -163,6 +165,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $package | Out-Null
           Copy-Item "$env:CARGO_TARGET_DIR/${{ matrix.target }}/release/lunamate.exe" "$package/LunaMate.exe"
           Copy-Item README.md, LICENSE -Destination $package
+          Copy-Item assets/vad/LICENSE "$package/SILERO_VAD_LICENSE"
+          Copy-Item assets/vad/SOURCE.md "$package/SILERO_VAD_SOURCE.md"
           Compress-Archive -Path $package -DestinationPath "${{ matrix.archive }}" -CompressionLevel Optimal
 
       - name: 读取应用版本
@@ -180,6 +184,8 @@ jobs:
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           install -m 755 "${CARGO_TARGET_DIR}/${{ matrix.target }}/release/lunamate" "$app/Contents/MacOS/LunaMate"
           cp README.md LICENSE "$app/Contents/Resources/"
+          cp assets/vad/LICENSE "$app/Contents/Resources/SILERO_VAD_LICENSE"
+          cp assets/vad/SOURCE.md "$app/Contents/Resources/SILERO_VAD_SOURCE.md"
           plutil -create xml1 "$app/Contents/Info.plist"
           plutil -insert CFBundleDisplayName -string LunaMate "$app/Contents/Info.plist"
           plutil -insert CFBundleExecutable -string LunaMate "$app/Contents/Info.plist"

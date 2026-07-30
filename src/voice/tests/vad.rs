@@ -1,6 +1,18 @@
 use std::collections::VecDeque;
 
-use crate::voice::vad::{EndpointDetector, EndpointEvent, VadEngine};
+use crate::voice::vad::{
+    EMBEDDED_VAD_MODEL_BYTES, EndpointDetector, EndpointEvent, RollingVad, VadEngine,
+};
+
+#[test]
+fn embedded_vad_model_has_expected_size() {
+    assert_eq!(EMBEDDED_VAD_MODEL_BYTES.len(), 885_098);
+}
+
+#[test]
+fn embedded_vad_model_initializes_on_cpu() {
+    RollingVad::load().expect("内嵌 Silero VAD 模型应当可以初始化");
+}
 
 struct FakeVad {
     newest: VecDeque<f32>,

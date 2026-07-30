@@ -92,8 +92,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
 - `vendor/mocari` 同时是非默认 workspace 成员，以便不构建 LunaMate 的语音和桌面依赖就能独立
   运行库测试与 Criterion 基准；根目录默认命令覆盖 `lunamate` 与 `lunamate-agent`，不自动运行
   Mocari 基准。`benchmark-support` 只能用于合成数据基准，不得进入生产依赖 feature。
-- Silero VAD 只使用 whisper-rs 公开安全接口和有界滚动上下文，不 vendor 或 patch
-  `whisper-rs-sys`。同步转写通过 whisper-rs 公开的 unsafe setter 安装有界生命周期的 abort
+- Silero VAD v6.2.0 模型作为记录来源和 MIT 许可证的固定资源内嵌进最终二进制，自动模式不得
+  要求用户下载或配置 VAD 路径；运行时只使用 whisper-rs 公开安全接口和有界滚动上下文，不
+  vendor 或 patch `whisper-rs-sys`。同步转写通过 whisper-rs 公开的 unsafe setter 安装有界生命周期的 abort
   callback；whisper-rs 修复 safe callback 的 trampoline 类型与所有权后，必须删除本地 abort FFI。
 - Whisper 通用构建不暴露 LunaMate GPU feature：macOS 固定包含 Metal，Windows 和 Linux
   固定包含 Vulkan。CUDA、ROCm 与 Intel SYCL 会直接链接供应商运行库，不得加入通用二进制；
@@ -215,6 +216,7 @@ cargo bench --locked -p mocari --bench deformer_composition_allocations --featur
   Agent 核心或私有 Provider 执行层用确定性驱动覆盖，不为测试重新公开 backend trait。
 - 依赖真实 Live2D 模型或桌面截屏授权的用例标注 `#[ignore]` 并写明原因；仓库不分发模型，
   由使用者自备模型后手动运行。
-- 依赖真实麦克风、Whisper 或 Silero 模型、GPU 后端的用例同样标注 `#[ignore]`；常规测试用
-  fake VAD 和纯状态机覆盖端点、取消与迟到结果，仓库不分发语音模型。
+- 依赖真实麦克风、Whisper 模型或 GPU 后端的用例同样标注 `#[ignore]`；内嵌 Silero VAD 的资源
+  完整性和 CPU 初始化可以常规测试，端点、取消与迟到结果继续用 fake VAD 和纯状态机覆盖。
+  仓库不分发 Whisper 模型。
 - 修改依赖策略、平台支持、目录约定或关键架构时同步更新本文件；具体计划写入 `TODO.md`。

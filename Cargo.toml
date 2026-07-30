@@ -77,6 +77,7 @@ ringbuf.workspace = true
 cpal = "0.18.1"
 rubato = "0.16.2"
 global-hotkey.workspace = true
+tempfile = "3.27.0"
 
 [patch.crates-io]
 # 上游 PR #14 修复了 2.0.1 中的 Rust future-incompatibility 警告。
@@ -129,3 +130,6 @@ gpui = { workspace = true, features = ["test-support"] }
 surrealdb = { workspace = true, features = ["kv-mem"] }
 # 仅为无图形会话的 pipeline 单元测试启用同一份 WGPU 29 noop backend。
 wgpu = { version = "=29.0.4", features = ["noop"] }
+
+[build-dependencies]
+sha2 = "0.10.9"

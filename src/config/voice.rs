@@ -1,4 +1,4 @@
-//! 定义本地语音输入模式、模型路径和推理设备偏好。
+//! 定义本地语音输入模式、Whisper 模型路径和推理设备偏好。
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -55,7 +55,6 @@ impl VoiceMode {
 pub(crate) struct VoiceSettings {
     pub(crate) mode: VoiceMode,
     pub(crate) whisper_model: Option<PathBuf>,
-    pub(crate) vad_model: Option<PathBuf>,
     /// 允许 whisper.cpp 使用当前构建包含的 GPU 后端；初始化失败时运行时回退 CPU。
     pub(crate) use_gpu: bool,
 }
@@ -66,7 +65,6 @@ impl VoiceSettings {
     /// 规范化可选路径并拒绝无法安全交给 C API 的值。
     pub(crate) fn normalized(mut self) -> Result<Self, ConfigWriteError> {
         self.whisper_model = normalize_model_path(self.whisper_model, "Whisper 模型")?;
-        self.vad_model = normalize_model_path(self.vad_model, "Silero VAD 模型")?;
         Ok(self)
     }
 }
@@ -118,9 +116,6 @@ pub(super) fn parse_voice_settings(
     if let Some(path) = parse_path(voice.get("whisper_model"), "voice.whisper_model", warnings) {
         settings.whisper_model = Some(path);
     }
-    if let Some(path) = parse_path(voice.get("vad_model"), "voice.vad_model", warnings) {
-        settings.vad_model = Some(path);
-    }
     if let Some(item) = voice.get("use_gpu") {
         match item.as_bool() {
             Some(use_gpu) => settings.use_gpu = use_gpu,
@@ -159,7 +154,7 @@ pub(super) fn write_voice_settings(document: &mut DocumentMut, settings: &VoiceS
         Value::from(settings.use_gpu),
     );
     write_optional_path(document, "whisper_model", settings.whisper_model.as_ref());
-    write_optional_path(document, "vad_model", settings.vad_model.as_ref());
+    remove_key(document, "voice", "vad_model");
 }
 
 fn write_optional_path(document: &mut DocumentMut, key: &str, path: Option<&PathBuf>) {

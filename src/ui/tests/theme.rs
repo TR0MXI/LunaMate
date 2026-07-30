@@ -251,9 +251,5 @@ fn core_settings_text_exists_in_every_supported_language() {
             rust_i18n::t!("voice.whisper_model_list", locale = locale),
             "voice.whisper_model_list"
         );
-        assert_ne!(
-            rust_i18n::t!("voice.vad_model_list", locale = locale),
-            "voice.vad_model_list"
-        );
     }
 }

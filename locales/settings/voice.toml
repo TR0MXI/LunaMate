@@ -54,12 +54,6 @@ _version = 2
 "en" = "Whisper model"
 "ja" = "Whisper モデル"
 
-[voice.vad_model]
-"zh-CN" = "Silero VAD 模型"
-"zh-TW" = "Silero VAD 模型"
-"en" = "Silero VAD model"
-"ja" = "Silero VAD モデル"
-
 [voice.model_downloads]
 "zh-CN" = "模型下载"
 "zh-TW" = "模型下載"
@@ -67,22 +61,16 @@ _version = 2
 "ja" = "モデルのダウンロード"
 
 [voice.model_download_notice]
-"zh-CN" = "LunaMate 不会自动下载模型，请从以下官方列表获取兼容的 GGML 文件。"
-"zh-TW" = "LunaMate 不會自動下載模型，請從以下官方清單取得相容的 GGML 檔案。"
-"en" = "LunaMate does not download models automatically. Get compatible GGML files from these official lists."
-"ja" = "LunaMate はモデルを自動的にダウンロードしません。互換性のある GGML ファイルは、次の公式一覧から入手してください。"
+"zh-CN" = "Silero VAD 已内置；语音转写仍需从官方列表获取 Whisper GGML 模型。"
+"zh-TW" = "Silero VAD 已內建；語音轉寫仍需從官方清單取得 Whisper GGML 模型。"
+"en" = "Silero VAD is built in. Speech transcription still requires a Whisper GGML model from the official list."
+"ja" = "Silero VAD は内蔵されています。音声文字起こしには、公式一覧の Whisper GGML モデルが必要です。"
 
 [voice.whisper_model_list]
 "zh-CN" = "Whisper GGML 模型列表"
 "zh-TW" = "Whisper GGML 模型清單"
 "en" = "Whisper GGML model list"
 "ja" = "Whisper GGML モデル一覧"
-
-[voice.vad_model_list]
-"zh-CN" = "Silero VAD GGML 模型列表"
-"zh-TW" = "Silero VAD GGML 模型清單"
-"en" = "Silero VAD GGML model list"
-"ja" = "Silero VAD GGML モデル一覧"
 
 [voice.inference]
 "zh-CN" = "推理"

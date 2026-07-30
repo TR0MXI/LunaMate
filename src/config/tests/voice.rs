@@ -23,13 +23,12 @@ fn automatic_mode_combines_vad_and_shortcut_capabilities() {
 
 #[test]
 fn voice_settings_round_trip_without_losing_unrelated_keys() {
-    let mut document = "[custom]\nkeep = true\n"
+    let mut document = "[custom]\nkeep = true\n[voice]\nvad_model = \"/models/legacy-vad.bin\"\n"
         .parse::<DocumentMut>()
         .expect("测试配置应当可以解析");
     let settings = VoiceSettings {
         mode: VoiceMode::Auto,
         whisper_model: Some(PathBuf::from("/models/ggml-small.bin")),
-        vad_model: Some(PathBuf::from("/models/ggml-silero-v6.2.0.bin")),
         use_gpu: true,
     };
 
@@ -40,6 +39,7 @@ fn voice_settings_round_trip_without_losing_unrelated_keys() {
     assert!(warnings.is_empty());
     assert_eq!(restored, settings);
     assert_eq!(document["custom"]["keep"].as_bool(), Some(true));
+    assert!(document["voice"].get("vad_model").is_none());
 }
 
 #[test]
@@ -58,7 +58,6 @@ use_gpu = "yes"
 
     assert_eq!(settings.mode, VoiceMode::Off);
     assert_eq!(settings.whisper_model, None);
-    assert_eq!(settings.vad_model, Some(PathBuf::from("/models/vad.bin")));
     assert!(!settings.use_gpu);
     assert_eq!(warnings.len(), 3);
 }
@@ -67,7 +66,6 @@ use_gpu = "yes"
 fn model_paths_are_trimmed_and_bounded() {
     let settings = VoiceSettings {
         whisper_model: Some(PathBuf::from("  /models/whisper.bin  ")),
-        vad_model: Some(PathBuf::new()),
         ..VoiceSettings::default()
     }
     .normalized()
@@ -77,7 +75,6 @@ fn model_paths_are_trimmed_and_bounded() {
         settings.whisper_model,
         Some(PathBuf::from("/models/whisper.bin"))
     );
-    assert_eq!(settings.vad_model, None);
     let oversized = VoiceSettings {
         whisper_model: Some(PathBuf::from("a".repeat(4 * 1024 + 1))),
         ..VoiceSettings::default()

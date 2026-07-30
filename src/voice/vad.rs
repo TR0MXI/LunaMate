@@ -1,9 +1,14 @@
 //! 使用安全滚动窗口运行 Silero VAD，并实现有预录与迟滞的自动端点检测。
 
-use std::{collections::VecDeque, path::Path};
+use std::{collections::VecDeque, io::Write as _};
 
+use tempfile::{Builder, NamedTempFile};
 use whisper_rs::{WhisperVadContext, WhisperVadContextParams};
 
+pub(super) const EMBEDDED_VAD_MODEL_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/vad/ggml-silero-v6.2.0.bin"
+));
 const SAMPLE_RATE: usize = 16_000;
 const SILERO_FRAME_SAMPLES: usize = 512;
 const ROLLING_CONTEXT_FRAMES: usize = 32;
@@ -27,15 +32,27 @@ pub(super) trait VadEngine {
 /// 每 256 ms 重算最近约一秒上下文，避免依赖跨调用保留的原生 LSTM 状态。
 pub(super) struct RollingVad {
     context: WhisperVadContext,
+    /// whisper-rs 目前只接受路径；受限临时文件随 context 一起释放。
+    _model_file: NamedTempFile,
     rolling_samples: VecDeque<f32>,
     frames_since_analysis: usize,
 }
 
 impl RollingVad {
-    pub(super) fn load(path: &Path) -> Result<Self, String> {
-        let path = path
+    pub(super) fn load() -> Result<Self, String> {
+        let mut model_file = Builder::new()
+            .prefix("lunamate-silero-vad-")
+            .suffix(".bin")
+            .tempfile()
+            .map_err(|error| format!("无法创建 Silero VAD 临时模型文件：{error}"))?;
+        model_file
+            .write_all(EMBEDDED_VAD_MODEL_BYTES)
+            .and_then(|()| model_file.flush())
+            .map_err(|error| format!("无法写入 Silero VAD 临时模型文件：{error}"))?;
+        let path = model_file
+            .path()
             .to_str()
-            .ok_or_else(|| "Silero VAD 模型路径不是有效的 UTF-8".to_owned())?;
+            .ok_or_else(|| "Silero VAD 临时模型路径不是有效的 UTF-8".to_owned())?;
         let mut params = WhisperVadContextParams::default();
         params.set_n_threads(1);
         // whisper.cpp 1.8.3 内部强制 VAD 使用 CPU；不要把请求偏好误报为实际后端。
@@ -45,6 +62,7 @@ impl RollingVad {
             .map_err(|error| format!("无法加载 Silero VAD 模型：{error}"))?;
         Ok(Self {
             context,
+            _model_file: model_file,
             rolling_samples: VecDeque::with_capacity(ROLLING_CONTEXT_SAMPLES),
             frames_since_analysis: 0,
         })

@@ -180,10 +180,11 @@ GPUI 点击
 ## 本地语音交互
 
 - [x] 使用 CPAL 无锁采集默认麦克风，并在专用 worker 重采样为 16 kHz 单声道 `f32`。
-- [x] 使用安全滚动窗口 Silero VAD、500 ms 预录、迟滞阈值和 900 ms 静音自动划分 utterance。
+- [x] 内嵌 Silero VAD v6.2.0，使用安全滚动窗口、500 ms 预录、迟滞阈值和 900 ms 静音自动
+  划分 utterance，无需用户另行下载 VAD 模型。
 - [x] 在独立 OS 线程复用 Whisper context，限制单段录音为 30 秒并拒绝迟到转写结果。
-- [x] 提供关闭、自动和快捷键按住说话三种模式；自动模式允许快捷键接管 VAD 录音，语音模型与
-  GPU 偏好原子持久化。
+- [x] 提供关闭、自动和快捷键按住说话三种模式；自动模式允许快捷键接管 VAD 录音，Whisper
+  模型路径与 GPU 偏好原子持久化。
 - [x] 录音时显示底部音量波形，并在用户说话时打断流式回复、保留带标注的部分上下文。
 - [x] 通用构建固定包含 macOS Metal 或 Windows/Linux Vulkan，运行时按偏好启用并在失败时回退 CPU。
 - [x] 移除本地 `whisper-rs-sys` patch，VAD 只通过 whisper-rs 公开安全接口推理。
