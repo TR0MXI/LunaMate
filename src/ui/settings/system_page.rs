@@ -1,4 +1,4 @@
-//! 渲染运行时、窗口、外观、语言与调试设置页面。
+//! 渲染运行时、语音输入、窗口、外观、语言与调试设置页面。
 
 use gpui::{AnyElement, Context, Entity, IntoElement, div, prelude::*, px};
 use gpui_component::{
@@ -8,7 +8,7 @@ use gpui_component::{
 use rust_i18n::t;
 
 use crate::{
-    config::{AppLanguage, FrameRate, LogLevel, ModelWindowSize, ThemePreset},
+    config::{AppLanguage, FrameRate, LogLevel, ModelWindowSize, ThemePreset, VoiceMode},
     platform::SystemTray,
     ui::UiPalette,
 };
@@ -103,6 +103,30 @@ impl SettingsView {
                 self.model_window_size == size,
                 palette,
                 cx.listener(move |this, _, _, cx| this.set_model_window_size(size, cx)),
+            )
+        })
+        .collect::<Vec<_>>();
+        let voice_mode_buttons = [
+            ("voice-mode-off", VoiceMode::Off, t!("system.recording_off")),
+            (
+                "voice-mode-auto",
+                VoiceMode::Auto,
+                t!("system.recording_auto"),
+            ),
+            (
+                "voice-mode-push-to-talk",
+                VoiceMode::PushToTalk,
+                t!("system.recording_push_to_talk"),
+            ),
+        ]
+        .into_iter()
+        .map(|(id, mode, label)| {
+            frame_rate_button(
+                id,
+                label.to_string(),
+                self.voice.mode == mode,
+                palette,
+                cx.listener(move |this, _, _, cx| this.set_voice_mode(mode, cx)),
             )
         })
         .collect::<Vec<_>>();
@@ -250,6 +274,23 @@ impl SettingsView {
                                             this.set_eye_tracking(!this.eye_tracking, cx);
                                         })),
                                 ),
+                            )
+                            .child(system_section_label(
+                                t!("system.voice_input").to_string(),
+                                palette,
+                            ))
+                            .child(
+                                setting_row(t!("system.recording_mode").to_string(), palette)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_wrap()
+                                            .justify_end()
+                                            .gap_1()
+                                            .rounded_md()
+                                            .bg(palette.muted)
+                                            .children(voice_mode_buttons),
+                                    ),
                             )
                             .child(system_section_label(
                                 t!("system.window").to_string(),

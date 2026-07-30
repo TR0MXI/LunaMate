@@ -54,6 +54,36 @@ _version = 2
 "en" = "Eyes follow pointer"
 "ja" = "マウスに視線を追従"
 
+[system.voice_input]
+"zh-CN" = "语音输入"
+"zh-TW" = "語音輸入"
+"en" = "Voice input"
+"ja" = "音声入力"
+
+[system.recording_mode]
+"zh-CN" = "录音模式"
+"zh-TW" = "錄音模式"
+"en" = "Recording mode"
+"ja" = "録音モード"
+
+[system.recording_off]
+"zh-CN" = "关闭"
+"zh-TW" = "關閉"
+"en" = "Off"
+"ja" = "オフ"
+
+[system.recording_auto]
+"zh-CN" = "自动"
+"zh-TW" = "自動"
+"en" = "Automatic"
+"ja" = "自動"
+
+[system.recording_push_to_talk]
+"zh-CN" = "按住说话"
+"zh-TW" = "按住說話"
+"en" = "Push to talk"
+"ja" = "押して話す"
+
 [system.unlimited]
 "zh-CN" = "无限制"
 "zh-TW" = "無限制"

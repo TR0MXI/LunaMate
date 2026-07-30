@@ -1,53 +1,5 @@
 _version = 2
 
-[settings.voice]
-"zh-CN" = "语音"
-"zh-TW" = "語音"
-"en" = "Voice"
-"ja" = "音声"
-
-[voice.title]
-"zh-CN" = "语音设置"
-"zh-TW" = "語音設定"
-"en" = "Voice Settings"
-"ja" = "音声設定"
-
-[voice.input]
-"zh-CN" = "输入"
-"zh-TW" = "輸入"
-"en" = "Input"
-"ja" = "入力"
-
-[voice.mode]
-"zh-CN" = "录音模式"
-"zh-TW" = "錄音模式"
-"en" = "Recording mode"
-"ja" = "録音モード"
-
-[voice.mode_off]
-"zh-CN" = "关闭"
-"zh-TW" = "關閉"
-"en" = "Off"
-"ja" = "オフ"
-
-[voice.mode_auto]
-"zh-CN" = "自动"
-"zh-TW" = "自動"
-"en" = "Automatic"
-"ja" = "自動"
-
-[voice.mode_push_to_talk]
-"zh-CN" = "按住说话"
-"zh-TW" = "按住說話"
-"en" = "Push to talk"
-"ja" = "押して話す"
-
-[voice.saved]
-"zh-CN" = "语音设置已保存"
-"zh-TW" = "語音設定已儲存"
-"en" = "Voice settings saved"
-"ja" = "音声設定を保存しました"
-
 [voice.model_missing]
 "zh-CN" = "选择的 Transcription 模型不存在"
 "zh-TW" = "選擇的 Transcription 模型不存在"

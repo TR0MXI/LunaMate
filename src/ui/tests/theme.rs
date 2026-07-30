@@ -212,6 +212,14 @@ fn core_settings_text_exists_in_every_supported_language() {
             "system.custom_frame_rate"
         );
         assert_ne!(
+            rust_i18n::t!("system.recording_mode", locale = locale),
+            "system.recording_mode"
+        );
+        assert_ne!(
+            rust_i18n::t!("system.recording_push_to_talk", locale = locale),
+            "system.recording_push_to_talk"
+        );
+        assert_ne!(
             rust_i18n::t!("llm.add_model", locale = locale),
             "llm.add_model"
         );

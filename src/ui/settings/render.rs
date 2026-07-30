@@ -29,11 +29,6 @@ impl SettingsView {
                 ConfigSection::Persona,
             ),
             (
-                "section-voice",
-                t!("settings.voice").to_string(),
-                ConfigSection::Voice,
-            ),
-            (
                 "section-shortcut",
                 t!("settings.shortcut").to_string(),
                 ConfigSection::Shortcut,
@@ -122,7 +117,6 @@ impl Render for SettingsView {
                             .clone()
                             .map(embedded_page)
                             .unwrap_or_else(|| uninitialized_page(palette)),
-                        ConfigSection::Voice => self.render_voice_page(cx),
                         ConfigSection::Shortcut => self.render_shortcut_page(cx),
                         ConfigSection::Tool => self.render_tool_page(cx),
                         ConfigSection::System => self.render_system_page(cx),

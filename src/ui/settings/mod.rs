@@ -7,7 +7,6 @@ mod render;
 mod shortcut_page;
 mod system_page;
 mod tool_page;
-mod voice_page;
 mod window;
 
 use std::{
@@ -140,7 +139,6 @@ enum ConfigSection {
     Model,
     Provider,
     Persona,
-    Voice,
     Shortcut,
     Tool,
     System,
@@ -1334,10 +1332,9 @@ impl SettingsView {
             0 => ConfigSection::Model,
             1 => ConfigSection::Provider,
             2 => ConfigSection::Persona,
-            3 => ConfigSection::Voice,
-            4 => ConfigSection::Shortcut,
-            5 => ConfigSection::Tool,
-            6 => ConfigSection::System,
+            3 => ConfigSection::Shortcut,
+            4 => ConfigSection::Tool,
+            5 => ConfigSection::System,
             _ => ConfigSection::Debug,
         };
         self.set_section(section, cx);
@@ -1346,7 +1343,7 @@ impl SettingsView {
     /// 返回配置分区总数，供测试遍历全部页面。
     #[cfg(test)]
     pub(in crate::ui) const fn section_count_for_test() -> usize {
-        8
+        7
     }
 
     /// 接收主模型 generation 的能力快照，供设置窗口显示可用控制项。
@@ -2318,21 +2315,17 @@ impl SettingsView {
         );
     }
 
-    fn set_voice_mode_draft(&mut self, mode: VoiceMode, cx: &mut Context<Self>) {
+    fn set_voice_mode(&mut self, mode: VoiceMode, cx: &mut Context<Self>) {
         if self.voice.mode == mode {
             return;
         }
         self.voice.mode = mode;
         self.voice_save_revision = self.voice_save_revision.wrapping_add(1).max(1);
-        cx.notify();
-    }
-
-    fn save_voice_settings(&mut self, cx: &mut Context<Self>) {
-        let settings = self.voice.clone();
-        self.voice_save_revision = self.voice_save_revision.wrapping_add(1).max(1);
         let ui_revision = self.voice_save_revision;
+        let settings = self.voice.clone();
         let config_revision = CONFIG.reserve_voice_settings_revision();
         let background = cx.background_executor().clone();
+        cx.notify();
         let task = cx.spawn(async move |this, cx| {
             let result = background
                 .spawn(
@@ -2352,13 +2345,16 @@ impl SettingsView {
                 match result {
                     Ok(Some(settings)) => {
                         this.voice = settings.as_ref().clone();
-                        this.set_status(t!("voice.saved").to_string(), cx);
+                        cx.notify();
                     }
                     Ok(None) => {}
-                    Err(error) => this.set_status(
-                        t!("status.setting_failed", error = error.to_string()).to_string(),
-                        cx,
-                    ),
+                    Err(error) => {
+                        this.voice = CONFIG.voice_settings().as_ref().clone();
+                        this.set_status(
+                            t!("status.setting_failed", error = error.to_string()).to_string(),
+                            cx,
+                        );
+                    }
                 }
             });
         });
