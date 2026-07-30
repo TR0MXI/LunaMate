@@ -1,5 +1,11 @@
 _version = 2
 
+[llm.selected_transcription]
+"zh-CN" = "当前 Transcription 模型"
+"zh-TW" = "目前 Transcription 模型"
+"en" = "Selected transcription model"
+"ja" = "選択中の文字起こしモデル"
+
 [llm.language_models]
 "zh-CN" = "语言模型  %{count}"
 "zh-TW" = "語言模型  %{count}"
@@ -19,10 +25,10 @@ _version = 2
 "ja" = "モデルを追加"
 
 [llm.none]
-"zh-CN" = "尚未添加语言模型"
-"zh-TW" = "尚未新增語言模型"
-"en" = "No language models added"
-"ja" = "言語モデルが追加されていません"
+"zh-CN" = "此类别尚未添加模型"
+"zh-TW" = "此類別尚未新增模型"
+"en" = "No models in this category"
+"ja" = "このカテゴリにはモデルがありません"
 
 [llm.no_model_selected]
 "zh-CN" = "未选择语言模型"
@@ -175,10 +181,10 @@ _version = 2
 "ja" = "%{field}を空にすることはできません"
 
 [llm.error.max_models]
-"zh-CN" = "语言模型数量不能超过 %{max}"
-"zh-TW" = "語言模型數量不能超過 %{max}"
-"en" = "The number of language models cannot exceed %{max}"
-"ja" = "言語モデルは %{max} 件以内にしてください"
+"zh-CN" = "模型配置数量不能超过 %{max}"
+"zh-TW" = "模型設定數量不能超過 %{max}"
+"en" = "The number of model configurations cannot exceed %{max}"
+"ja" = "モデル設定は %{max} 件以内にしてください"
 
 [llm.error.system_prompt_too_long]
 "zh-CN" = "系统提示词不能超过 %{max} 个 UTF-8 字节"
@@ -233,6 +239,78 @@ _version = 2
 "zh-TW" = "Endpoint 必須使用 HTTP 或 HTTPS"
 "en" = "Endpoint must use HTTP or HTTPS"
 "ja" = "Endpoint には HTTP または HTTPS が必要です"
+
+[llm.error.websocket_endpoint_scheme]
+"zh-CN" = "豆包 Endpoint 必须使用 WS 或 WSS"
+"zh-TW" = "豆包 Endpoint 必須使用 WS 或 WSS"
+"en" = "The Doubao endpoint must use WS or WSS"
+"ja" = "豆包 Endpoint には WS または WSS が必要です"
+
+[llm.error.local_whisper_kind]
+"zh-CN" = "本地 Whisper 只能用于 Transcription 模型"
+"zh-TW" = "本機 Whisper 只能用於 Transcription 模型"
+"en" = "Local Whisper can only be used for transcription models"
+"ja" = "ローカル Whisper は文字起こしモデルでのみ使用できます"
+
+[llm.error.local_whisper_path_required]
+"zh-CN" = "本地 Whisper 模型路径不能为空"
+"zh-TW" = "本機 Whisper 模型路徑不能為空"
+"en" = "The local Whisper model path cannot be empty"
+"ja" = "ローカル Whisper モデルのパスは空にできません"
+
+[llm.error.chat_provider]
+"zh-CN" = "Chat Completions 模型必须使用 genai Provider"
+"zh-TW" = "Chat Completions 模型必須使用 genai Provider"
+"en" = "Chat Completions models must use a genai provider"
+"ja" = "Chat Completions モデルには genai Provider が必要です"
+
+[llm.error.speech_provider]
+"zh-CN" = "当前语音能力仅支持 OpenAI、豆包与本地 Whisper"
+"zh-TW" = "目前語音能力僅支援 OpenAI、豆包與本機 Whisper"
+"en" = "Speech capabilities currently support only OpenAI, Doubao, and local Whisper"
+"ja" = "音声機能は現在 OpenAI、豆包、ローカル Whisper のみをサポートします"
+
+[llm.error.local_whisper_tts]
+"zh-CN" = "本地 Whisper 不支持 Speech Synthesis"
+"zh-TW" = "本機 Whisper 不支援 Speech Synthesis"
+"en" = "Local Whisper does not support speech synthesis"
+"ja" = "ローカル Whisper は音声合成をサポートしません"
+
+[llm.error.local_path_utf8]
+"zh-CN" = "本地 Whisper 模型路径必须是有效的 UTF-8"
+"zh-TW" = "本機 Whisper 模型路徑必須是有效的 UTF-8"
+"en" = "The local Whisper model path must be valid UTF-8"
+"ja" = "ローカル Whisper モデルのパスは有効な UTF-8 である必要があります"
+
+[llm.error.local_path_invalid]
+"zh-CN" = "本地 Whisper 模型路径不能包含 NUL 字符"
+"zh-TW" = "本機 Whisper 模型路徑不能包含 NUL 字元"
+"en" = "The local Whisper model path cannot contain NUL characters"
+"ja" = "ローカル Whisper モデルのパスに NUL 文字は使用できません"
+
+[llm.error.persona_model_missing]
+"zh-CN" = "人格 %{persona} 绑定的 %{capability} 模型不存在"
+"zh-TW" = "人格 %{persona} 綁定的 %{capability} 模型不存在"
+"en" = "Persona %{persona} references a missing %{capability} model"
+"ja" = "ペルソナ %{persona} が参照する %{capability} モデルがありません"
+
+[llm.app_id]
+"zh-CN" = "App ID"
+"zh-TW" = "App ID"
+"en" = "App ID"
+"ja" = "App ID"
+
+[llm.voice_id]
+"zh-CN" = "Voice ID"
+"zh-TW" = "Voice ID"
+"en" = "Voice ID"
+"ja" = "Voice ID"
+
+[llm.local_model_path]
+"zh-CN" = "本地模型路径"
+"zh-TW" = "本機模型路徑"
+"en" = "Local model path"
+"ja" = "ローカルモデルパス"
 
 [llm.new_model]
 "zh-CN" = "新模型"
@@ -377,3 +455,15 @@ _version = 2
 "zh-TW" = "模型上下文視窗 %{context} token 扣除輸出上限 %{output} token 後，必須保留本機請求餘量和至少一輪訊息空間"
 "en" = "After reserving the %{output}-token output limit, the %{context}-token model window must leave local request overhead and room for one turn"
 "ja" = "%{context} トークンのモデルウィンドウは %{output} トークンの出力上限を確保した後、ローカル要求の余裕と 1 ターン分の領域を残す必要があります"
+
+[llm.error.missing_selected_transcription]
+"zh-CN" = "当前 Transcription 模型不存在：%{id}"
+"zh-TW" = "目前 Transcription 模型不存在：%{id}"
+"en" = "Selected transcription model does not exist: %{id}"
+"ja" = "選択した文字起こしモデルが存在しません: %{id}"
+
+[llm.error.whisper_language]
+"zh-CN" = "Whisper 不支持目标语言：%{language}"
+"zh-TW" = "Whisper 不支援目標語言：%{language}"
+"en" = "Whisper does not support the target language: %{language}"
+"ja" = "Whisper は対象言語をサポートしていません: %{language}"

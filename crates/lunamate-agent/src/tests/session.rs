@@ -1,8 +1,8 @@
 use crate::{
     Agent, AgentMemory, Client, chat_limits,
     config::{
-        AppLanguage, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings, PersonaConfig,
-        PersonaContextLimits,
+        AppLanguage, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings, ModelKind,
+        ModelProvider, PersonaConfig, PersonaContextLimits,
     },
     media::prepare_dynamic_image,
     memory::{AssistantTrace, ToolExecutionTrace},
@@ -985,10 +985,16 @@ fn configured_model_window_reserves_output_and_system_prompt_tokens() {
         models: vec![LlmModelConfig {
             id: "small".to_owned(),
             label: "Small".to_owned(),
-            provider: LlmProvider::Ollama,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::Ollama),
             model: "small-model".to_owned(),
             endpoint: None,
             api_key: None,
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions {
                 context_window_tokens: Some(1_000),
                 max_output_tokens: Some(200),
@@ -996,6 +1002,7 @@ fn configured_model_window_reserves_output_and_system_prompt_tokens() {
             },
         }],
         selected_model: Some("small".to_owned()),
+        selected_transcription_model: None,
     };
     let mut persona = PersonaConfig::new("test", "Test");
     persona.system_prompt = "system prompt".to_owned();
@@ -1023,10 +1030,16 @@ fn output_reserve_trims_the_next_request_without_truncating_the_current_reply() 
         models: vec![LlmModelConfig {
             id: "long-output".to_owned(),
             label: "Long output".to_owned(),
-            provider: LlmProvider::Ollama,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::Ollama),
             model: "long-output-model".to_owned(),
             endpoint: None,
             api_key: None,
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions {
                 context_window_tokens: Some(10_000),
                 max_output_tokens: Some(8_000),
@@ -1034,6 +1047,7 @@ fn output_reserve_trims_the_next_request_without_truncating_the_current_reply() 
             },
         }],
         selected_model: Some("long-output".to_owned()),
+        selected_transcription_model: None,
     };
     let mut persona = PersonaConfig::new("test", "Test");
     persona.context = PersonaContextLimits {

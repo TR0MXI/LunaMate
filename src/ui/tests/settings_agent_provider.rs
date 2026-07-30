@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use lunamate_agent::config::{
-    LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
-    REASONING_EFFORT_LEVELS, ReasoningEffort, llm_provider_id,
+    LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings, ModelKind,
+    ModelProvider, REASONING_EFFORT_LEVELS, ReasoningEffort, llm_provider_id,
 };
 
 use crate::ui::settings::{
@@ -17,10 +17,16 @@ fn model(id: &str) -> LlmModelConfig {
     LlmModelConfig {
         id: id.to_owned(),
         label: "Model".to_owned(),
-        provider: LlmProvider::Ollama,
+        kind: ModelKind::ChatCompletions,
+        provider: ModelProvider::Genai(LlmProvider::Ollama),
         model: "qwen3:8b".to_owned(),
         endpoint: None,
         api_key: None,
+        app_id: None,
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
         advanced: LlmAdvancedOptions::default(),
     }
 }

@@ -60,6 +60,12 @@ _version = 2
 "en" = "%{field} must be a string and was ignored"
 "ja" = "%{field} は文字列である必要があるため、無視しました"
 
+[config.error.expected_boolean]
+"zh-CN" = "%{field} 必须是布尔值"
+"zh-TW" = "%{field} 必須是布林值"
+"en" = "%{field} must be a boolean"
+"ja" = "%{field} は真偽値である必要があります"
+
 [config.error.expected_nonnegative_integer]
 "zh-CN" = "%{field} 必须是非负整数"
 "zh-TW" = "%{field} 必須是非負整數"

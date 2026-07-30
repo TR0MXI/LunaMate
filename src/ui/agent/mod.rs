@@ -17,11 +17,14 @@ use lunamate_agent::{
     config::{AgentConfigSnapshot, AppLanguage},
     media::ImageAttachment,
     model_and_options_from_config,
+    stt::{TranscriptionInput, transcribe},
     tools::{AgentOutfitRequest, OutfitOption},
+    tts::synthesize,
 };
 use rust_i18n::t;
 
 use crate::config::CONFIG;
+use crate::voice::VoiceController;
 
 pub(super) use reply::{AgentOverlayLayout, ReplyLifecycle};
 use screenshot::host_screenshot_capability;
@@ -30,6 +33,8 @@ use screenshot::host_screenshot_capability;
 #[derive(Clone)]
 pub(in crate::ui) enum AgentViewEvent {
     ChangeOutfit(AgentOutfitRequest),
+    StopSpeech,
+    SpeechAudio { samples: Vec<i16>, sample_rate: u32 },
 }
 
 pub(super) fn model_click_event_prompt(part_name: &str, language: AppLanguage) -> String {
@@ -54,6 +59,10 @@ pub struct AgentView {
     pending_image: Option<PendingImage>,
     image_picker_revision: u64,
     image_picker_task: Option<Task<()>>,
+    voice_transcription_task: Option<Task<()>>,
+    voice_transcription_abort: Option<tokio::task::AbortHandle>,
+    speech_task: Option<Task<()>>,
+    speech_abort: Option<tokio::task::AbortHandle>,
     messages_scroll: ScrollHandle,
     input_visible: bool,
     voice_indicator_visible: bool,
@@ -133,6 +142,10 @@ impl AgentView {
             pending_image: None,
             image_picker_revision: 0,
             image_picker_task: None,
+            voice_transcription_task: None,
+            voice_transcription_abort: None,
+            speech_task: None,
+            speech_abort: None,
             messages_scroll: ScrollHandle::new(),
             input_visible: false,
             voice_indicator_visible: false,
@@ -160,6 +173,7 @@ impl AgentView {
         }
         if became_terminal {
             self.schedule_reply_fade(cx);
+            self.start_speech(self.snapshot.clone(), cx);
         }
         self.messages_scroll.scroll_to_bottom();
         cx.notify();
@@ -200,6 +214,7 @@ impl AgentView {
             return;
         }
         self.agent.cancel_pending_voice();
+        self.cancel_speech();
         self.agent_config_generation = snapshot.generation();
         self.refresh_revision = self.refresh_revision.wrapping_add(1).max(1);
         let revision = self.refresh_revision;
@@ -231,7 +246,7 @@ impl AgentView {
             .map_err(|error| error.to_string())?;
             let (model_iden, options) = model
                 .as_ref()
-                .map(model_and_options_from_config)
+                .and_then(model_and_options_from_config)
                 .map_or((None, None), |(model, options)| (Some(model), options));
             agent
                 .apply_configuration(
@@ -290,6 +305,8 @@ impl AgentView {
         if self.snapshot.is_streaming() {
             return false;
         }
+        self.cancel_speech();
+        cx.emit(AgentViewEvent::StopSpeech);
         self.agent.cancel_pending_voice();
         self.refresh_settings(CONFIG.agent_config_snapshot(), cx);
         self.send_message(
@@ -306,6 +323,9 @@ impl AgentView {
         language: AppLanguage,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_remote_transcription();
+        self.cancel_speech();
+        cx.emit(AgentViewEvent::StopSpeech);
         let snapshot = CONFIG.agent_config_snapshot();
         if snapshot.generation() != self.agent_config_generation {
             self.refresh_settings(snapshot, cx);
@@ -328,14 +348,62 @@ impl AgentView {
     }
 
     pub fn voice_utterance_cancelled(&mut self, utterance_id: u64) {
+        self.cancel_remote_transcription();
+        self.cancel_speech();
         self.agent.cancel_voice(utterance_id);
     }
 
     pub fn cancel_pending_voice(&mut self) {
+        self.cancel_remote_transcription();
+        self.cancel_speech();
         self.agent.cancel_pending_voice();
     }
 
+    pub fn transcribe_voice(
+        &mut self,
+        revision: u64,
+        utterance_id: u64,
+        model_id: String,
+        samples: Vec<i16>,
+        voice: VoiceController,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_remote_transcription();
+        self.cancel_speech();
+        cx.emit(AgentViewEvent::StopSpeech);
+        let language = self.snapshot.language();
+        let Some(model) = CONFIG.llm_settings().model(&model_id).cloned() else {
+            voice.complete_remote_transcription(
+                revision,
+                utterance_id,
+                Err(t!("voice.model_missing", locale = language.id()).to_string()),
+            );
+            return;
+        };
+        let task = tokio::spawn(async move {
+            let input = TranscriptionInput::new(samples)
+                .map_err(|error| error.localized_message(language))?;
+            transcribe(&model, input, language)
+                .await
+                .map_err(|error| error.localized_message(language))
+        });
+        self.voice_transcription_abort = Some(task.abort_handle());
+        self.voice_transcription_task = Some(cx.spawn(async move |this, cx| {
+            let result = task.await.unwrap_or_else(|_| {
+                Err(t!("voice.transcription_cancelled", locale = language.id()).to_string())
+            });
+            voice.complete_remote_transcription(revision, utterance_id, result);
+            let _ = this.update(cx, |this, _| {
+                this.voice_transcription_abort = None;
+                this.voice_transcription_task = None;
+            });
+        }));
+    }
+
     pub fn voice_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.cancel_remote_transcription();
+        self.cancel_speech();
+        cx.emit(AgentViewEvent::StopSpeech);
         self.agent.cancel_pending_voice();
         self.agent.set_status(Some(message));
         self.sync_agent_snapshot(cx);
@@ -348,6 +416,9 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) {
         self.agent.cancel_pending_voice();
+        self.cancel_remote_transcription();
+        self.cancel_speech();
+        cx.emit(AgentViewEvent::StopSpeech);
         let text = input.read(cx).value().to_string();
         let image = self
             .pending_image
@@ -405,10 +476,78 @@ impl AgentView {
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
+        self.cancel_speech();
         if self.agent.cancel() {
             self.sync_agent_snapshot(cx);
             self.schedule_reply_fade(cx);
         }
+    }
+
+    fn cancel_remote_transcription(&mut self) {
+        if let Some(abort) = self.voice_transcription_abort.take() {
+            abort.abort();
+        }
+        self.voice_transcription_task = None;
+    }
+
+    fn start_speech(&mut self, snapshot: AgentSnapshot, cx: &mut Context<Self>) {
+        self.cancel_speech();
+        let personas = CONFIG.persona_settings();
+        let Some(persona) = personas.active() else {
+            return;
+        };
+        if persona.id != snapshot.active_persona() {
+            return;
+        }
+        let Some(model_id) = persona.tts_model.as_deref() else {
+            return;
+        };
+        let Some(message) = snapshot
+            .messages()
+            .iter()
+            .rev()
+            .find(|message| message.role() == lunamate_agent::ChatRole::Assistant)
+        else {
+            return;
+        };
+        if !matches!(message.state(), lunamate_agent::ChatMessageState::Complete) {
+            return;
+        }
+        let Some(model) = CONFIG.llm_settings().model(model_id).cloned() else {
+            return;
+        };
+        let text = message.visible_content().to_owned();
+        let task = tokio::spawn(async move { synthesize(&model, &text).await });
+        self.speech_abort = Some(task.abort_handle());
+        self.speech_task = Some(cx.spawn(async move |this, cx| {
+            match task.await {
+                Ok(Ok(audio)) => {
+                    let _ = this.update(cx, |_this, cx| {
+                        let sample_rate = audio.sample_rate();
+                        cx.emit(AgentViewEvent::SpeechAudio {
+                            samples: audio.into_samples(),
+                            sample_rate,
+                        });
+                    });
+                }
+                Ok(Err(error)) => log::warn!("助手回复语音合成失败：{error}"),
+                Err(error) if !error.is_cancelled() => {
+                    log::warn!("助手回复语音合成任务异常结束：{error}");
+                }
+                Err(_) => {}
+            }
+            let _ = this.update(cx, |this, _| {
+                this.speech_abort = None;
+                this.speech_task = None;
+            });
+        }));
+    }
+
+    fn cancel_speech(&mut self) {
+        if let Some(abort) = self.speech_abort.take() {
+            abort.abort();
+        }
+        self.speech_task = None;
     }
 
     fn choose_image(&mut self, cx: &mut Context<Self>) {

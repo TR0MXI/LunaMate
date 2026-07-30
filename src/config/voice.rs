@@ -1,12 +1,11 @@
-//! 定义本地语音输入模式、Whisper 模型路径和推理设备偏好。
+//! 定义语音输入模式；Transcription 模型及其本地推理偏好属于模型配置。
 
 use std::{path::PathBuf, sync::Arc};
 
-use toml_edit::{DocumentMut, Item, Value};
+use lunamate_agent::config::{LlmSettings, ModelProvider};
+use toml_edit::{DocumentMut, Value};
 
 use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value};
-
-const MAX_MODEL_PATH_BYTES: usize = 4 * 1024;
 
 /// 控制麦克风何时采集和提交语音。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -50,53 +49,68 @@ impl VoiceMode {
     }
 }
 
-/// 一次性发布的本地语音推理配置。
+/// 一次性发布的语音录音模式配置。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct VoiceSettings {
     pub(crate) mode: VoiceMode,
-    pub(crate) whisper_model: Option<PathBuf>,
-    /// 允许 whisper.cpp 使用当前构建包含的 GPU 后端；初始化失败时运行时回退 CPU。
-    pub(crate) use_gpu: bool,
 }
 
 pub(crate) type SharedVoiceSettings = Arc<VoiceSettings>;
 
 impl VoiceSettings {
-    /// 规范化可选路径并拒绝无法安全交给 C API 的值。
-    pub(crate) fn normalized(mut self) -> Result<Self, ConfigWriteError> {
-        self.whisper_model = normalize_model_path(self.whisper_model, "Whisper 模型")?;
+    /// 规范化当前语音模式。
+    pub(crate) fn normalized(self) -> Result<Self, ConfigWriteError> {
         Ok(self)
+    }
+
+    pub(crate) fn runtime(&self, models: &LlmSettings) -> VoiceRuntimeSettings {
+        let selected = models.selected_transcription();
+        let (backend, use_gpu, whisper_language) = selected
+            .and_then(|model| match model.provider {
+                ModelProvider::LocalWhisper => model.local_path.clone().map(|path| {
+                    (
+                        VoiceTranscriptionBackend::LocalWhisper(path),
+                        model.use_gpu,
+                        model.whisper_language.clone(),
+                    )
+                }),
+                ModelProvider::Genai(_) | ModelProvider::Doubao => Some((
+                    VoiceTranscriptionBackend::Remote(model.id.clone()),
+                    false,
+                    None,
+                )),
+            })
+            .map_or((None, false, None), |(backend, use_gpu, language)| {
+                (Some(backend), use_gpu, language)
+            });
+        VoiceRuntimeSettings {
+            mode: if backend.is_some() {
+                self.mode
+            } else {
+                VoiceMode::Off
+            },
+            backend,
+            use_gpu,
+            whisper_language,
+        }
     }
 }
 
-fn normalize_model_path(
-    path: Option<PathBuf>,
-    field: &str,
-) -> Result<Option<PathBuf>, ConfigWriteError> {
-    let Some(path) = path else {
-        return Ok(None);
-    };
-    let Some(path) = path.to_str() else {
-        return Err(ConfigWriteError::InvalidValue(format!(
-            "{field}路径必须是有效的 UTF-8"
-        )));
-    };
-    let path = path.trim();
-    if path.is_empty() {
-        return Ok(None);
-    }
-    if path.len() > MAX_MODEL_PATH_BYTES {
-        return Err(ConfigWriteError::InvalidValue(format!(
-            "{field}路径不能超过 {MAX_MODEL_PATH_BYTES} 字节"
-        )));
-    }
-    if path.contains('\0') {
-        return Err(ConfigWriteError::InvalidValue(format!(
-            "{field}路径不能包含 NUL 字符"
-        )));
-    }
-    Ok(Some(PathBuf::from(path)))
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum VoiceTranscriptionBackend {
+    LocalWhisper(PathBuf),
+    Remote(String),
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VoiceRuntimeSettings {
+    pub(crate) mode: VoiceMode,
+    pub(crate) backend: Option<VoiceTranscriptionBackend>,
+    pub(crate) use_gpu: bool,
+    pub(crate) whisper_language: Option<String>,
+}
+
+pub(crate) type SharedVoiceRuntimeSettings = Arc<VoiceRuntimeSettings>;
 
 pub(super) fn parse_voice_settings(
     document: &DocumentMut,
@@ -113,32 +127,11 @@ pub(super) fn parse_voice_settings(
             None => warnings.push("voice.mode 无效，已关闭语音输入".to_owned()),
         }
     }
-    if let Some(path) = parse_path(voice.get("whisper_model"), "voice.whisper_model", warnings) {
-        settings.whisper_model = Some(path);
-    }
-    if let Some(item) = voice.get("use_gpu") {
-        match item.as_bool() {
-            Some(use_gpu) => settings.use_gpu = use_gpu,
-            None => warnings.push("voice.use_gpu 无效，已使用 CPU".to_owned()),
-        }
-    }
-
     match settings.normalized() {
         Ok(settings) => settings,
         Err(error) => {
             warnings.push(format!("语音配置无效，已关闭语音输入：{error}"));
             VoiceSettings::default()
-        }
-    }
-}
-
-fn parse_path(item: Option<&Item>, field: &str, warnings: &mut Vec<String>) -> Option<PathBuf> {
-    let item = item?;
-    match item.as_str() {
-        Some(path) => Some(PathBuf::from(path)),
-        None => {
-            warnings.push(format!("{field} 必须是字符串，已忽略"));
-            None
         }
     }
 }
@@ -149,20 +142,7 @@ pub(super) fn write_voice_settings(document: &mut DocumentMut, settings: &VoiceS
         &mut document["voice"]["mode"],
         Value::from(settings.mode.id()),
     );
-    set_item_value(
-        &mut document["voice"]["use_gpu"],
-        Value::from(settings.use_gpu),
-    );
-    write_optional_path(document, "whisper_model", settings.whisper_model.as_ref());
+    remove_key(document, "voice", "transcription_model");
+    remove_key(document, "voice", "use_gpu");
     remove_key(document, "voice", "vad_model");
-}
-
-fn write_optional_path(document: &mut DocumentMut, key: &str, path: Option<&PathBuf>) {
-    match path {
-        Some(path) => set_item_value(
-            &mut document["voice"][key],
-            Value::from(path.to_string_lossy().into_owned()),
-        ),
-        None => remove_key(document, "voice", key),
-    }
 }

@@ -4,9 +4,9 @@ use toml_edit::DocumentMut;
 
 use crate::config::{
     AppLanguage, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
-    MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, REASONING_EFFORT_LEVELS, ReasoningEffort,
-    TEMPERATURE_MAX, llm::normalize_endpoint, llm_provider_from_id, llm_provider_id,
-    parse_llm_settings, write_llm_settings,
+    MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, ModelKind, ModelProvider,
+    REASONING_EFFORT_LEVELS, ReasoningEffort, TEMPERATURE_MAX, llm::normalize_endpoint,
+    llm_provider_from_id, llm_provider_id, parse_llm_settings, write_llm_settings,
 };
 
 const LANGUAGE: AppLanguage = AppLanguage::SimplifiedChinese;
@@ -31,15 +31,22 @@ fn settings_reject_missing_selection_and_duplicate_ids() {
     let model = LlmModelConfig {
         id: "local".to_owned(),
         label: "Local".to_owned(),
-        provider: LlmProvider::Ollama,
+        kind: ModelKind::ChatCompletions,
+        provider: ModelProvider::Genai(LlmProvider::Ollama),
         model: "qwen3:8b".to_owned(),
         endpoint: Some("http://localhost:11434".to_owned()),
         api_key: None,
+        app_id: None,
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
         advanced: LlmAdvancedOptions::default(),
     };
     let duplicate = LlmSettings {
-        models: vec![model.clone(), model],
+        models: vec![model.clone(), model.clone()],
         selected_model: Some("local".to_owned()),
+        selected_transcription_model: None,
     };
     assert!(duplicate.normalized(LANGUAGE).is_err());
 
@@ -48,6 +55,13 @@ fn settings_reject_missing_selection_and_duplicate_ids() {
         ..LlmSettings::default()
     };
     assert!(missing.normalized(LANGUAGE).is_err());
+
+    let wrong_transcription_kind = LlmSettings {
+        models: vec![model],
+        selected_model: Some("local".to_owned()),
+        selected_transcription_model: Some("local".to_owned()),
+    };
+    assert!(wrong_transcription_kind.normalized(LANGUAGE).is_err());
 }
 
 #[test]
@@ -56,13 +70,20 @@ fn direct_api_key_is_normalized_and_redacted_in_debug() {
         models: vec![LlmModelConfig {
             id: "cloud".to_owned(),
             label: "Cloud".to_owned(),
-            provider: LlmProvider::OpenAI,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::OpenAI),
             model: "gpt-5-mini".to_owned(),
             endpoint: None,
             api_key: Some(" 1/key+=value ".to_owned()),
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("cloud".to_owned()),
+        selected_transcription_model: None,
     };
     let normalized = settings
         .normalized(LANGUAGE)
@@ -84,6 +105,7 @@ selected = "cloud"
 [[llm.models]]
 id = "bad id"
 label = "Broken"
+kind = "chat-completions"
 provider = "openai"
 model = "gpt-5-mini"
 api_key = "should-not-matter"
@@ -91,6 +113,7 @@ api_key = "should-not-matter"
 [[llm.models]]
 id = "cloud"
 label = "Cloud"
+kind = "chat-completions"
 provider = "openai"
 model = "gpt-5-mini"
 api_key = "keep-me"
@@ -223,13 +246,20 @@ fn selected_returns_only_a_model_that_still_exists() {
         models: vec![LlmModelConfig {
             id: "local".to_owned(),
             label: "Local".to_owned(),
-            provider: LlmProvider::Ollama,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::Ollama),
             model: "qwen3:8b".to_owned(),
             endpoint: None,
             api_key: None,
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("local".to_owned()),
+        selected_transcription_model: None,
     };
 
     assert_eq!(
@@ -250,15 +280,22 @@ fn required_model_fields_are_trimmed_and_bounded() {
     let base = LlmModelConfig {
         id: " local ".to_owned(),
         label: "  Local  ".to_owned(),
-        provider: LlmProvider::Ollama,
+        kind: ModelKind::ChatCompletions,
+        provider: ModelProvider::Genai(LlmProvider::Ollama),
         model: " qwen3:8b ".to_owned(),
         endpoint: None,
         api_key: Some("   ".to_owned()),
+        app_id: None,
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
         advanced: LlmAdvancedOptions::default(),
     };
     let normalized = LlmSettings {
         models: vec![base.clone()],
         selected_model: Some(" local ".to_owned()),
+        selected_transcription_model: None,
     }
     .normalized(LANGUAGE)
     .expect("去除空白后的配置应当有效");
@@ -312,6 +349,7 @@ fn required_model_fields_are_trimmed_and_bounded() {
             LlmSettings {
                 models: vec![invalid.clone()],
                 selected_model: None,
+                selected_transcription_model: None,
             }
             .normalized(LANGUAGE)
             .is_err(),
@@ -325,10 +363,16 @@ fn model_count_has_a_hard_limit() {
     let model = |index: usize| LlmModelConfig {
         id: format!("model-{index}"),
         label: format!("Model {index}"),
-        provider: LlmProvider::Ollama,
+        kind: ModelKind::ChatCompletions,
+        provider: ModelProvider::Genai(LlmProvider::Ollama),
         model: "qwen3:8b".to_owned(),
         endpoint: None,
         api_key: None,
+        app_id: None,
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
         advanced: LlmAdvancedOptions::default(),
     };
 
@@ -336,6 +380,7 @@ fn model_count_has_a_hard_limit() {
         LlmSettings {
             models: (0..64).map(model).collect(),
             selected_model: None,
+            selected_transcription_model: None,
         }
         .normalized(LANGUAGE)
         .is_ok()
@@ -344,6 +389,7 @@ fn model_count_has_a_hard_limit() {
         LlmSettings {
             models: (0..65).map(model).collect(),
             selected_model: None,
+            selected_transcription_model: None,
         }
         .normalized(LANGUAGE)
         .is_err()
@@ -356,13 +402,20 @@ fn advanced_options_outside_their_range_are_rejected() {
         models: vec![LlmModelConfig {
             id: "local".to_owned(),
             label: "Local".to_owned(),
-            provider: LlmProvider::Ollama,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::Ollama),
             model: "qwen3:8b".to_owned(),
             endpoint: None,
             api_key: None,
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced,
         }],
         selected_model: None,
+        selected_transcription_model: None,
     };
 
     for level in REASONING_EFFORT_LEVELS {
@@ -464,6 +517,7 @@ selected = "  removed  "
 [[llm.models]]
 id = "local"
 label = "Local"
+kind = "chat-completions"
 provider = "ollama"
 model = "qwen3:8b"
 "#
@@ -484,6 +538,7 @@ fn stored_advanced_options_round_trip_and_only_the_broken_entry_is_dropped() {
 [[llm.models]]
 id = "broken"
 label = "Broken"
+kind = "chat-completions"
 provider = "ollama"
 model = "qwen3:8b"
 reasoning_effort = "sideways"
@@ -491,6 +546,7 @@ reasoning_effort = "sideways"
 [[llm.models]]
 id = "good"
 label = "Good"
+kind = "chat-completions"
 provider = "openai"
 model = "gpt-5-mini"
 context_window_tokens = 128000
@@ -539,12 +595,14 @@ fn unknown_provider_ids_only_discard_the_offending_model() {
 [[llm.models]]
 id = "unsupported"
 label = "Unsupported"
+kind = "chat-completions"
 provider = "not-a-provider"
 model = "unsupported-model"
 
 [[llm.models]]
 id = "local"
 label = "Local"
+kind = "chat-completions"
 provider = "ollama"
 model = "qwen3:8b"
 "#
@@ -561,6 +619,64 @@ model = "qwen3:8b"
             .iter()
             .any(|warning| warning.contains("not-a-provider"))
     );
+}
+
+#[test]
+fn speech_model_specific_fields_round_trip_in_the_current_format() {
+    let mut document = r#"
+[llm]
+selected_transcription = "local-stt"
+
+[[llm.models]]
+id = "voice"
+label = "OpenAI Voice"
+kind = "speech-synthesis"
+provider = "openai"
+model = "gpt-4o-mini-tts"
+api_key = "test-key"
+voice = "alloy"
+
+[[llm.models]]
+id = "local-stt"
+label = "Local Whisper"
+kind = "transcription"
+provider = "local-whisper"
+local_path = "/models/ggml-small.bin"
+use_gpu = true
+whisper_language = "zh"
+"#
+    .parse::<DocumentMut>()
+    .expect("语音模型配置应当可以解析");
+    let mut warnings = Vec::new();
+
+    let settings = parse_llm_settings(&document, &mut warnings, LANGUAGE);
+
+    assert!(warnings.is_empty(), "警告：{warnings:?}");
+    let voice = settings.model("voice").expect("TTS 模型应保留");
+    assert_eq!(voice.kind, ModelKind::SpeechSynthesis);
+    assert_eq!(voice.voice.as_deref(), Some("alloy"));
+    let stt = settings.model("local-stt").expect("本地 STT 模型应保留");
+    assert_eq!(stt.provider, ModelProvider::LocalWhisper);
+    assert_eq!(
+        settings
+            .selected_transcription()
+            .map(|model| model.id.as_str()),
+        Some("local-stt")
+    );
+    assert_eq!(
+        stt.local_path.as_deref(),
+        Some(std::path::Path::new("/models/ggml-small.bin"))
+    );
+    assert!(stt.use_gpu);
+    assert_eq!(stt.whisper_language.as_deref(), Some("zh"));
+
+    write_llm_settings(&mut document, &settings);
+    let mut rewritten_warnings = Vec::new();
+    assert_eq!(
+        parse_llm_settings(&document, &mut rewritten_warnings, LANGUAGE),
+        settings
+    );
+    assert!(rewritten_warnings.is_empty());
 }
 
 #[test]

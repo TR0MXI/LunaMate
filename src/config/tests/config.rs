@@ -379,10 +379,16 @@ fn agent_config_generation_and_domains_publish_as_one_snapshot() {
     let model = LlmModelConfig {
         id: "local".to_owned(),
         label: "Local".to_owned(),
-        provider: LlmProvider::Ollama,
+        kind: ModelKind::ChatCompletions,
+        provider: ModelProvider::Genai(LlmProvider::Ollama),
         model: "qwen3:8b".to_owned(),
         endpoint: Some("http://localhost:11434/".to_owned()),
         api_key: None,
+        app_id: None,
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
         advanced: LlmAdvancedOptions::default(),
     };
     let llm_revision = config.reserve_llm_settings_revision();
@@ -391,6 +397,7 @@ fn agent_config_generation_and_domains_publish_as_one_snapshot() {
             LlmSettings {
                 models: vec![model],
                 selected_model: Some("local".to_owned()),
+                selected_transcription_model: None,
             },
             llm_revision,
             AppLanguage::SimplifiedChinese,
@@ -718,6 +725,7 @@ language = "ja"
 [[llm.models]]
 id = "bad/id"
 label = "Broken"
+kind = "chat-completions"
 provider = "ollama"
 model = "model"
 "#,
@@ -1073,6 +1081,7 @@ selected = "local"
 [[llm.models]]
 id = "local"
 label = "本地 Qwen"
+kind = "chat-completions"
 provider = "ollama"
 model = "qwen3:8b"
 endpoint = "http://localhost:11434/"
@@ -1080,6 +1089,7 @@ endpoint = "http://localhost:11434/"
 [[llm.models]]
 id = "cloud"
 label = "云端模型"
+kind = "chat-completions"
 provider = "openai"
 model = "gpt-5-mini"
 api_key = "test-token+/="
@@ -1160,13 +1170,20 @@ fn inline_llm_table_becomes_a_table_before_models_are_added() {
         models: vec![LlmModelConfig {
             id: "local".to_owned(),
             label: "本地模型".to_owned(),
-            provider: LlmProvider::Ollama,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::Ollama),
             model: "qwen3:8b".to_owned(),
             endpoint: Some("http://localhost:11434".to_owned()),
             api_key: None,
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("local".to_owned()),
+        selected_transcription_model: None,
     };
     let revision = config.reserve_llm_settings_revision();
     config
@@ -1193,25 +1210,39 @@ fn stale_llm_write_cannot_replace_newer_selection() {
         models: vec![LlmModelConfig {
             id: "local".to_owned(),
             label: "本地模型".to_owned(),
-            provider: LlmProvider::Ollama,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::Ollama),
             model: "qwen3:8b".to_owned(),
             endpoint: Some("http://localhost:11434".to_owned()),
             api_key: None,
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("local".to_owned()),
+        selected_transcription_model: None,
     };
     let cloud = LlmSettings {
         models: vec![LlmModelConfig {
             id: "cloud".to_owned(),
             label: "云端模型".to_owned(),
-            provider: LlmProvider::OpenAI,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::OpenAI),
             model: "gpt-5-mini".to_owned(),
             endpoint: None,
             api_key: Some("test-token".to_owned()),
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some("cloud".to_owned()),
+        selected_transcription_model: None,
     };
     let old_revision = config.reserve_llm_settings_revision();
     let new_revision = config.reserve_llm_settings_revision();

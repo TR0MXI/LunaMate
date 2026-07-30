@@ -18,6 +18,7 @@ const MAX_LABEL_BYTES: usize = 128;
 const MAX_MODEL_NAME_BYTES: usize = 256;
 const MAX_ENDPOINT_BYTES: usize = 2_048;
 const MAX_API_KEY_BYTES: usize = 4 * 1024;
+const MAX_LOCAL_MODEL_PATH_BYTES: usize = 4 * 1024;
 const MAX_SYSTEM_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_PERSONA_NAME_BYTES: usize = 128;
 
@@ -124,6 +125,194 @@ pub const LLM_PROVIDERS: [LlmProvider; 26] = [
     LlmProvider::OpenRouter,
     LlmProvider::MiniMax,
 ];
+
+/// 模型条目提供的专业能力；稳定 ID 同时用于配置文件与 UI 分组。
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum ModelKind {
+    #[default]
+    ChatCompletions,
+    SpeechSynthesis,
+    Transcription,
+}
+
+impl ModelKind {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat-completions",
+            Self::SpeechSynthesis => "speech-synthesis",
+            Self::Transcription => "transcription",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "chat-completions" => Some(Self::ChatCompletions),
+            "speech-synthesis" => Some(Self::SpeechSynthesis),
+            "transcription" => Some(Self::Transcription),
+            _ => None,
+        }
+    }
+}
+
+/// 一个模型条目的执行后端。远端对话继续直接复用 `genai` 的 Provider 标识。
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ModelProvider {
+    Genai(LlmProvider),
+    Doubao,
+    LocalWhisper,
+}
+
+/// whisper.cpp 当前支持的目标语言代码；空值表示让模型自动识别语种。
+pub const WHISPER_LANGUAGE_CODES: [&str; 100] = [
+    "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr", "pl", "ca", "nl", "ar", "sv", "it",
+    "id", "hi", "fi", "vi", "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur",
+    "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv", "bn", "sr", "az", "sl", "kn",
+    "et", "mk", "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si",
+    "km", "sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo",
+    "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl", "mg", "as", "tt", "haw", "ln",
+    "ha", "ba", "jw", "su", "yue",
+];
+
+/// 与 [`WHISPER_LANGUAGE_CODES`] 顺序对应的英文名称，仅用于设置界面展示。
+pub const WHISPER_LANGUAGE_NAMES: [&str; 100] = [
+    "English",
+    "Chinese",
+    "German",
+    "Spanish",
+    "Russian",
+    "Korean",
+    "French",
+    "Japanese",
+    "Portuguese",
+    "Turkish",
+    "Polish",
+    "Catalan",
+    "Dutch",
+    "Arabic",
+    "Swedish",
+    "Italian",
+    "Indonesian",
+    "Hindi",
+    "Finnish",
+    "Vietnamese",
+    "Hebrew",
+    "Ukrainian",
+    "Greek",
+    "Malay",
+    "Czech",
+    "Romanian",
+    "Danish",
+    "Hungarian",
+    "Tamil",
+    "Norwegian",
+    "Thai",
+    "Urdu",
+    "Croatian",
+    "Bulgarian",
+    "Lithuanian",
+    "Latin",
+    "Maori",
+    "Malayalam",
+    "Welsh",
+    "Slovak",
+    "Telugu",
+    "Persian",
+    "Latvian",
+    "Bengali",
+    "Serbian",
+    "Azerbaijani",
+    "Slovenian",
+    "Kannada",
+    "Estonian",
+    "Macedonian",
+    "Breton",
+    "Basque",
+    "Icelandic",
+    "Armenian",
+    "Nepali",
+    "Mongolian",
+    "Bosnian",
+    "Kazakh",
+    "Albanian",
+    "Swahili",
+    "Galician",
+    "Marathi",
+    "Punjabi",
+    "Sinhala",
+    "Khmer",
+    "Shona",
+    "Yoruba",
+    "Somali",
+    "Afrikaans",
+    "Occitan",
+    "Georgian",
+    "Belarusian",
+    "Tajik",
+    "Sindhi",
+    "Gujarati",
+    "Amharic",
+    "Yiddish",
+    "Lao",
+    "Uzbek",
+    "Faroese",
+    "Haitian Creole",
+    "Pashto",
+    "Turkmen",
+    "Nynorsk",
+    "Maltese",
+    "Sanskrit",
+    "Luxembourgish",
+    "Myanmar",
+    "Tibetan",
+    "Tagalog",
+    "Malagasy",
+    "Assamese",
+    "Tatar",
+    "Hawaiian",
+    "Lingala",
+    "Hausa",
+    "Bashkir",
+    "Javanese",
+    "Sundanese",
+    "Cantonese",
+];
+
+impl Default for ModelProvider {
+    fn default() -> Self {
+        Self::Genai(LlmProvider::Ollama)
+    }
+}
+
+impl From<LlmProvider> for ModelProvider {
+    fn from(provider: LlmProvider) -> Self {
+        Self::Genai(provider)
+    }
+}
+
+impl ModelProvider {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Genai(provider) => llm_provider_id(provider),
+            Self::Doubao => "doubao",
+            Self::LocalWhisper => "local-whisper",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "doubao" => Some(Self::Doubao),
+            "local-whisper" => Some(Self::LocalWhisper),
+            _ => llm_provider_from_id(id).map(Self::Genai),
+        }
+    }
+
+    pub const fn genai(self) -> Option<LlmProvider> {
+        match self {
+            Self::Genai(provider) => Some(provider),
+            Self::Doubao | Self::LocalWhisper => None,
+        }
+    }
+}
 
 /// 返回写入 LunaMate 配置文件和资源路径的稳定 Provider ID。
 pub const fn llm_provider_id(provider: LlmProvider) -> &'static str {
@@ -304,10 +493,16 @@ impl LlmAdvancedOptions {
 pub struct LlmModelConfig {
     pub id: String,
     pub label: String,
-    pub provider: LlmProvider,
+    pub kind: ModelKind,
+    pub provider: ModelProvider,
     pub model: String,
     pub endpoint: Option<String>,
     pub api_key: Option<String>,
+    pub app_id: Option<String>,
+    pub voice: Option<String>,
+    pub local_path: Option<PathBuf>,
+    pub use_gpu: bool,
+    pub whisper_language: Option<String>,
     pub advanced: LlmAdvancedOptions,
 }
 
@@ -324,21 +519,150 @@ impl LlmModelConfig {
             MAX_LABEL_BYTES,
             language,
         )?;
-        self.model = normalized_required(
-            &self.model,
-            t!("llm.provider_model_id", locale = language.id()).as_ref(),
-            MAX_MODEL_NAME_BYTES,
-            language,
-        )?;
+        if self.provider == ModelProvider::LocalWhisper {
+            if self.kind != ModelKind::Transcription {
+                return Err(invalid(
+                    t!("llm.error.local_whisper_kind", locale = language.id()).to_string(),
+                ));
+            }
+            self.model = "whisper".to_owned();
+            self.local_path = normalize_local_model_path(self.local_path, language)?;
+            if self.local_path.is_none() {
+                return Err(invalid(
+                    t!(
+                        "llm.error.local_whisper_path_required",
+                        locale = language.id()
+                    )
+                    .to_string(),
+                ));
+            }
+            self.whisper_language = normalize_whisper_language(self.whisper_language, language)?;
+        } else {
+            self.model = normalized_required(
+                &self.model,
+                t!("llm.provider_model_id", locale = language.id()).as_ref(),
+                MAX_MODEL_NAME_BYTES,
+                language,
+            )?;
+            self.local_path = None;
+            self.use_gpu = false;
+            self.whisper_language = None;
+        }
         self.api_key = normalize_optional(
             &self.api_key,
             MAX_API_KEY_BYTES,
             t!("llm.api_key", locale = language.id()).as_ref(),
             language,
         )?;
-        self.endpoint = normalize_endpoint(self.provider, self.endpoint.as_deref(), language)?;
-        self.advanced.normalize(language)?;
+        self.app_id = normalize_optional(
+            &self.app_id,
+            MAX_API_KEY_BYTES,
+            t!("llm.app_id", locale = language.id()).as_ref(),
+            language,
+        )?;
+        self.voice = normalize_optional(
+            &self.voice,
+            MAX_MODEL_NAME_BYTES,
+            t!("llm.voice_id", locale = language.id()).as_ref(),
+            language,
+        )?;
+        match (self.kind, self.provider) {
+            (ModelKind::ChatCompletions, ModelProvider::Genai(provider)) => {
+                self.endpoint = normalize_endpoint(provider, self.endpoint.as_deref(), language)?;
+                self.advanced.normalize(language)?;
+                self.app_id = None;
+                self.voice = None;
+            }
+            (ModelKind::ChatCompletions, _) => {
+                return Err(invalid(
+                    t!("llm.error.chat_provider", locale = language.id()).to_string(),
+                ));
+            }
+            (ModelKind::SpeechSynthesis, ModelProvider::Genai(LlmProvider::OpenAI)) => {
+                self.normalize_openai_speech(language)?;
+                self.voice = Some(normalized_required(
+                    self.voice.as_deref().unwrap_or_default(),
+                    t!("llm.voice_id", locale = language.id()).as_ref(),
+                    MAX_MODEL_NAME_BYTES,
+                    language,
+                )?);
+                self.app_id = None;
+                self.advanced = LlmAdvancedOptions::default();
+            }
+            (ModelKind::SpeechSynthesis, ModelProvider::Doubao) => {
+                self.normalize_doubao(language, true)?;
+            }
+            (ModelKind::Transcription, ModelProvider::Genai(LlmProvider::OpenAI)) => {
+                self.normalize_openai_speech(language)?;
+                self.app_id = None;
+                self.voice = None;
+                self.advanced = LlmAdvancedOptions::default();
+            }
+            (ModelKind::Transcription, ModelProvider::Doubao) => {
+                self.normalize_doubao(language, false)?;
+            }
+            (ModelKind::Transcription, ModelProvider::LocalWhisper) => {
+                self.endpoint = None;
+                self.api_key = None;
+                self.app_id = None;
+                self.voice = None;
+                self.advanced = LlmAdvancedOptions::default();
+            }
+            (ModelKind::SpeechSynthesis | ModelKind::Transcription, ModelProvider::Genai(_)) => {
+                return Err(invalid(
+                    t!("llm.error.speech_provider", locale = language.id()).to_string(),
+                ));
+            }
+            (ModelKind::SpeechSynthesis, ModelProvider::LocalWhisper) => {
+                return Err(invalid(
+                    t!("llm.error.local_whisper_tts", locale = language.id()).to_string(),
+                ));
+            }
+        }
         Ok(self)
+    }
+
+    fn normalize_openai_speech(&mut self, language: AppLanguage) -> Result<(), AgentConfigError> {
+        self.endpoint = normalize_speech_endpoint(self.endpoint.as_deref(), language)?;
+        self.api_key = Some(normalized_required(
+            self.api_key.as_deref().unwrap_or_default(),
+            t!("llm.api_key", locale = language.id()).as_ref(),
+            MAX_API_KEY_BYTES,
+            language,
+        )?);
+        Ok(())
+    }
+
+    fn normalize_doubao(
+        &mut self,
+        language: AppLanguage,
+        requires_voice: bool,
+    ) -> Result<(), AgentConfigError> {
+        self.endpoint = normalize_doubao_endpoint(self.endpoint.as_deref(), language)?;
+        self.app_id = Some(normalized_required(
+            self.app_id.as_deref().unwrap_or_default(),
+            t!("llm.app_id", locale = language.id()).as_ref(),
+            MAX_API_KEY_BYTES,
+            language,
+        )?);
+        self.api_key = Some(normalized_required(
+            self.api_key.as_deref().unwrap_or_default(),
+            t!("llm.api_key", locale = language.id()).as_ref(),
+            MAX_API_KEY_BYTES,
+            language,
+        )?);
+        self.voice = if requires_voice {
+            Some(normalized_required(
+                self.voice.as_deref().unwrap_or_default(),
+                t!("llm.voice_id", locale = language.id()).as_ref(),
+                MAX_MODEL_NAME_BYTES,
+                language,
+            )?)
+        } else {
+            None
+        };
+        self.advanced = LlmAdvancedOptions::default();
+        Ok(())
     }
 }
 
@@ -348,10 +672,16 @@ impl fmt::Debug for LlmModelConfig {
             .debug_struct("LlmModelConfig")
             .field("id", &self.id)
             .field("label", &self.label)
+            .field("kind", &self.kind)
             .field("provider", &self.provider)
             .field("model", &self.model)
             .field("endpoint", &self.endpoint)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("app_id", &self.app_id.as_ref().map(|_| "[REDACTED]"))
+            .field("voice", &self.voice)
+            .field("local_path", &self.local_path)
+            .field("use_gpu", &self.use_gpu)
+            .field("whisper_language", &self.whisper_language)
             .field("advanced", &self.advanced)
             .finish()
     }
@@ -361,16 +691,40 @@ impl fmt::Debug for LlmModelConfig {
 pub struct LlmSettings {
     pub models: Vec<LlmModelConfig>,
     pub selected_model: Option<String>,
+    pub selected_transcription_model: Option<String>,
 }
 
 impl LlmSettings {
     pub fn selected(&self) -> Option<&LlmModelConfig> {
         let selected = self.selected_model.as_deref()?;
-        self.models.iter().find(|model| model.id == selected)
+        self.models
+            .iter()
+            .find(|model| model.id == selected && model.kind == ModelKind::ChatCompletions)
+    }
+
+    /// 返回当前选中的 Transcription 模型；语音输入不再维护独立的模型选择。
+    pub fn selected_transcription(&self) -> Option<&LlmModelConfig> {
+        let selected = self.selected_transcription_model.as_deref()?;
+        self.models
+            .iter()
+            .find(|model| model.id == selected && model.kind == ModelKind::Transcription)
+    }
+
+    /// 返回需要在模型列表中标记为当前使用项的稳定 ID。
+    pub fn selected_model_id(&self, kind: ModelKind) -> Option<&str> {
+        match kind {
+            ModelKind::ChatCompletions => self.selected_model.as_deref(),
+            ModelKind::Transcription => self.selected_transcription_model.as_deref(),
+            ModelKind::SpeechSynthesis => None,
+        }
     }
 
     pub fn model(&self, id: &str) -> Option<&LlmModelConfig> {
         self.models.iter().find(|model| model.id == id)
+    }
+
+    pub fn models_of_kind(&self, kind: ModelKind) -> impl Iterator<Item = &LlmModelConfig> {
+        self.models.iter().filter(move |model| model.kind == kind)
     }
 
     pub fn normalized(mut self, language: AppLanguage) -> Result<Self, AgentConfigError> {
@@ -405,11 +759,35 @@ impl LlmSettings {
             language,
         )?;
         if let Some(selected) = &self.selected_model
-            && !ids.contains(selected)
+            && !self
+                .models
+                .iter()
+                .any(|model| model.id == *selected && model.kind == ModelKind::ChatCompletions)
         {
             return Err(invalid(
                 t!(
                     "llm.error.missing_selected",
+                    locale = language.id(),
+                    id = selected
+                )
+                .to_string(),
+            ));
+        }
+        self.selected_transcription_model = normalize_optional(
+            &self.selected_transcription_model,
+            MAX_ID_BYTES,
+            t!("llm.selected_transcription", locale = language.id()).as_ref(),
+            language,
+        )?;
+        if let Some(selected) = &self.selected_transcription_model
+            && !self
+                .models
+                .iter()
+                .any(|model| model.id == *selected && model.kind == ModelKind::Transcription)
+        {
+            return Err(invalid(
+                t!(
+                    "llm.error.missing_selected_transcription",
                     locale = language.id(),
                     id = selected
                 )
@@ -492,6 +870,122 @@ pub fn normalize_endpoint(
     Ok(Some(url.into()))
 }
 
+fn normalize_speech_endpoint(
+    endpoint: Option<&str>,
+    language: AppLanguage,
+) -> Result<Option<String>, AgentConfigError> {
+    normalize_endpoint(LlmProvider::OpenAI, endpoint, language)
+}
+
+fn normalize_doubao_endpoint(
+    endpoint: Option<&str>,
+    language: AppLanguage,
+) -> Result<Option<String>, AgentConfigError> {
+    let Some(endpoint) = endpoint.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if endpoint.len() > MAX_ENDPOINT_BYTES {
+        return Err(invalid(
+            t!(
+                "llm.error.too_long",
+                locale = language.id(),
+                field = t!("llm.endpoint", locale = language.id()),
+                max = MAX_ENDPOINT_BYTES
+            )
+            .to_string(),
+        ));
+    }
+    let url = Url::parse(endpoint).map_err(|error| {
+        invalid(
+            t!(
+                "llm.error.endpoint_invalid",
+                locale = language.id(),
+                error = error
+            )
+            .to_string(),
+        )
+    })?;
+    if url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid(
+            t!("llm.error.endpoint_requirements", locale = language.id()).to_string(),
+        ));
+    }
+    if !matches!(url.scheme(), "ws" | "wss") {
+        return Err(invalid(
+            t!(
+                "llm.error.websocket_endpoint_scheme",
+                locale = language.id()
+            )
+            .to_string(),
+        ));
+    }
+    Ok(Some(url.into()))
+}
+
+fn normalize_local_model_path(
+    path: Option<PathBuf>,
+    language: AppLanguage,
+) -> Result<Option<PathBuf>, AgentConfigError> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let Some(value) = path.to_str() else {
+        return Err(invalid(
+            t!("llm.error.local_path_utf8", locale = language.id()).to_string(),
+        ));
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > MAX_LOCAL_MODEL_PATH_BYTES {
+        return Err(invalid(
+            t!(
+                "llm.error.too_long",
+                locale = language.id(),
+                field = t!("llm.local_model_path", locale = language.id()),
+                max = MAX_LOCAL_MODEL_PATH_BYTES
+            )
+            .to_string(),
+        ));
+    }
+    if value.contains('\0') {
+        return Err(invalid(
+            t!("llm.error.local_path_invalid", locale = language.id()).to_string(),
+        ));
+    }
+    Ok(Some(PathBuf::from(value)))
+}
+
+fn normalize_whisper_language(
+    language_code: Option<String>,
+    language: AppLanguage,
+) -> Result<Option<String>, AgentConfigError> {
+    let Some(language_code) = language_code else {
+        return Ok(None);
+    };
+    let language_code = language_code.trim();
+    if language_code.is_empty() {
+        return Ok(None);
+    }
+    if !WHISPER_LANGUAGE_CODES.contains(&language_code) {
+        return Err(invalid(
+            t!(
+                "llm.error.whisper_language",
+                locale = language.id(),
+                language = language_code
+            )
+            .to_string(),
+        ));
+    }
+    Ok(Some(language_code.to_owned()))
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PersonaContextLimits {
     pub max_messages: Option<u32>,
@@ -532,6 +1026,7 @@ pub struct PersonaConfig {
     pub system_prompt: String,
     pub input_prompt: String,
     pub model: Option<String>,
+    pub tts_model: Option<String>,
     pub live2d_model: Option<PathBuf>,
     pub context: PersonaContextLimits,
 }
@@ -544,6 +1039,7 @@ impl PersonaConfig {
             system_prompt: String::new(),
             input_prompt: String::new(),
             model: None,
+            tts_model: None,
             live2d_model: None,
             context: PersonaContextLimits::default(),
         }
@@ -597,6 +1093,12 @@ impl PersonaConfig {
                 .to_string(),
             ));
         }
+        self.tts_model = normalize_optional(
+            &self.tts_model,
+            MAX_ID_BYTES,
+            "Speech Synthesis 模型",
+            language,
+        )?;
         self.live2d_model = self
             .live2d_model
             .as_deref()
@@ -726,6 +1228,38 @@ impl AgentConfigSnapshot {
     ) -> Result<Self, AgentConfigError> {
         let settings = Arc::new(settings.as_ref().clone().normalized(language)?);
         let personas = Arc::new(personas.as_ref().clone().normalized(language)?);
+        for persona in &personas.personas {
+            if let Some(model) = persona.model.as_deref()
+                && !settings.models.iter().any(|candidate| {
+                    candidate.id == model && candidate.kind == ModelKind::ChatCompletions
+                })
+            {
+                return Err(invalid(
+                    t!(
+                        "llm.error.persona_model_missing",
+                        locale = language.id(),
+                        persona = &persona.id,
+                        capability = "Chat Completions"
+                    )
+                    .to_string(),
+                ));
+            }
+            if let Some(model) = persona.tts_model.as_deref()
+                && !settings.models.iter().any(|candidate| {
+                    candidate.id == model && candidate.kind == ModelKind::SpeechSynthesis
+                })
+            {
+                return Err(invalid(
+                    t!(
+                        "llm.error.persona_model_missing",
+                        locale = language.id(),
+                        persona = &persona.id,
+                        capability = "Speech Synthesis"
+                    )
+                    .to_string(),
+                ));
+            }
+        }
         Ok(Self {
             generation,
             settings,

@@ -272,64 +272,6 @@ pub(super) fn confirm_overlay(
         .into_any_element()
 }
 
-/// 页面顶部的标题栏与保存按钮。
-pub(super) fn page_header(
-    save_id: &'static str,
-    title: String,
-    save_label: String,
-    saving: bool,
-    palette: UiPalette,
-    on_save: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
-) -> Div {
-    div()
-        .h(px(54.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_between()
-        .border_b_1()
-        .border_color(palette.border)
-        .px_5()
-        .child(div().text_base().font_semibold().child(title))
-        .child(
-            div()
-                .id(save_id)
-                .h(px(34.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .rounded_md()
-                .px_4()
-                .text_sm()
-                .font_medium()
-                .bg(if saving {
-                    palette.muted
-                } else {
-                    palette.primary
-                })
-                .text_color(if saving {
-                    palette.muted_foreground
-                } else {
-                    palette.primary_foreground
-                })
-                .cursor_pointer()
-                .hover(move |style| style.bg(palette.accent))
-                .on_click(on_save)
-                .child(
-                    svg()
-                        .path("icons/check.svg")
-                        .size_4()
-                        .text_color(if saving {
-                            palette.muted_foreground
-                        } else {
-                            palette.primary_foreground
-                        }),
-                )
-                .child(save_label),
-        )
-}
-
 /// 页面底部的短时状态提示。
 pub(super) fn status_toast(status: String, palette: UiPalette) -> AnyElement {
     div()

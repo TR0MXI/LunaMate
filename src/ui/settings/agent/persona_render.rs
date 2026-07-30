@@ -758,6 +758,11 @@ impl PersonaSettingsView {
                 )),
             )
             .child(form_field(
+                t!("persona.speech_synthesis_model").to_string(),
+                Select::new(form.tts).search_placeholder(t!("llm.search_provider").to_string()),
+                palette,
+            ))
+            .child(form_field(
                 t!("persona.live2d_model").to_string(),
                 Select::new(form.live2d)
                     .search_placeholder(t!("persona.search_live2d").to_string()),

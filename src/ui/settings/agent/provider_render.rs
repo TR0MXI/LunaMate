@@ -5,18 +5,20 @@ use gpui_component::{
     StyledExt as _,
     input::{Input, InputContentType},
     select::Select,
+    tooltip::Tooltip,
 };
 use rust_i18n::t;
 
 use lunamate_agent::config::{
-    MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, TEMPERATURE_MAX, TOP_P_MAX,
+    MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, ModelKind, ModelProvider, TEMPERATURE_MAX,
+    TOP_P_MAX,
 };
 
 use crate::ui::UiPalette;
 
 use super::{
     components::{
-        collapsible_header, form_field, optional_field, page_header, section_label, status_toast,
+        collapsible_header, form_field, optional_field, section_label, status_toast, toggle_switch,
     },
     provider::ProviderSettingsView,
     provider_display_name, provider_icon,
@@ -27,9 +29,15 @@ impl ProviderSettingsView {
         let palette = UiPalette::from_app(cx);
         let editing_index = self.editing_index();
         let draft = self.draft();
-        let active_id = draft.selected_model.clone();
+        let active_kind = self.active_kind();
+        let active_id = draft.selected_model_id(active_kind).map(str::to_owned);
+        let visible_count = draft
+            .models
+            .iter()
+            .filter(|model| model.kind == active_kind)
+            .count();
         div()
-            .w(px(260.0))
+            .w(px(224.0))
             .h_full()
             .flex_shrink_0()
             .flex()
@@ -39,61 +47,52 @@ impl ProviderSettingsView {
             .bg(palette.sidebar)
             .child(
                 div()
+                    .h(px(46.0))
                     .flex_shrink_0()
                     .flex()
-                    .flex_col()
-                    .gap_3()
+                    .items_center()
+                    .gap_1()
                     .border_b_1()
                     .border_color(palette.border)
-                    .p_4()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_semibold()
-                                    .child(t!("llm.models").to_string()),
-                            )
-                            .child(
-                                div()
-                                    .rounded_md()
-                                    .bg(palette.muted)
-                                    .px_2()
-                                    .py(px(2.0))
-                                    .text_xs()
-                                    .text_color(palette.muted_foreground)
-                                    .child(draft.models.len().to_string()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .id("add-llm-model")
-                            .h(px(34.0))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .gap_2()
-                            .rounded_md()
-                            .bg(palette.primary)
-                            .text_color(palette.primary_foreground)
-                            .text_sm()
-                            .font_medium()
-                            .cursor_pointer()
-                            .hover(move |style| style.bg(palette.primary.opacity(0.86)))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.add_model(window, cx);
-                            }))
-                            .child(
-                                svg()
-                                    .path("icons/plus.svg")
-                                    .size_4()
-                                    .text_color(palette.primary_foreground),
-                            )
-                            .child(t!("llm.add_model").to_string()),
+                    .px_3()
+                    .children(
+                        [
+                            ("llm-kind-chat", ModelKind::ChatCompletions),
+                            ("llm-kind-tts", ModelKind::SpeechSynthesis),
+                            ("llm-kind-stt", ModelKind::Transcription),
+                        ]
+                        .into_iter()
+                        .map(|(id, kind)| {
+                            let selected = active_kind == kind;
+                            let tooltip = model_kind_label(kind);
+                            div()
+                                .id(id)
+                                .h(px(28.0))
+                                .flex_1()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .text_xs()
+                                .cursor_pointer()
+                                .bg(if selected {
+                                    palette.primary
+                                } else {
+                                    palette.muted
+                                })
+                                .text_color(if selected {
+                                    palette.primary_foreground
+                                } else {
+                                    palette.muted_foreground
+                                })
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(tooltip.clone()).build(window, cx)
+                                })
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_kind(kind, window, cx);
+                                }))
+                                .child(model_kind_short_label(kind))
+                        }),
                     ),
             )
             .child(
@@ -106,7 +105,7 @@ impl ProviderSettingsView {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .when(draft.models.is_empty(), |this| {
+                    .when(visible_count == 0, |this| {
                         this.child(
                             div()
                                 .flex_1()
@@ -137,110 +136,177 @@ impl ProviderSettingsView {
                                 .child(t!("llm.none").to_string()),
                         )
                     })
-                    .children(draft.models.iter().enumerate().map(|(index, model)| {
-                        let editing = editing_index == Some(index);
-                        let active = active_id.as_deref() == Some(model.id.as_str());
-                        let model_name = if model.model.trim().is_empty() {
-                            t!("llm.model_unset").to_string()
-                        } else {
-                            model.model.clone()
-                        };
-                        div()
-                            .id(("llm-model", index))
-                            .min_h(px(66.0))
-                            .rounded_md()
-                            .border_1()
-                            .border_color(if editing {
-                                palette.primary
-                            } else {
-                                palette.border
-                            })
-                            .px_3()
-                            .py_2()
-                            .cursor_pointer()
-                            .bg(if editing {
-                                palette.accent
-                            } else {
-                                palette.sidebar
-                            })
-                            .hover(move |style| style.bg(palette.secondary))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_model(index, window, cx);
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_3()
-                                    .child(
-                                        div()
-                                            .size_8()
-                                            .flex_shrink_0()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .rounded_md()
-                                            .bg(if editing {
-                                                palette.primary
-                                            } else {
-                                                palette.muted
-                                            })
-                                            .child(
-                                                svg()
-                                                    .path(provider_icon(model.provider))
-                                                    .size_4()
-                                                    .text_color(if editing {
-                                                        palette.primary_foreground
-                                                    } else {
-                                                        palette.foreground
-                                                    }),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(
-                                                div()
-                                                    .overflow_hidden()
-                                                    .text_ellipsis()
-                                                    .text_sm()
-                                                    .font_medium()
-                                                    .child(model.label.clone()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .mt_1()
-                                                    .overflow_hidden()
-                                                    .text_ellipsis()
-                                                    .text_xs()
-                                                    .text_color(palette.muted_foreground)
-                                                    .child(format!(
-                                                        "{} · {model_name}",
-                                                        provider_display_name(model.provider),
-                                                    )),
-                                            ),
-                                    )
-                                    .when(active, |this| {
-                                        this.child(
+                    .children(
+                        draft
+                            .models
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(index, model)| {
+                                if model.kind != active_kind {
+                                    return None;
+                                }
+                                let editing = editing_index == Some(index);
+                                let active = active_id.as_deref() == Some(model.id.as_str());
+                                let model_name = if model.model.trim().is_empty() {
+                                    t!("llm.model_unset").to_string()
+                                } else {
+                                    model.model.clone()
+                                };
+                                Some(
+                                    div()
+                                        .id(("llm-model", index))
+                                        .min_h(px(66.0))
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(if editing {
+                                            palette.primary
+                                        } else {
+                                            palette.border
+                                        })
+                                        .px_3()
+                                        .py_2()
+                                        .cursor_pointer()
+                                        .bg(if editing {
+                                            palette.accent
+                                        } else {
+                                            palette.sidebar
+                                        })
+                                        .hover(move |style| style.bg(palette.secondary))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.select_model(index, window, cx);
+                                        }))
+                                        .child(
                                             div()
-                                                .size_5()
-                                                .flex_shrink_0()
                                                 .flex()
                                                 .items_center()
-                                                .justify_center()
-                                                .rounded_full()
-                                                .bg(palette.primary)
+                                                .gap_3()
                                                 .child(
-                                                    svg()
-                                                        .path("icons/check.svg")
-                                                        .size_3()
-                                                        .text_color(palette.primary_foreground),
-                                                ),
-                                        )
-                                    }),
+                                                    div()
+                                                        .size_8()
+                                                        .flex_shrink_0()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .rounded_md()
+                                                        .bg(if editing {
+                                                            palette.primary
+                                                        } else {
+                                                            palette.muted
+                                                        })
+                                                        .child(
+                                                            svg()
+                                                                .path(provider_icon(model.provider))
+                                                                .size_4()
+                                                                .text_color(if editing {
+                                                                    palette.primary_foreground
+                                                                } else {
+                                                                    palette.foreground
+                                                                }),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .child(
+                                                            div()
+                                                                .overflow_hidden()
+                                                                .text_ellipsis()
+                                                                .text_sm()
+                                                                .font_medium()
+                                                                .child(model.label.clone()),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .mt_1()
+                                                                .overflow_hidden()
+                                                                .text_ellipsis()
+                                                                .text_xs()
+                                                                .text_color(
+                                                                    palette.muted_foreground,
+                                                                )
+                                                                .child(format!(
+                                                                    "{} · {model_name}",
+                                                                    provider_display_name(
+                                                                        model.provider
+                                                                    ),
+                                                                )),
+                                                        ),
+                                                )
+                                                .when(active, |this| {
+                                                    this.child(
+                                                        div()
+                                                            .size_5()
+                                                            .flex_shrink_0()
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .rounded_full()
+                                                            .bg(palette.primary)
+                                                            .child(
+                                                                svg()
+                                                                    .path("icons/check.svg")
+                                                                    .size_3()
+                                                                    .text_color(
+                                                                        palette.primary_foreground,
+                                                                    ),
+                                                            ),
+                                                    )
+                                                }),
+                                        ),
+                                )
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(46.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .border_t_1()
+                    .border_color(palette.border)
+                    .px_3()
+                    .child(
+                        div()
+                            .min_w(px(24.0))
+                            .h(px(20.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .bg(palette.muted)
+                            .px_2()
+                            .text_xs()
+                            .text_color(palette.muted_foreground)
+                            .child(visible_count.to_string()),
+                    )
+                    .child({
+                        let label = t!("llm.add_model").to_string();
+                        div()
+                            .id("add-llm-model")
+                            .size(px(30.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .bg(palette.primary)
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(palette.primary.opacity(0.86)))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(label.clone()).build(window, cx)
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_model(window, cx);
+                            }))
+                            .child(
+                                svg()
+                                    .path("icons/plus.svg")
+                                    .size_4()
+                                    .text_color(palette.primary_foreground),
                             )
-                    })),
+                    }),
             )
             .into_any_element()
     }
@@ -248,13 +314,13 @@ impl ProviderSettingsView {
     fn render_editor(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = UiPalette::from_app(cx);
         let has_model = self.editing_index().is_some();
-        let disabled = !has_model || self.is_saving();
+        let disabled = !has_model;
         let inputs = self.inputs();
         let editor_title = inputs.label.read(cx).value().trim().to_owned();
-        let provider = self
-            .editing_index()
-            .and_then(|index| self.draft().models.get(index))
-            .map(|model| model.provider);
+        let provider = has_model.then(|| self.selected_provider(cx));
+        let kind = self.active_kind();
+        let local = provider == Some(ModelProvider::LocalWhisper);
+        let doubao = provider == Some(ModelProvider::Doubao);
         div()
             .id("llm-editor-scroll")
             .flex_1()
@@ -400,27 +466,104 @@ impl ProviderSettingsView {
                         ),
                     ]),
                 )
-                .child(div().w_full().flex().gap_4().children([
-                    form_field(
-                        t!("llm.model_id").to_string(),
-                        Input::new(inputs.model).disabled(disabled),
+                .when(!local, |this| {
+                    this.child(div().w_full().flex().gap_4().children([
+                        form_field(
+                            t!("llm.model_id").to_string(),
+                            Input::new(inputs.model).disabled(disabled),
+                            palette,
+                        ),
+                        form_field(
+                            t!("llm.endpoint").to_string(),
+                            Input::new(inputs.endpoint).disabled(disabled),
+                            palette,
+                        ),
+                    ]))
+                    .child(form_field(
+                        t!("llm.api_key").to_string(),
+                        Input::new(inputs.api_key)
+                            .mask_toggle()
+                            .content_type(InputContentType::Password)
+                            .disabled(disabled),
                         palette,
-                    ),
-                    form_field(
-                        t!("llm.endpoint").to_string(),
-                        Input::new(inputs.endpoint).disabled(disabled),
+                    ))
+                })
+                .when(doubao, |this| {
+                    this.child(form_field(
+                        t!("llm.app_id").to_string(),
+                        Input::new(inputs.app_id).disabled(disabled),
                         palette,
-                    ),
-                ]))
-                .child(form_field(
-                    t!("llm.api_key").to_string(),
-                    Input::new(inputs.api_key)
-                        .mask_toggle()
-                        .content_type(InputContentType::Password)
-                        .disabled(disabled),
-                    palette,
-                ))
-                .child(self.render_advanced(disabled, cx))
+                    ))
+                })
+                .when(kind == ModelKind::SpeechSynthesis, |this| {
+                    this.child(form_field(
+                        t!("llm.voice_id").to_string(),
+                        Input::new(inputs.voice).disabled(disabled),
+                        palette,
+                    ))
+                })
+                .when(local, |this| {
+                    this.child(form_field(
+                        t!("llm.local_model_path").to_string(),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .flex_1()
+                                    .child(Input::new(inputs.local_path).disabled(disabled)),
+                            )
+                            .child(
+                                div()
+                                    .id("choose-local-whisper-model")
+                                    .size_8()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(palette.border)
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.choose_local_model(cx);
+                                    }))
+                                    .child(
+                                        svg()
+                                            .path("icons/folder-open.svg")
+                                            .size_4()
+                                            .text_color(palette.foreground),
+                                    ),
+                            ),
+                        palette,
+                    ))
+                    .child(form_field(
+                        t!("llm.whisper_language").to_string(),
+                        Select::new(inputs.whisper_language)
+                            .search_placeholder(t!("llm.whisper_language_search").to_string())
+                            .disabled(disabled),
+                        palette,
+                    ))
+                    .child(
+                        div()
+                            .pt_1()
+                            .text_xs()
+                            .text_color(palette.muted_foreground)
+                            .child(t!("llm.whisper_language_hint").to_string()),
+                    )
+                    .child(form_field(
+                        t!("llm.gpu_acceleration").to_string(),
+                        toggle_switch("toggle-local-whisper-gpu", self.use_gpu(), palette)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_use_gpu(cx);
+                            })),
+                        palette,
+                    ))
+                })
+                .when(kind == ModelKind::ChatCompletions, |this| {
+                    this.child(self.render_advanced(disabled, cx))
+                })
             })
             .into_any_element()
     }
@@ -548,38 +691,34 @@ impl ProviderSettingsView {
     }
 }
 
+fn model_kind_label(kind: ModelKind) -> String {
+    match kind {
+        ModelKind::ChatCompletions => t!("llm.chat_completions").to_string(),
+        ModelKind::SpeechSynthesis => t!("llm.speech_synthesis").to_string(),
+        ModelKind::Transcription => t!("llm.transcription").to_string(),
+    }
+}
+
+fn model_kind_short_label(kind: ModelKind) -> String {
+    match kind {
+        ModelKind::ChatCompletions => "Chat".to_owned(),
+        ModelKind::SpeechSynthesis => "TTS".to_owned(),
+        ModelKind::Transcription => "STT".to_owned(),
+    }
+}
+
 impl Render for ProviderSettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = UiPalette::from_app(cx);
         let status = self.status().map(str::to_owned);
-        let saving = self.is_saving();
         div()
             .relative()
             .size_full()
             .min_w_0()
             .flex()
-            .flex_col()
             .text_color(palette.foreground)
-            .child(page_header(
-                "save-llm-settings",
-                t!("settings.provider_title").to_string(),
-                if saving {
-                    t!("common.saving").to_string()
-                } else {
-                    t!("common.save").to_string()
-                },
-                saving,
-                palette,
-                cx.listener(|this, _, _, cx| this.save(cx)),
-            ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .child(self.render_provider_list(cx))
-                    .child(self.render_editor(cx)),
-            )
+            .child(self.render_provider_list(cx))
+            .child(self.render_editor(cx))
             .when_some(status, |this, status| {
                 this.child(status_toast(status, palette))
             })

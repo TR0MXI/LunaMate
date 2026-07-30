@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::config::{
     AgentConfigSnapshot, AppLanguage, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
-    PersonaConfig, PersonaSettings,
+    ModelKind, ModelProvider, PersonaConfig, PersonaSettings, WHISPER_LANGUAGE_CODES,
 };
 
 #[test]
@@ -13,13 +13,20 @@ fn snapshot_constructor_normalizes_both_settings_domains() {
         models: vec![LlmModelConfig {
             id: " local-model ".to_owned(),
             label: " Local Model ".to_owned(),
-            provider: LlmProvider::Ollama,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::Ollama),
             model: " qwen3:8b ".to_owned(),
             endpoint: Some(" http://localhost:11434/v1 ".to_owned()),
             api_key: Some(" local-key ".to_owned()),
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: Some(" local-model ".to_owned()),
+        selected_transcription_model: None,
     });
     let mut persona = PersonaConfig::new(" assistant ", " Assistant ");
     persona.model = Some(" local-model ".to_owned());
@@ -62,13 +69,20 @@ fn snapshot_constructor_rejects_invalid_provider_settings() {
         models: vec![LlmModelConfig {
             id: "invalid/id".to_owned(),
             label: "Invalid".to_owned(),
-            provider: LlmProvider::Ollama,
+            kind: ModelKind::ChatCompletions,
+            provider: ModelProvider::Genai(LlmProvider::Ollama),
             model: "model".to_owned(),
             endpoint: None,
             api_key: None,
+            app_id: None,
+            voice: None,
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions::default(),
         }],
         selected_model: None,
+        selected_transcription_model: None,
     });
 
     assert!(
@@ -127,13 +141,20 @@ fn snapshot_validation_uses_its_explicit_language() {
             models: vec![LlmModelConfig {
                 id: "invalid/id".to_owned(),
                 label: "Invalid".to_owned(),
-                provider: LlmProvider::Ollama,
+                kind: ModelKind::ChatCompletions,
+                provider: ModelProvider::Genai(LlmProvider::Ollama),
                 model: "model".to_owned(),
                 endpoint: None,
                 api_key: None,
+                app_id: None,
+                voice: None,
+                local_path: None,
+                use_gpu: false,
+                whisper_language: None,
                 advanced: LlmAdvancedOptions::default(),
             }],
             selected_model: None,
+            selected_transcription_model: None,
         };
         let error = AgentConfigSnapshot::try_new(
             1,
@@ -165,4 +186,150 @@ fn default_persona_name_uses_the_requested_language() {
             Some(expected)
         );
     }
+}
+
+#[test]
+fn model_capabilities_reject_cross_kind_defaults_and_normalize_local_whisper() {
+    let local = LlmModelConfig {
+        id: "local-stt".to_owned(),
+        label: "Local Whisper".to_owned(),
+        kind: ModelKind::Transcription,
+        provider: ModelProvider::LocalWhisper,
+        model: String::new(),
+        endpoint: Some("https://should-be-cleared.example".to_owned()),
+        api_key: Some("should-be-cleared".to_owned()),
+        app_id: Some("should-be-cleared".to_owned()),
+        voice: Some("should-be-cleared".to_owned()),
+        local_path: Some(" /models/ggml-small.bin ".into()),
+        use_gpu: true,
+        whisper_language: Some(" zh ".to_owned()),
+        advanced: LlmAdvancedOptions {
+            max_output_tokens: Some(20),
+            ..LlmAdvancedOptions::default()
+        },
+    };
+    let settings = LlmSettings {
+        models: vec![local.clone()],
+        selected_model: Some("local-stt".to_owned()),
+        selected_transcription_model: Some("local-stt".to_owned()),
+    };
+
+    assert!(settings.clone().normalized(AppLanguage::English).is_err());
+    let normalized = LlmSettings {
+        selected_model: None,
+        ..settings
+    }
+    .normalized(AppLanguage::English)
+    .expect("本地 Whisper 应作为 Transcription 模型接受");
+    let model = &normalized.models[0];
+    assert_eq!(model.model, "whisper");
+    assert_eq!(
+        model.local_path.as_deref(),
+        Some(std::path::Path::new("/models/ggml-small.bin"))
+    );
+    assert!(model.endpoint.is_none());
+    assert!(model.api_key.is_none());
+    assert!(model.use_gpu);
+    assert_eq!(model.whisper_language.as_deref(), Some("zh"));
+    assert_eq!(
+        normalized.selected_transcription_model.as_deref(),
+        Some("local-stt")
+    );
+    assert_eq!(model.advanced, LlmAdvancedOptions::default());
+
+    for language in WHISPER_LANGUAGE_CODES {
+        assert!(
+            LlmModelConfig {
+                whisper_language: Some(language.to_owned()),
+                ..local.clone()
+            }
+            .normalized(AppLanguage::English)
+            .is_ok(),
+            "Whisper 语言代码 {language} 应当受支持"
+        );
+    }
+    assert!(
+        LlmModelConfig {
+            whisper_language: Some("unsupported".to_owned()),
+            ..local
+        }
+        .normalized(AppLanguage::English)
+        .is_err()
+    );
+}
+
+#[test]
+fn persona_tts_binding_must_reference_a_speech_synthesis_model() {
+    let chat = LlmModelConfig {
+        id: "chat".to_owned(),
+        label: "Chat".to_owned(),
+        kind: ModelKind::ChatCompletions,
+        provider: ModelProvider::Genai(LlmProvider::OpenAI),
+        model: "gpt-5-mini".to_owned(),
+        endpoint: None,
+        api_key: None,
+        app_id: None,
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
+        advanced: LlmAdvancedOptions::default(),
+    };
+    let settings = Arc::new(LlmSettings {
+        models: vec![chat],
+        selected_model: Some("chat".to_owned()),
+        selected_transcription_model: None,
+    });
+    let mut persona = PersonaConfig::new("default", "Default");
+    persona.tts_model = Some("chat".to_owned());
+
+    assert!(
+        AgentConfigSnapshot::try_new(
+            1,
+            settings,
+            Arc::new(PersonaSettings {
+                personas: vec![persona],
+                selected: Some("default".to_owned()),
+                pending_deletions: Vec::new(),
+            }),
+            AppLanguage::English,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn doubao_speech_models_accept_only_websocket_endpoints() {
+    let model = LlmModelConfig {
+        id: "doubao-stt".to_owned(),
+        label: "Doubao STT".to_owned(),
+        kind: ModelKind::Transcription,
+        provider: ModelProvider::Doubao,
+        model: "volc.bigasr.sauc.duration".to_owned(),
+        endpoint: Some(" wss://example.com/api/v3/sauc/bigmodel ".to_owned()),
+        api_key: Some("access-key".to_owned()),
+        app_id: Some("app-key".to_owned()),
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
+        advanced: LlmAdvancedOptions::default(),
+    };
+
+    let normalized = model
+        .clone()
+        .normalized(AppLanguage::English)
+        .expect("豆包语音模型应接受 WSS endpoint");
+    assert_eq!(
+        normalized.endpoint.as_deref(),
+        Some("wss://example.com/api/v3/sauc/bigmodel")
+    );
+    assert!(
+        LlmModelConfig {
+            endpoint: Some("https://example.com/api/v3/sauc/bigmodel".to_owned()),
+            ..model
+        }
+        .normalized(AppLanguage::English)
+        .is_err()
+    );
 }

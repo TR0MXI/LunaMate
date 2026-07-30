@@ -273,6 +273,10 @@ fn parse_persona(table: &Table, language: AppLanguage) -> Result<PersonaConfig, 
             .unwrap_or_default()
             .to_owned(),
         model: table.get("model").and_then(Item::as_str).map(str::to_owned),
+        tts_model: table
+            .get("tts_model")
+            .and_then(Item::as_str)
+            .map(str::to_owned),
         live2d_model: table
             .get("live2d_model")
             .and_then(Item::as_str)
@@ -334,6 +338,11 @@ pub(super) fn write_persona_settings(document: &mut DocumentMut, settings: &Pers
             (!persona.input_prompt.is_empty()).then(|| Value::from(persona.input_prompt.clone())),
         );
         write_optional(&mut table, "model", persona.model.clone().map(Value::from));
+        write_optional(
+            &mut table,
+            "tts_model",
+            persona.tts_model.clone().map(Value::from),
+        );
         write_optional(
             &mut table,
             "live2d_model",

@@ -79,15 +79,18 @@ pub(crate) struct ChatServiceRequest {
 /// Client 本身是不可变的 `Send + Sync` 句柄；调用方需要热更新连接配置时应构造新实例并
 /// 替换自己的运行时快照，而不是在网络请求期间持锁。
 pub fn client_from_model(model: &LlmModelConfig) -> Client {
-    build_client(model)
+    build_client(model).unwrap_or_default()
 }
 
 /// 把宿主模型配置解析为 Agent 直接持有的模型标识和单次请求选项。
-pub fn model_and_options_from_config(model: &LlmModelConfig) -> (ModelIden, Option<ChatOptions>) {
-    (
-        ModelIden::new(model.provider, model.model.clone()),
+pub fn model_and_options_from_config(
+    model: &LlmModelConfig,
+) -> Option<(ModelIden, Option<ChatOptions>)> {
+    let provider = model.provider.genai()?;
+    Some((
+        ModelIden::new(provider, model.model.clone()),
         base_chat_options(&model.advanced),
-    )
+    ))
 }
 
 /// 使用调用方持有的 Client 执行一次完整流式请求。
@@ -373,10 +376,11 @@ pub(super) fn base_chat_options(advanced: &LlmAdvancedOptions) -> Option<ChatOpt
 }
 
 /// 构建 Provider client；内部会同步加载系统代理与 CA 存储，只能在后台任务中调用。
-fn build_client(model: &LlmModelConfig) -> Client {
+fn build_client(model: &LlmModelConfig) -> Option<Client> {
+    let provider = model.provider.genai()?;
     let auth = auth_data(model);
     let mut builder = Client::builder()
-        .with_adapter_kind(model.provider)
+        .with_adapter_kind(provider)
         .with_auth_resolver_fn(move |_| Ok(Some(auth.clone())))
         .with_web_config(WebConfig {
             timeout: None,
@@ -392,7 +396,7 @@ fn build_client(model: &LlmModelConfig) -> Client {
                 Ok(target)
             });
     }
-    builder.build()
+    Some(builder.build())
 }
 
 pub(super) const fn provider_supports_binary_and_tools(provider: LlmProvider) -> bool {

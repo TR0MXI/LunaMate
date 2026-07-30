@@ -1,12 +1,12 @@
 //! 解析并写回 Agent crate 拥有的语言模型配置。
 
-use std::collections::HashSet;
+use std::{collections::HashSet, path::PathBuf};
 
 #[cfg(test)]
 use lunamate_agent::config::LlmProvider;
 use lunamate_agent::config::{
-    AppLanguage, LlmAdvancedOptions, LlmModelConfig, LlmSettings, llm_provider_from_id,
-    llm_provider_id, reasoning_budget, reasoning_effort_from_id, reasoning_effort_id,
+    AppLanguage, LlmAdvancedOptions, LlmModelConfig, LlmSettings, ModelKind, ModelProvider,
+    reasoning_budget, reasoning_effort_from_id, reasoning_effort_id,
 };
 use rust_i18n::t;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
@@ -41,6 +41,19 @@ pub(super) fn parse_llm_settings(
                     "config.error.expected_string_ignored",
                     locale = language.id(),
                     field = "llm.selected"
+                )
+                .to_string(),
+            ),
+        }
+    }
+    if let Some(selected) = llm.get("selected_transcription") {
+        match selected.as_str() {
+            Some(selected) => settings.selected_transcription_model = Some(selected.to_owned()),
+            None => warnings.push(
+                t!(
+                    "config.error.expected_string_ignored",
+                    locale = language.id(),
+                    field = "llm.selected_transcription"
                 )
                 .to_string(),
             ),
@@ -113,8 +126,15 @@ pub(super) fn parse_llm_settings(
         .selected_model
         .map(|selected| selected.trim().to_owned())
         .filter(|selected| !selected.is_empty());
+    settings.selected_transcription_model = settings
+        .selected_transcription_model
+        .map(|selected| selected.trim().to_owned())
+        .filter(|selected| !selected.is_empty());
     if let Some(selected) = settings.selected_model.as_deref()
-        && !settings.models.iter().any(|model| model.id == selected)
+        && !settings
+            .models
+            .iter()
+            .any(|model| model.id == selected && model.kind == ModelKind::ChatCompletions)
     {
         warnings.push(
             t!(
@@ -130,6 +150,27 @@ pub(super) fn parse_llm_settings(
             .to_string(),
         );
         settings.selected_model = None;
+    }
+    if let Some(selected) = settings.selected_transcription_model.as_deref()
+        && !settings
+            .models
+            .iter()
+            .any(|model| model.id == selected && model.kind == ModelKind::Transcription)
+    {
+        warnings.push(
+            t!(
+                "config.error.entry_ignored",
+                locale = language.id(),
+                entry = "llm.selected_transcription",
+                error = t!(
+                    "llm.error.missing_selected_transcription",
+                    locale = language.id(),
+                    id = selected
+                )
+            )
+            .to_string(),
+        );
+        settings.selected_transcription_model = None;
     }
     settings
 }
@@ -154,8 +195,19 @@ fn parse_llm_model(
                 )
             })
     };
+    let kind_id = required("kind")?;
+    let kind = ModelKind::from_id(&kind_id).ok_or_else(|| {
+        ConfigWriteError::InvalidValue(
+            t!(
+                "llm.error.unknown_kind",
+                locale = language.id(),
+                kind = kind_id
+            )
+            .to_string(),
+        )
+    })?;
     let provider_id = required("provider")?;
-    let provider = llm_provider_from_id(&provider_id).ok_or_else(|| {
+    let provider = ModelProvider::from_id(&provider_id).ok_or_else(|| {
         ConfigWriteError::InvalidValue(
             t!(
                 "llm.error.unknown_provider",
@@ -166,13 +218,32 @@ fn parse_llm_model(
         )
     })?;
     let optional = |key: &str| table.get(key).and_then(Item::as_str).map(str::to_owned);
+    let use_gpu = match table.get("use_gpu") {
+        None => false,
+        Some(item) => item.as_bool().ok_or_else(|| {
+            ConfigWriteError::InvalidValue(
+                t!(
+                    "config.error.expected_boolean",
+                    locale = language.id(),
+                    field = "use_gpu"
+                )
+                .to_string(),
+            )
+        })?,
+    };
     Ok(LlmModelConfig {
         id: required("id")?,
         label: required("label")?,
+        kind,
         provider,
-        model: required("model")?,
+        model: optional("model").unwrap_or_default(),
         endpoint: optional("endpoint"),
         api_key: optional("api_key"),
+        app_id: optional("app_id"),
+        voice: optional("voice"),
+        local_path: optional("local_path").map(PathBuf::from),
+        use_gpu,
+        whisper_language: optional("whisper_language"),
         advanced: parse_advanced_options(table, language)?,
     })
 }
@@ -266,6 +337,13 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
         ),
         None => remove_key(document, "llm", "selected"),
     }
+    match &settings.selected_transcription_model {
+        Some(selected) => set_item_value(
+            &mut document["llm"]["selected_transcription"],
+            Value::from(selected.clone()),
+        ),
+        None => remove_key(document, "llm", "selected_transcription"),
+    }
     let existing_models = document
         .get("llm")
         .and_then(|llm| llm.get("models"))
@@ -281,10 +359,8 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
             .unwrap_or_else(Table::new);
         set_item_value(&mut table["id"], Value::from(model.id.clone()));
         set_item_value(&mut table["label"], Value::from(model.label.clone()));
-        set_item_value(
-            &mut table["provider"],
-            Value::from(llm_provider_id(model.provider)),
-        );
+        set_item_value(&mut table["kind"], Value::from(model.kind.id()));
+        set_item_value(&mut table["provider"], Value::from(model.provider.id()));
         set_item_value(&mut table["model"], Value::from(model.model.clone()));
         write_optional(
             &mut table,
@@ -295,6 +371,26 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
             &mut table,
             "api_key",
             model.api_key.clone().map(Value::from),
+        );
+        write_optional(&mut table, "app_id", model.app_id.clone().map(Value::from));
+        write_optional(&mut table, "voice", model.voice.clone().map(Value::from));
+        write_optional(
+            &mut table,
+            "local_path",
+            model
+                .local_path
+                .as_ref()
+                .map(|path| Value::from(path.to_string_lossy().into_owned())),
+        );
+        write_optional(
+            &mut table,
+            "use_gpu",
+            (model.provider == ModelProvider::LocalWhisper).then_some(Value::from(model.use_gpu)),
+        );
+        write_optional(
+            &mut table,
+            "whisper_language",
+            model.whisper_language.clone().map(Value::from),
         );
         write_advanced_options(&mut table, &model.advanced);
         models.push(table);

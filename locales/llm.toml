@@ -1,5 +1,77 @@
 _version = 2
 
+[llm.chat_completions]
+"zh-CN" = "对话补全"
+"zh-TW" = "對話補全"
+"en" = "Chat Completions"
+"ja" = "チャット補完"
+
+[llm.speech_synthesis]
+"zh-CN" = "语音合成"
+"zh-TW" = "語音合成"
+"en" = "Speech Synthesis"
+"ja" = "音声合成"
+
+[llm.transcription]
+"zh-CN" = "语音转写"
+"zh-TW" = "語音轉寫"
+"en" = "Transcription"
+"ja" = "音声文字起こし"
+
+[llm.selected_transcription]
+"zh-CN" = "当前 Transcription 模型"
+"zh-TW" = "目前 Transcription 模型"
+"en" = "Selected transcription model"
+"ja" = "選択中の文字起こしモデル"
+
+[llm.gpu_acceleration]
+"zh-CN" = "GPU 加速"
+"zh-TW" = "GPU 加速"
+"en" = "GPU acceleration"
+"ja" = "GPU アクセラレーション"
+
+[llm.whisper_language]
+"zh-CN" = "目标语言"
+"zh-TW" = "目標語言"
+"en" = "Target language"
+"ja" = "対象言語"
+
+[llm.whisper_language_default]
+"zh-CN" = "默认（自动识别）"
+"zh-TW" = "預設（自動識別）"
+"en" = "Default (auto-detect)"
+"ja" = "デフォルト（自動検出）"
+
+[llm.whisper_language_search]
+"zh-CN" = "搜索语言或语言代码"
+"zh-TW" = "搜尋語言或語言代碼"
+"en" = "Search languages or codes"
+"ja" = "言語または言語コードを検索"
+
+[llm.whisper_language_hint]
+"zh-CN" = "已知音频语种时指定目标语言，可减少语言识别歧义并提高转写准确率。"
+"zh-TW" = "已知音訊語種時指定目標語言，可減少語言識別歧義並提高轉寫準確率。"
+"en" = "When the spoken language is known, selecting it reduces language-detection ambiguity and can improve transcription accuracy."
+"ja" = "音声の言語が分かっている場合は指定することで、言語検出の曖昧さを減らし文字起こし精度を高められます。"
+
+[llm.app_id]
+"zh-CN" = "App ID"
+"zh-TW" = "App ID"
+"en" = "App ID"
+"ja" = "App ID"
+
+[llm.voice_id]
+"zh-CN" = "Voice ID"
+"zh-TW" = "Voice ID"
+"en" = "Voice ID"
+"ja" = "Voice ID"
+
+[llm.local_model_path]
+"zh-CN" = "本地模型路径"
+"zh-TW" = "本機模型路徑"
+"en" = "Local model path"
+"ja" = "ローカルモデルパス"
+
 [llm.language_models]
 "zh-CN" = "语言模型  %{count}"
 "zh-TW" = "語言模型  %{count}"
@@ -19,10 +91,10 @@ _version = 2
 "ja" = "モデルを追加"
 
 [llm.none]
-"zh-CN" = "尚未添加语言模型"
-"zh-TW" = "尚未新增語言模型"
-"en" = "No language models added"
-"ja" = "言語モデルが追加されていません"
+"zh-CN" = "此类别尚未添加模型"
+"zh-TW" = "此類別尚未新增模型"
+"en" = "No models in this category"
+"ja" = "このカテゴリにはモデルがありません"
 
 [llm.no_model_selected]
 "zh-CN" = "未选择语言模型"
@@ -145,16 +217,16 @@ _version = 2
 "ja" = "モデル下書きを削除しました"
 
 [llm.saving]
-"zh-CN" = "正在保存对话配置"
-"zh-TW" = "正在儲存對話設定"
-"en" = "Saving conversation settings"
-"ja" = "会話設定を保存しています"
+"zh-CN" = "正在保存模型配置"
+"zh-TW" = "正在儲存模型設定"
+"en" = "Saving model settings"
+"ja" = "モデル設定を保存しています"
 
 [llm.saved]
-"zh-CN" = "对话配置已保存"
-"zh-TW" = "對話設定已儲存"
-"en" = "Conversation settings saved"
-"ja" = "会話設定を保存しました"
+"zh-CN" = "模型配置已保存"
+"zh-TW" = "模型設定已儲存"
+"en" = "Model settings saved"
+"ja" = "モデル設定を保存しました"
 
 [llm.save_replaced]
 "zh-CN" = "保存请求已被更新草稿替代"
@@ -163,10 +235,10 @@ _version = 2
 "ja" = "保存は新しい下書きに置き換えられました"
 
 [llm.save_failed]
-"zh-CN" = "对话配置保存失败：%{error}"
-"zh-TW" = "對話設定儲存失敗：%{error}"
-"en" = "Could not save conversation settings: %{error}"
-"ja" = "会話設定を保存できませんでした: %{error}"
+"zh-CN" = "模型配置保存失败：%{error}"
+"zh-TW" = "模型設定儲存失敗：%{error}"
+"en" = "Could not save model settings: %{error}"
+"ja" = "モデル設定を保存できませんでした: %{error}"
 
 [llm.error.required]
 "zh-CN" = "%{field}不能为空"
@@ -175,10 +247,10 @@ _version = 2
 "ja" = "%{field}を空にすることはできません"
 
 [llm.error.max_models]
-"zh-CN" = "语言模型数量不能超过 %{max}"
-"zh-TW" = "語言模型數量不能超過 %{max}"
-"en" = "The number of language models cannot exceed %{max}"
-"ja" = "言語モデルは %{max} 件以内にしてください"
+"zh-CN" = "模型配置数量不能超过 %{max}"
+"zh-TW" = "模型設定數量不能超過 %{max}"
+"en" = "The number of model configurations cannot exceed %{max}"
+"ja" = "モデル設定は %{max} 件以内にしてください"
 
 [llm.error.system_prompt_too_long]
 "zh-CN" = "系统提示词不能超过 %{max} 个 UTF-8 字节"
@@ -215,6 +287,12 @@ _version = 2
 "zh-TW" = "未知 Provider：%{provider}"
 "en" = "Unknown Provider: %{provider}"
 "ja" = "不明な Provider です：%{provider}"
+
+[llm.error.unknown_kind]
+"zh-CN" = "未知模型能力：%{kind}"
+"zh-TW" = "未知模型能力：%{kind}"
+"en" = "Unknown model capability: %{kind}"
+"ja" = "不明なモデル機能です：%{kind}"
 
 [llm.error.unknown_reasoning_effort]
 "zh-CN" = "未知思考强度：%{effort}"
@@ -389,3 +467,15 @@ _version = 2
 "zh-TW" = "模型上下文視窗 %{context} token 扣除輸出上限 %{output} token 後，必須保留本機請求餘量和至少一輪訊息空間"
 "en" = "After reserving the %{output}-token output limit, the %{context}-token model window must leave local request overhead and room for one turn"
 "ja" = "%{context} トークンのモデルウィンドウは %{output} トークンの出力上限を確保した後、ローカル要求の余裕と 1 ターン分の領域を残す必要があります"
+
+[llm.error.missing_selected_transcription]
+"zh-CN" = "当前 Transcription 模型不存在：%{id}"
+"zh-TW" = "目前 Transcription 模型不存在：%{id}"
+"en" = "Selected transcription model does not exist: %{id}"
+"ja" = "選択した文字起こしモデルが存在しません: %{id}"
+
+[llm.error.whisper_language]
+"zh-CN" = "Whisper 不支持目标语言：%{language}"
+"zh-TW" = "Whisper 不支援目標語言：%{language}"
+"en" = "Whisper does not support the target language: %{language}"
+"ja" = "Whisper は対象言語をサポートしていません: %{language}"

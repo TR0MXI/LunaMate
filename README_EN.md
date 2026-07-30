@@ -81,8 +81,9 @@ using parameter IDs from another model may parse successfully without producing 
 ## Voice Input
 
 Voice input is disabled by default. Silero VAD v6.2.0 is embedded in LunaMate and is used
-automatically when automatic mode is enabled. Only a whisper.cpp GGML Whisper model needs to be
-selected on the Voice settings page.
+automatically when automatic mode is enabled. Add and select a Transcription model in the STT
+model list; the Voice settings page controls only the recording mode. Local transcription uses a
+whisper.cpp GGML model.
 
 Automatic mode continuously listens and submits an utterance after VAD detects its endpoint. It
 also lets the global Voice Input shortcut take over the current candidate or active recording;
@@ -104,9 +105,10 @@ normally installed with the GPU driver or system Vulkan package. CUDA, ROCm, and
 included because they link vendor SDK runtimes directly and would prevent one binary from running
 on systems where those runtimes are absent.
 
-When GPU acceleration is enabled in settings, Whisper first attempts Metal or Vulkan and falls
-back to CPU after an initialization or inference failure. Silero VAD remains on CPU because
-whisper.cpp 1.8.3 currently forces that backend.
+Each local Whisper model has its own GPU preference and target language. The default language uses
+automatic detection. When enabled, Whisper first attempts Metal or Vulkan and falls back to CPU
+after an initialization or inference failure. Silero VAD remains on CPU because whisper.cpp 1.8.3
+currently forces that backend.
 
 ## License
 

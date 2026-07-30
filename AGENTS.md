@@ -47,6 +47,13 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
   根包配置或数据库。`Agent` 及其运行时输入、快照和关键消息类型由 crate 根门面提供，配置、
   媒体、记忆、持久化和工具领域保留命名模块；Provider 执行、session 状态机和 store 协调器是
   私有实现，不得向宿主泄漏。
+- `genai` 只负责 Chat Completions。云端 Transcription 与 Speech Synthesis 分别通过
+  `lunamate-agent` 的 `stt`、`tts` 门面执行，Provider 协议细节保持私有；宿主只传入经过校验的
+  模型配置与有界 PCM/文本，并接收文本或统一 24 kHz PCM。本地 Whisper 推理继续属于根语音层，
+  TTS 设备播放继续属于根音频层，两者不得把 Provider 请求带入实时采集或播放回调。
+- Transcription 运行时模型由模型目录的 STT 选中项唯一决定，语音配置只保存录音模式；本地
+  Whisper 的 GPU 偏好与目标语言属于各自模型条目，目标语言缺省时必须向 whisper-rs 传入
+  `None` 以启用自动语种识别。
 - `Agent` 直接组合可热更新的 `genai::Client`、`ModelIden`、`ChatOptions`、system prompt 与
   `AgentMemory`。Client 并发使用不加锁，运行时替换通过短持有的统一 `RwLock` 发布，请求启动后
   使用自己的不可变 clone，任何同步锁不得跨网络、工具或持久化 `await`。

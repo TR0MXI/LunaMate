@@ -25,8 +25,8 @@ use gpui_component::{
 use gpui_tokio::Tokio;
 use lunamate_agent::config::{
     AppLanguage, CONTEXT_MESSAGES_MAX, CONTEXT_MESSAGES_MIN, CONTEXT_TOKENS_MAX,
-    CONTEXT_TOKENS_MIN, PersonaConfig, PersonaContextLimits, PersonaSettings, SharedLlmSettings,
-    SharedPersonaSettings,
+    CONTEXT_TOKENS_MIN, ModelKind, PersonaConfig, PersonaContextLimits, PersonaSettings,
+    SharedLlmSettings, SharedPersonaSettings,
 };
 use lunamate_agent::memory::{
     ContextMessage, ContextUsage, PersistentMemoryScope, PersonaMemoryUsage,
@@ -235,6 +235,7 @@ pub(in crate::ui) struct PersonaSettingsView {
     system_prompt_input: Entity<InputState>,
     input_prompt_input: Entity<InputState>,
     provider_select: Entity<SelectState<Vec<SharedString>>>,
+    tts_select: Entity<SelectState<Vec<SharedString>>>,
     live2d_select: Entity<SelectState<Vec<SharedString>>>,
     live2d_models: Vec<Live2dModelOption>,
     missing_live2d_model: Option<PathBuf>,
@@ -388,10 +389,24 @@ impl PersonaSettingsView {
         });
         let provider_select = cx.new(|cx| {
             SelectState::new(
-                provider_option_names(&providers),
-                Some(IndexPath::new(provider_option_index(
+                model_option_names(&providers, ModelKind::ChatCompletions),
+                Some(IndexPath::new(model_option_index(
                     &providers,
+                    ModelKind::ChatCompletions,
                     editing.and_then(|persona| persona.model.as_deref()),
+                ))),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let tts_select = cx.new(|cx| {
+            SelectState::new(
+                model_option_names(&providers, ModelKind::SpeechSynthesis),
+                Some(IndexPath::new(model_option_index(
+                    &providers,
+                    ModelKind::SpeechSynthesis,
+                    editing.and_then(|persona| persona.tts_model.as_deref()),
                 ))),
                 window,
                 cx,
@@ -428,6 +443,7 @@ impl PersonaSettingsView {
             system_prompt_input,
             input_prompt_input,
             provider_select,
+            tts_select,
             live2d_select,
             live2d_models,
             missing_live2d_model,
@@ -479,6 +495,12 @@ impl PersonaSettingsView {
                 },
             ),
             cx.subscribe(
+                &view.tts_select,
+                |this, _, _: &SelectEvent<Vec<SharedString>>, cx| {
+                    this.save(cx);
+                },
+            ),
+            cx.subscribe(
                 &view.live2d_select,
                 |this, _, _: &SelectEvent<Vec<SharedString>>, cx| {
                     this.save(cx);
@@ -517,12 +539,30 @@ impl PersonaSettingsView {
             .editing_index
             .and_then(|index| self.draft.personas.get(index))
             .and_then(|persona| persona.model.clone());
-        let names = provider_option_names(&self.providers);
-        let index = provider_option_index(&self.providers, bound.as_deref());
+        let tts_bound = self
+            .editing_index
+            .and_then(|index| self.draft.personas.get(index))
+            .and_then(|persona| persona.tts_model.clone());
+        let names = model_option_names(&self.providers, ModelKind::ChatCompletions);
+        let index = model_option_index(
+            &self.providers,
+            ModelKind::ChatCompletions,
+            bound.as_deref(),
+        );
+        let tts_names = model_option_names(&self.providers, ModelKind::SpeechSynthesis);
+        let tts_index = model_option_index(
+            &self.providers,
+            ModelKind::SpeechSynthesis,
+            tts_bound.as_deref(),
+        );
         self.loading_form = true;
         self.provider_select.update(cx, |select, cx| {
             select.set_items(names, window, cx);
             select.set_selected_index(Some(IndexPath::new(index)), window, cx);
+        });
+        self.tts_select.update(cx, |select, cx| {
+            select.set_items(tts_names, window, cx);
+            select.set_selected_index(Some(IndexPath::new(tts_index)), window, cx);
         });
         self.loading_form = false;
         if self.active_page == PersonaPage::Context {
@@ -584,6 +624,7 @@ impl PersonaSettingsView {
             return;
         };
         let bound = self.selected_provider_id(cx);
+        let tts_model = self.selected_tts_model_id(cx);
         let live2d_model = self.selected_live2d_model(cx);
         let context = self.capture_context_limits(cx);
         let Some(persona) = self.draft.personas.get_mut(index) else {
@@ -593,6 +634,7 @@ impl PersonaSettingsView {
         persona.system_prompt = self.system_prompt_input.read(cx).value().to_string();
         persona.input_prompt = self.input_prompt_input.read(cx).value().to_string();
         persona.model = bound;
+        persona.tts_model = tts_model;
         persona.live2d_model = live2d_model;
         persona.context = context;
     }
@@ -610,9 +652,16 @@ impl PersonaSettingsView {
             .read(cx)
             .selected_index(cx)
             .map_or(0, |index| index.row);
-        row.checked_sub(1)
-            .and_then(|index| self.providers.models.get(index))
-            .map(|model| model.id.clone())
+        model_option_id(&self.providers, ModelKind::ChatCompletions, row)
+    }
+
+    fn selected_tts_model_id(&self, cx: &Context<Self>) -> Option<String> {
+        let row = self
+            .tts_select
+            .read(cx)
+            .selected_index(cx)
+            .map_or(0, |index| index.row);
+        model_option_id(&self.providers, ModelKind::SpeechSynthesis, row)
     }
 
     fn selected_live2d_model(&self, cx: &Context<Self>) -> Option<PathBuf> {
@@ -636,6 +685,7 @@ impl PersonaSettingsView {
         let persona = index.and_then(|index| self.draft.personas.get(index));
         let context = persona.map(|persona| persona.context).unwrap_or_default();
         let bound = persona.and_then(|persona| persona.model.clone());
+        let tts_bound = persona.and_then(|persona| persona.tts_model.clone());
         set_input(
             &self.name_input,
             persona
@@ -660,9 +710,21 @@ impl PersonaSettingsView {
             window,
             cx,
         );
-        let provider_index = provider_option_index(&self.providers, bound.as_deref());
+        let provider_index = model_option_index(
+            &self.providers,
+            ModelKind::ChatCompletions,
+            bound.as_deref(),
+        );
         self.provider_select.update(cx, |select, cx| {
             select.set_selected_index(Some(IndexPath::new(provider_index)), window, cx);
+        });
+        let tts_index = model_option_index(
+            &self.providers,
+            ModelKind::SpeechSynthesis,
+            tts_bound.as_deref(),
+        );
+        self.tts_select.update(cx, |select, cx| {
+            select.set_selected_index(Some(IndexPath::new(tts_index)), window, cx);
         });
         let (live2d_names, live2d_index, missing_live2d_model) = live2d_option_state(
             &self.live2d_models,
@@ -1710,6 +1772,7 @@ impl PersonaSettingsView {
             system_prompt: &self.system_prompt_input,
             input_prompt: &self.input_prompt_input,
             provider: &self.provider_select,
+            tts: &self.tts_select,
             live2d: &self.live2d_select,
             context_messages: &self.context_messages_input,
             context_tokens: &self.context_tokens_input,
@@ -2199,6 +2262,7 @@ pub(super) struct PersonaFormInputs<'a> {
     pub(super) system_prompt: &'a Entity<InputState>,
     pub(super) input_prompt: &'a Entity<InputState>,
     pub(super) provider: &'a Entity<SelectState<Vec<SharedString>>>,
+    pub(super) tts: &'a Entity<SelectState<Vec<SharedString>>>,
     pub(super) live2d: &'a Entity<SelectState<Vec<SharedString>>>,
     pub(super) context_messages: &'a Entity<InputState>,
     pub(super) context_tokens: &'a Entity<InputState>,
@@ -2224,13 +2288,17 @@ pub(super) fn memory_scope_name(scope: MemoryScope) -> String {
     }
 }
 
-fn provider_option_names(providers: &SharedLlmSettings) -> Vec<SharedString> {
+fn model_option_names(providers: &SharedLlmSettings, kind: ModelKind) -> Vec<SharedString> {
     let mut names = Vec::with_capacity(providers.models.len() + 1);
     names.push(SharedString::from(format!(
         "{BOUND_PROVIDER_INHERIT} {}",
-        t!("persona.provider_inherit")
+        if kind == ModelKind::ChatCompletions {
+            t!("persona.provider_inherit")
+        } else {
+            t!("persona.tts_disabled")
+        }
     )));
-    for model in &providers.models {
+    for model in providers.models.iter().filter(|model| model.kind == kind) {
         names.push(SharedString::from(format!(
             "{} · {}",
             model.label,
@@ -2240,10 +2308,32 @@ fn provider_option_names(providers: &SharedLlmSettings) -> Vec<SharedString> {
     names
 }
 
-fn provider_option_index(providers: &SharedLlmSettings, bound: Option<&str>) -> usize {
+fn model_option_index(
+    providers: &SharedLlmSettings,
+    kind: ModelKind,
+    bound: Option<&str>,
+) -> usize {
     bound
-        .and_then(|id| providers.models.iter().position(|model| model.id == id))
+        .and_then(|id| {
+            providers
+                .models
+                .iter()
+                .filter(|model| model.kind == kind)
+                .position(|model| model.id == id)
+        })
         .map_or(0, |index| index + 1)
+}
+
+fn model_option_id(providers: &SharedLlmSettings, kind: ModelKind, row: usize) -> Option<String> {
+    row.checked_sub(1)
+        .and_then(|index| {
+            providers
+                .models
+                .iter()
+                .filter(|model| model.kind == kind)
+                .nth(index)
+        })
+        .map(|model| model.id.clone())
 }
 
 fn live2d_option_state(
@@ -2341,5 +2431,13 @@ pub(crate) fn provider_option_index_for_test(
     providers: &SharedLlmSettings,
     bound: Option<&str>,
 ) -> usize {
-    provider_option_index(providers, bound)
+    model_option_index(providers, ModelKind::ChatCompletions, bound)
+}
+
+#[cfg(test)]
+pub(crate) fn tts_model_option_index_for_test(
+    providers: &SharedLlmSettings,
+    bound: Option<&str>,
+) -> usize {
+    model_option_index(providers, ModelKind::SpeechSynthesis, bound)
 }

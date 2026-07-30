@@ -2,17 +2,25 @@
 
 use std::{sync::Arc, time::Duration};
 
-use gpui::{AppContext, Context, Entity, EventEmitter, SharedString, Task, Window};
-use gpui_component::{IndexPath, input::InputState, select::SelectState};
+use gpui::{
+    AppContext, Context, Entity, EventEmitter, PathPromptOptions, SharedString, Subscription, Task,
+    Window,
+};
+use gpui_component::{
+    IndexPath,
+    input::{InputEvent, InputState},
+    select::{SelectEvent, SelectState},
+};
 use rust_i18n::t;
 
 use lunamate_agent::config::{
     DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MODEL_CONTEXT_TOKENS, DEFAULT_REASONING_BUDGET,
     DEFAULT_TEMPERATURE, DEFAULT_TOP_P, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig,
     LlmProvider, LlmSettings, MAX_OUTPUT_TOKENS_MAX, MAX_OUTPUT_TOKENS_MIN,
-    MODEL_CONTEXT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MIN, REASONING_BUDGET_MAX, REASONING_BUDGET_MIN,
-    REASONING_EFFORT_LEVELS, ReasoningEffort, SharedLlmSettings, TEMPERATURE_MAX, TEMPERATURE_MIN,
-    TOP_P_MAX, TOP_P_MIN, reasoning_budget,
+    MODEL_CONTEXT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MIN, ModelKind, ModelProvider,
+    REASONING_BUDGET_MAX, REASONING_BUDGET_MIN, REASONING_EFFORT_LEVELS, ReasoningEffort,
+    SharedLlmSettings, TEMPERATURE_MAX, TEMPERATURE_MIN, TOP_P_MAX, TOP_P_MIN,
+    WHISPER_LANGUAGE_CODES, WHISPER_LANGUAGE_NAMES, reasoning_budget,
 };
 
 use crate::config::CONFIG;
@@ -56,11 +64,16 @@ pub(in crate::ui) enum ProviderSettingsEvent {
 /// 设置窗口中的供应商编辑器。
 pub(in crate::ui) struct ProviderSettingsView {
     draft: LlmSettings,
+    active_kind: ModelKind,
     editing_index: Option<usize>,
     label_input: Entity<InputState>,
     model_input: Entity<InputState>,
     endpoint_input: Entity<InputState>,
     api_key_input: Entity<InputState>,
+    app_id_input: Entity<InputState>,
+    voice_input: Entity<InputState>,
+    local_path_input: Entity<InputState>,
+    whisper_language_select: Entity<SelectState<Vec<SharedString>>>,
     provider_select: Entity<SelectState<Vec<SharedString>>>,
     reasoning_select: Entity<SelectState<Vec<SharedString>>>,
     reasoning_budget_input: Entity<InputState>,
@@ -72,11 +85,18 @@ pub(in crate::ui) struct ProviderSettingsView {
     max_output_tokens_enabled: bool,
     temperature_enabled: bool,
     top_p_enabled: bool,
+    use_gpu: bool,
     pub(super) advanced_expanded: bool,
     status: Option<String>,
-    is_saving: bool,
+    loading_form: bool,
+    submitted_draft: LlmSettings,
+    save_revision: u64,
+    config_writes_in_flight: usize,
     toast_revision: u64,
     toast_task: Option<Task<()>>,
+    picker_revision: u64,
+    picker_task: Option<Task<()>>,
+    form_subscriptions: Vec<Subscription>,
     write_tasks: Vec<Task<()>>,
 }
 
@@ -84,6 +104,26 @@ impl ProviderSettingsView {
     /// 从当前运行时配置创建可丢弃的设置草稿。
     pub(in crate::ui) fn new(
         draft: ProviderSettingsDraft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let submitted_draft = CONFIG.llm_settings().as_ref().clone();
+        Self::new_with_submitted(draft, submitted_draft, window, cx)
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn new_for_test(
+        draft: ProviderSettingsDraft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let submitted_draft = draft.settings.as_ref().clone();
+        Self::new_with_submitted(draft, submitted_draft, window, cx)
+    }
+
+    fn new_with_submitted(
+        draft: ProviderSettingsDraft,
+        submitted_draft: LlmSettings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -96,23 +136,38 @@ impl ProviderSettingsView {
         .detach();
         let ProviderSettingsDraft { settings } = draft;
         let draft = settings.as_ref().clone();
+        let active_kind = draft
+            .selected()
+            .map(|model| model.kind)
+            .or_else(|| draft.selected_transcription().map(|model| model.kind))
+            .unwrap_or(ModelKind::ChatCompletions);
         let editing_index = draft
-            .selected_model
-            .as_deref()
-            .and_then(|selected| draft.models.iter().position(|model| model.id == selected))
-            .or_else(|| (!draft.models.is_empty()).then_some(0));
+            .selected_model_id(active_kind)
+            .and_then(|selected| {
+                draft
+                    .models
+                    .iter()
+                    .position(|model| model.id == selected && model.kind == active_kind)
+            })
+            .or_else(|| {
+                draft
+                    .models
+                    .iter()
+                    .position(|model| model.kind == active_kind)
+            });
         let editing_model = editing_index.and_then(|index| draft.models.get(index));
         let provider = editing_model
             .map(|model| model.provider)
-            .unwrap_or(LlmProvider::Ollama);
+            .unwrap_or(ModelProvider::Genai(LlmProvider::Ollama));
         let advanced = editing_model
             .map(|model| model.advanced.clone())
             .unwrap_or_default();
-        let provider_names = LLM_PROVIDERS
+        let use_gpu = editing_model.is_some_and(|model| model.use_gpu);
+        let provider_names = model_provider_options(active_kind)
             .into_iter()
             .map(|provider| SharedString::from(provider_display_name(provider)))
             .collect::<Vec<_>>();
-        let provider_index = LLM_PROVIDERS
+        let provider_index = model_provider_options(active_kind)
             .iter()
             .position(|candidate| *candidate == provider)
             .map(IndexPath::new);
@@ -153,6 +208,45 @@ impl ProviderSettingsView {
                         .and_then(|model| model.api_key.as_deref())
                         .unwrap_or_default(),
                 )
+        });
+        let app_id_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("豆包 App ID")
+                .default_value(
+                    editing_model
+                        .and_then(|model| model.app_id.as_deref())
+                        .unwrap_or_default(),
+                )
+        });
+        let voice_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Voice ID")
+                .default_value(
+                    editing_model
+                        .and_then(|model| model.voice.as_deref())
+                        .unwrap_or_default(),
+                )
+        });
+        let local_path_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Whisper GGML 模型路径")
+                .default_value(
+                    editing_model
+                        .and_then(|model| model.local_path.as_deref())
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                )
+        });
+        let whisper_language_select = cx.new(|cx| {
+            SelectState::new(
+                whisper_language_options(),
+                Some(IndexPath::new(whisper_language_index(
+                    editing_model.and_then(|model| model.whisper_language.as_deref()),
+                ))),
+                window,
+                cx,
+            )
+            .searchable(true)
         });
         let provider_select = cx.new(|cx| {
             SelectState::new(provider_names, provider_index, window, cx).searchable(true)
@@ -209,13 +303,18 @@ impl ProviderSettingsView {
                 .default_value(format_ratio(advanced.top_p.unwrap_or(DEFAULT_TOP_P)))
         });
 
-        Self {
+        let mut view = Self {
             draft,
+            active_kind,
             editing_index,
             label_input,
             model_input,
             endpoint_input,
             api_key_input,
+            app_id_input,
+            voice_input,
+            local_path_input,
+            whisper_language_select,
             provider_select,
             reasoning_select,
             reasoning_budget_input,
@@ -227,13 +326,59 @@ impl ProviderSettingsView {
             max_output_tokens_enabled: advanced.max_output_tokens.is_some(),
             temperature_enabled: advanced.temperature.is_some(),
             top_p_enabled: advanced.top_p.is_some(),
+            use_gpu,
             advanced_expanded: false,
             status: None,
-            is_saving: false,
+            loading_form: false,
+            submitted_draft,
+            save_revision: 0,
+            config_writes_in_flight: 0,
             toast_revision: 0,
             toast_task: None,
+            picker_revision: 0,
+            picker_task: None,
+            form_subscriptions: Vec::new(),
             write_tasks: Vec::new(),
-        }
+        };
+        view.form_subscriptions = vec![
+            subscribe_form_input(&view.label_input, window, cx),
+            subscribe_form_input(&view.model_input, window, cx),
+            subscribe_form_input(&view.endpoint_input, window, cx),
+            subscribe_form_input(&view.api_key_input, window, cx),
+            subscribe_form_input(&view.app_id_input, window, cx),
+            subscribe_form_input(&view.voice_input, window, cx),
+            subscribe_form_input(&view.local_path_input, window, cx),
+            subscribe_form_input(&view.reasoning_budget_input, window, cx),
+            subscribe_form_input(&view.context_window_tokens_input, window, cx),
+            subscribe_form_input(&view.max_output_tokens_input, window, cx),
+            subscribe_form_input(&view.temperature_input, window, cx),
+            subscribe_form_input(&view.top_p_input, window, cx),
+            cx.subscribe(
+                &view.provider_select,
+                |this, _, _: &SelectEvent<Vec<SharedString>>, cx| {
+                    if !this.loading_form {
+                        this.save(cx);
+                    }
+                },
+            ),
+            cx.subscribe(
+                &view.reasoning_select,
+                |this, _, _: &SelectEvent<Vec<SharedString>>, cx| {
+                    if !this.loading_form {
+                        this.save(cx);
+                    }
+                },
+            ),
+            cx.subscribe(
+                &view.whisper_language_select,
+                |this, _, _: &SelectEvent<Vec<SharedString>>, cx| {
+                    if !this.loading_form {
+                        this.save(cx);
+                    }
+                },
+            ),
+        ];
+        view
     }
 
     /// 返回当前草稿中的模型 ID 列表，供测试断言增删与选择行为。
@@ -256,6 +401,32 @@ impl ProviderSettingsView {
     #[cfg(test)]
     pub(crate) fn selected_model_for_test(&self) -> Option<&str> {
         self.draft.selected_model.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn selected_transcription_model_for_test(&self) -> Option<&str> {
+        self.draft.selected_transcription_model.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local_whisper_preferences_for_test(
+        &self,
+        cx: &Context<Self>,
+    ) -> (bool, Option<String>) {
+        (
+            self.use_gpu,
+            selected_whisper_language(&self.whisper_language_select, cx),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn active_kind_for_test(&self) -> ModelKind {
+        self.active_kind
+    }
+
+    #[cfg(test)]
+    pub(crate) fn model_kinds_for_test(&self) -> Vec<ModelKind> {
+        self.draft.models.iter().map(|model| model.kind).collect()
     }
 
     /// 返回指定草稿条目的高级参数，供测试断言表单往返一致。
@@ -301,7 +472,7 @@ impl ProviderSettingsView {
     /// 删除当前编辑中的模型条目。
     #[cfg(test)]
     pub(crate) fn delete_model_for_test(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.delete_model(window, cx);
+        self.delete_model_inner(false, window, cx);
     }
 
     /// 切换到指定索引的模型条目。
@@ -312,7 +483,17 @@ impl ProviderSettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_model(index, window, cx);
+        self.select_model_inner(index, false, window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn select_kind_for_test(
+        &mut self,
+        kind: ModelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_kind_inner(kind, false, window, cx);
     }
 
     /// 保存窗口草稿并转移尚未结束的写任务，供关闭后重新创建编辑器。
@@ -320,7 +501,7 @@ impl ProviderSettingsView {
         &mut self,
         cx: &mut Context<Self>,
     ) -> (ProviderSettingsDraft, Vec<Task<()>>) {
-        self.capture_current_form(cx);
+        self.save(cx);
         (
             ProviderSettingsDraft {
                 settings: Arc::new(self.draft.clone()),
@@ -355,22 +536,27 @@ impl ProviderSettingsView {
 
     pub(super) fn toggle_max_output_tokens(&mut self, cx: &mut Context<Self>) {
         self.max_output_tokens_enabled = !self.max_output_tokens_enabled;
-        cx.notify();
+        self.save(cx);
     }
 
     pub(super) fn toggle_context_window_tokens(&mut self, cx: &mut Context<Self>) {
         self.context_window_tokens_enabled = !self.context_window_tokens_enabled;
-        cx.notify();
+        self.save(cx);
     }
 
     pub(super) fn toggle_temperature(&mut self, cx: &mut Context<Self>) {
         self.temperature_enabled = !self.temperature_enabled;
-        cx.notify();
+        self.save(cx);
     }
 
     pub(super) fn toggle_top_p(&mut self, cx: &mut Context<Self>) {
         self.top_p_enabled = !self.top_p_enabled;
-        cx.notify();
+        self.save(cx);
+    }
+
+    pub(super) fn toggle_use_gpu(&mut self, cx: &mut Context<Self>) {
+        self.use_gpu = !self.use_gpu;
+        self.save(cx);
     }
 
     /// 返回当前思考强度选择项索引，供渲染层决定是否展示预算输入框。
@@ -390,12 +576,18 @@ impl ProviderSettingsView {
         model.model = self.model_input.read(cx).value().to_string();
         model.endpoint = non_empty(self.endpoint_input.read(cx).value().as_ref());
         model.api_key = non_empty(self.api_key_input.read(cx).value().as_ref());
+        model.app_id = non_empty(self.app_id_input.read(cx).value().as_ref());
+        model.voice = non_empty(self.voice_input.read(cx).value().as_ref());
+        model.local_path = non_empty(self.local_path_input.read(cx).value().as_ref())
+            .map(std::path::PathBuf::from);
+        model.use_gpu = self.use_gpu;
+        model.whisper_language = selected_whisper_language(&self.whisper_language_select, cx);
         model.provider = self
             .provider_select
             .read(cx)
             .selected_value()
-            .and_then(|value| provider_from_display_name(value.as_ref()))
-            .unwrap_or(LlmProvider::Ollama);
+            .and_then(|value| model_provider_from_display_name(model.kind, value.as_ref()))
+            .unwrap_or_else(|| default_provider(model.kind));
         model.advanced = advanced;
     }
 
@@ -435,20 +627,33 @@ impl ProviderSettingsView {
     }
 
     fn load_form(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.loading_form = true;
+        self.picker_revision = self.picker_revision.wrapping_add(1).max(1);
+        self.picker_task = None;
         self.editing_index = index;
         let model = index.and_then(|index| self.draft.models.get(index));
         let provider = model
             .map(|model| model.provider)
-            .unwrap_or(LlmProvider::Ollama);
+            .unwrap_or_else(|| default_provider(self.active_kind));
         let advanced = model
             .map(|model| model.advanced.clone())
             .unwrap_or_default();
+        self.use_gpu = model.is_some_and(|model| model.use_gpu);
         set_input(
             &self.label_input,
             model.map(|model| model.label.as_str()).unwrap_or_default(),
             window,
             cx,
         );
+        self.whisper_language_select.update(cx, |select, cx| {
+            select.set_selected_index(
+                Some(IndexPath::new(whisper_language_index(
+                    model.and_then(|model| model.whisper_language.as_deref()),
+                ))),
+                window,
+                cx,
+            );
+        });
         set_input(
             &self.model_input,
             model.map(|model| model.model.as_str()).unwrap_or_default(),
@@ -471,11 +676,45 @@ impl ProviderSettingsView {
             window,
             cx,
         );
+        set_input(
+            &self.app_id_input,
+            model
+                .and_then(|model| model.app_id.as_deref())
+                .unwrap_or_default(),
+            window,
+            cx,
+        );
+        set_input(
+            &self.voice_input,
+            model
+                .and_then(|model| model.voice.as_deref())
+                .unwrap_or_default(),
+            window,
+            cx,
+        );
+        set_input(
+            &self.local_path_input,
+            &model
+                .and_then(|model| model.local_path.as_deref())
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            window,
+            cx,
+        );
         self.provider_select.update(cx, |select, cx| {
+            select.set_items(
+                model_provider_options(self.active_kind)
+                    .into_iter()
+                    .map(|provider| SharedString::from(provider_display_name(provider)))
+                    .collect(),
+                window,
+                cx,
+            );
             let value = SharedString::from(provider_display_name(provider));
             select.set_selected_value(&value, window, cx);
         });
         self.load_advanced_form(advanced, window, cx);
+        self.loading_form = false;
         cx.notify();
     }
 
@@ -542,61 +781,104 @@ impl ProviderSettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.is_saving {
-            return;
-        }
+        self.select_model_inner(index, true, window, cx);
+    }
+
+    fn select_model_inner(
+        &mut self,
+        index: usize,
+        persist: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.capture_current_form(cx);
         let Some(model) = self.draft.models.get(index) else {
             return;
         };
-        self.draft.selected_model = Some(model.id.clone());
+        if model.kind == ModelKind::ChatCompletions {
+            self.draft.selected_model = Some(model.id.clone());
+        } else if model.kind == ModelKind::Transcription {
+            self.draft.selected_transcription_model = Some(model.id.clone());
+        }
         self.load_form(Some(index), window, cx);
-        cx.notify();
+        if persist {
+            self.save(cx);
+        }
     }
 
     pub(super) fn add_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_saving {
-            return;
-        }
         self.capture_current_form(cx);
         let id = next_model_id(&self.draft);
         let model = LlmModelConfig {
             id: id.clone(),
             label: t!("llm.new_model").to_string(),
-            provider: LlmProvider::Ollama,
+            kind: self.active_kind,
+            provider: default_provider(self.active_kind),
             model: String::new(),
-            endpoint: Some("http://localhost:11434/".to_owned()),
+            endpoint: (self.active_kind == ModelKind::ChatCompletions)
+                .then(|| "http://localhost:11434/".to_owned()),
             api_key: None,
+            app_id: None,
+            voice: (self.active_kind == ModelKind::SpeechSynthesis).then(|| "alloy".to_owned()),
+            local_path: None,
+            use_gpu: false,
+            whisper_language: None,
             advanced: LlmAdvancedOptions::default(),
         };
         self.draft.models.push(model);
-        self.draft.selected_model = Some(id);
+        if self.active_kind == ModelKind::ChatCompletions {
+            self.draft.selected_model = Some(id);
+        } else if self.active_kind == ModelKind::Transcription {
+            self.draft.selected_transcription_model = Some(id);
+        }
         self.load_form(self.draft.models.len().checked_sub(1), window, cx);
         cx.notify();
     }
 
     pub(super) fn delete_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_saving {
-            return;
-        }
+        self.delete_model_inner(true, window, cx);
+    }
+
+    fn delete_model_inner(&mut self, persist: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.editing_index else {
             return;
         };
         if index >= self.draft.models.len() {
             return;
         }
-        self.draft.models.remove(index);
-        let next_index =
-            (!self.draft.models.is_empty()).then(|| index.min(self.draft.models.len() - 1));
-        self.draft.selected_model = next_index
-            .and_then(|index| self.draft.models.get(index))
-            .map(|model| model.id.clone());
+        let removed = self.draft.models.remove(index);
+        let visible_indices = self
+            .draft
+            .models
+            .iter()
+            .enumerate()
+            .filter_map(|(index, model)| (model.kind == self.active_kind).then_some(index))
+            .collect::<Vec<_>>();
+        let next_index = visible_indices
+            .iter()
+            .copied()
+            .find(|candidate| *candidate >= index)
+            .or_else(|| visible_indices.last().copied());
+        if self.draft.selected_model.as_deref() == Some(removed.id.as_str()) {
+            self.draft.selected_model = next_index
+                .and_then(|index| self.draft.models.get(index))
+                .filter(|model| model.kind == ModelKind::ChatCompletions)
+                .map(|model| model.id.clone());
+        }
+        if self.draft.selected_transcription_model.as_deref() == Some(removed.id.as_str()) {
+            self.draft.selected_transcription_model = next_index
+                .and_then(|index| self.draft.models.get(index))
+                .filter(|model| model.kind == ModelKind::Transcription)
+                .map(|model| model.id.clone());
+        }
         self.load_form(next_index, window, cx);
-        cx.notify();
+        if persist {
+            self.save(cx);
+        }
     }
 
     pub(super) fn save(&mut self, cx: &mut Context<Self>) {
-        if self.is_saving {
+        if self.loading_form {
             return;
         }
         self.capture_current_form(cx);
@@ -608,8 +890,14 @@ impl ProviderSettingsView {
                 return;
             }
         };
+        if normalized == self.submitted_draft {
+            return;
+        }
         self.draft = normalized.clone();
-        self.is_saving = true;
+        self.submitted_draft = normalized.clone();
+        self.save_revision = self.save_revision.wrapping_add(1).max(1);
+        let ui_revision = self.save_revision;
+        self.config_writes_in_flight = self.config_writes_in_flight.saturating_add(1);
         let config_revision = CONFIG.reserve_llm_settings_revision();
         self.set_status(t!("llm.saving").to_string(), cx);
         let background = cx.background_executor().clone();
@@ -621,20 +909,34 @@ impl ProviderSettingsView {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.is_saving = false;
-                let (status, event) = match result {
-                    Ok(Some(_)) => (t!("llm.saved").to_string(), ProviderSettingsEvent::Saved),
-                    Ok(None) => (
-                        t!("llm.save_replaced").to_string(),
-                        ProviderSettingsEvent::SaveFinished,
-                    ),
-                    Err(error) => (
-                        t!("llm.save_failed", error = error.to_string()).to_string(),
-                        ProviderSettingsEvent::SaveFinished,
-                    ),
-                };
-                cx.emit(event);
-                this.set_status(status, cx);
+                let latest = this.save_revision == ui_revision;
+                this.config_writes_in_flight = this.config_writes_in_flight.saturating_sub(1);
+                match result {
+                    Ok(Some(_)) => {
+                        cx.emit(ProviderSettingsEvent::Saved);
+                        if latest {
+                            this.set_status(t!("llm.saved").to_string(), cx);
+                        }
+                    }
+                    Ok(None) => {
+                        if latest {
+                            this.submitted_draft = CONFIG.llm_settings().as_ref().clone();
+                            this.set_status(t!("llm.save_replaced").to_string(), cx);
+                        }
+                    }
+                    Err(error) => {
+                        if latest {
+                            this.submitted_draft = CONFIG.llm_settings().as_ref().clone();
+                            this.set_status(
+                                t!("llm.save_failed", error = error.to_string()).to_string(),
+                                cx,
+                            );
+                        }
+                    }
+                }
+                if this.config_writes_in_flight == 0 {
+                    cx.emit(ProviderSettingsEvent::SaveFinished);
+                }
             });
         });
         // 只保留仍在执行的写任务，避免长期打开设置窗口时无界累积句柄。
@@ -646,12 +948,83 @@ impl ProviderSettingsView {
         &self.draft
     }
 
-    pub(super) fn editing_index(&self) -> Option<usize> {
-        self.editing_index
+    pub(super) const fn active_kind(&self) -> ModelKind {
+        self.active_kind
     }
 
-    pub(super) fn is_saving(&self) -> bool {
-        self.is_saving
+    pub(super) fn select_kind(
+        &mut self,
+        kind: ModelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_kind_inner(kind, true, window, cx);
+    }
+
+    fn select_kind_inner(
+        &mut self,
+        kind: ModelKind,
+        persist: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_kind == kind {
+            return;
+        }
+        self.capture_current_form(cx);
+        self.active_kind = kind;
+        let selected = self.draft.selected_model_id(kind);
+        let index = selected
+            .and_then(|selected| {
+                self.draft
+                    .models
+                    .iter()
+                    .position(|model| model.id == selected && model.kind == kind)
+            })
+            .or_else(|| {
+                self.draft
+                    .models
+                    .iter()
+                    .position(|model| model.kind == kind)
+            });
+        self.load_form(index, window, cx);
+        if persist {
+            self.save(cx);
+        }
+    }
+
+    pub(super) fn choose_local_model(&mut self, cx: &mut Context<Self>) {
+        self.picker_revision = self.picker_revision.wrapping_add(1).max(1);
+        let revision = self.picker_revision;
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择 Whisper GGML 模型".into()),
+        });
+        let input = self.local_path_input.clone();
+        self.picker_task = Some(cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = paths.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.picker_revision != revision {
+                    return;
+                }
+                input.update(cx, |input, cx| {
+                    input.set_value(path.to_string_lossy().into_owned(), window, cx)
+                });
+                this.capture_current_form(cx);
+                this.save(cx);
+            });
+        }));
+    }
+
+    pub(super) fn editing_index(&self) -> Option<usize> {
+        self.editing_index
     }
 
     pub(super) fn status(&self) -> Option<&str> {
@@ -664,6 +1037,10 @@ impl ProviderSettingsView {
             model: &self.model_input,
             endpoint: &self.endpoint_input,
             api_key: &self.api_key_input,
+            app_id: &self.app_id_input,
+            voice: &self.voice_input,
+            local_path: &self.local_path_input,
+            whisper_language: &self.whisper_language_select,
             provider: &self.provider_select,
             reasoning: &self.reasoning_select,
             reasoning_budget: &self.reasoning_budget_input,
@@ -674,6 +1051,14 @@ impl ProviderSettingsView {
         }
     }
 
+    pub(super) fn selected_provider(&self, cx: &Context<Self>) -> ModelProvider {
+        self.provider_select
+            .read(cx)
+            .selected_value()
+            .and_then(|value| model_provider_from_display_name(self.active_kind, value.as_ref()))
+            .unwrap_or_else(|| default_provider(self.active_kind))
+    }
+
     pub(super) const fn advanced_toggles(&self) -> [bool; 4] {
         [
             self.context_window_tokens_enabled,
@@ -682,6 +1067,22 @@ impl ProviderSettingsView {
             self.top_p_enabled,
         ]
     }
+
+    pub(super) const fn use_gpu(&self) -> bool {
+        self.use_gpu
+    }
+}
+
+fn subscribe_form_input(
+    input: &Entity<InputState>,
+    window: &mut Window,
+    cx: &mut Context<ProviderSettingsView>,
+) -> Subscription {
+    cx.subscribe_in(input, window, |this, _, event: &InputEvent, _, cx| {
+        if matches!(event, InputEvent::Blur) && !this.loading_form {
+            this.save(cx);
+        }
+    })
 }
 
 /// 渲染层需要的全部表单实体引用，避免逐个字段暴露可变状态。
@@ -690,6 +1091,10 @@ pub(super) struct ProviderFormInputs<'a> {
     pub(super) model: &'a Entity<InputState>,
     pub(super) endpoint: &'a Entity<InputState>,
     pub(super) api_key: &'a Entity<InputState>,
+    pub(super) app_id: &'a Entity<InputState>,
+    pub(super) voice: &'a Entity<InputState>,
+    pub(super) local_path: &'a Entity<InputState>,
+    pub(super) whisper_language: &'a Entity<SelectState<Vec<SharedString>>>,
     pub(super) provider: &'a Entity<SelectState<Vec<SharedString>>>,
     pub(super) reasoning: &'a Entity<SelectState<Vec<SharedString>>>,
     pub(super) reasoning_budget: &'a Entity<InputState>,
@@ -765,6 +1170,43 @@ fn selected_reasoning_index(
         .map_or(REASONING_AUTO_INDEX, |index| index.row)
 }
 
+fn whisper_language_options() -> Vec<SharedString> {
+    let mut names = Vec::with_capacity(WHISPER_LANGUAGE_CODES.len() + 1);
+    names.push(SharedString::from(
+        t!("llm.whisper_language_default").to_string(),
+    ));
+    names.extend(
+        WHISPER_LANGUAGE_CODES
+            .iter()
+            .zip(WHISPER_LANGUAGE_NAMES)
+            .map(|(code, name)| SharedString::from(format!("{name} ({code})"))),
+    );
+    names
+}
+
+fn whisper_language_index(language: Option<&str>) -> usize {
+    language
+        .and_then(|language| {
+            WHISPER_LANGUAGE_CODES
+                .iter()
+                .position(|candidate| *candidate == language)
+        })
+        .map_or(0, |index| index + 1)
+}
+
+fn selected_whisper_language(
+    select: &Entity<SelectState<Vec<SharedString>>>,
+    cx: &Context<ProviderSettingsView>,
+) -> Option<String> {
+    let row = select
+        .read(cx)
+        .selected_index(cx)
+        .map_or(0, |index| index.row);
+    row.checked_sub(1)
+        .and_then(|index| WHISPER_LANGUAGE_CODES.get(index))
+        .map(|language| (*language).to_owned())
+}
+
 fn parse_u32(value: &str) -> Option<u32> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.parse().ok()).flatten()
@@ -799,8 +1241,42 @@ fn next_model_id(settings: &LlmSettings) -> String {
     unreachable!("u64 模型 ID 空间不可能被配置上限耗尽")
 }
 
+#[cfg(test)]
 fn provider_from_display_name(name: &str) -> Option<LlmProvider> {
     LLM_PROVIDERS
+        .into_iter()
+        .find(|provider| provider_display_name(*provider) == name)
+}
+
+fn model_provider_options(kind: ModelKind) -> Vec<ModelProvider> {
+    match kind {
+        ModelKind::ChatCompletions => LLM_PROVIDERS
+            .into_iter()
+            .map(ModelProvider::Genai)
+            .collect(),
+        ModelKind::SpeechSynthesis => vec![
+            ModelProvider::Genai(LlmProvider::OpenAI),
+            ModelProvider::Doubao,
+        ],
+        ModelKind::Transcription => vec![
+            ModelProvider::Genai(LlmProvider::OpenAI),
+            ModelProvider::Doubao,
+            ModelProvider::LocalWhisper,
+        ],
+    }
+}
+
+fn default_provider(kind: ModelKind) -> ModelProvider {
+    match kind {
+        ModelKind::ChatCompletions => ModelProvider::Genai(LlmProvider::Ollama),
+        ModelKind::SpeechSynthesis | ModelKind::Transcription => {
+            ModelProvider::Genai(LlmProvider::OpenAI)
+        }
+    }
+}
+
+fn model_provider_from_display_name(kind: ModelKind, name: &str) -> Option<ModelProvider> {
+    model_provider_options(kind)
         .into_iter()
         .find(|provider| provider_display_name(*provider) == name)
 }

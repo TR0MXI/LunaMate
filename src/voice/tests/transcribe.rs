@@ -4,16 +4,22 @@ use std::sync::{
 };
 
 use crate::{
-    config::VoiceSettings,
+    config::VoiceRuntimeSettings,
     voice::transcribe::{TranscriptionJob, TranscriptionQueue},
 };
+use lunamate_agent::config::WHISPER_LANGUAGE_CODES;
 
 fn job(revision: u64, utterance_id: u64) -> TranscriptionJob {
     TranscriptionJob {
         revision,
         utterance_id,
         samples: vec![0.0; 512],
-        settings: Arc::new(VoiceSettings::default()),
+        settings: Arc::new(VoiceRuntimeSettings {
+            mode: crate::config::VoiceMode::Off,
+            backend: None,
+            use_gpu: false,
+            whisper_language: None,
+        }),
     }
 }
 
@@ -42,4 +48,13 @@ fn stale_or_shutdown_transcription_cannot_enter_the_queue() {
 
     queue.shutdown();
     assert!(!queue.submit(job(2, 11)));
+}
+
+#[test]
+fn configured_language_catalog_matches_the_linked_whisper_runtime() {
+    let linked = (0..=whisper_rs::get_lang_max_id())
+        .map(|id| whisper_rs::get_lang_str(id).expect("Whisper 语言 ID 应当存在"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(linked, WHISPER_LANGUAGE_CODES);
 }

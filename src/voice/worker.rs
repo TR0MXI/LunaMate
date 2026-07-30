@@ -11,7 +11,7 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 
-use crate::config::{SharedVoiceSettings, VoiceMode};
+use crate::config::{SharedVoiceRuntimeSettings, VoiceMode, VoiceTranscriptionBackend};
 
 use super::{
     VoiceActivity, VoiceCommand, VoiceEvent, VoicePhase,
@@ -26,7 +26,7 @@ use super::{
 const MIN_MANUAL_SAMPLES: usize = 16_000 / 4;
 
 pub(super) fn spawn(
-    settings: SharedVoiceSettings,
+    settings: SharedVoiceRuntimeSettings,
     commands: Receiver<VoiceCommand>,
     command_sender: Sender<VoiceCommand>,
     events: Sender<VoiceEvent>,
@@ -76,7 +76,7 @@ pub(super) fn spawn(
 }
 
 struct Worker {
-    settings: SharedVoiceSettings,
+    settings: SharedVoiceRuntimeSettings,
     revision: u64,
     commands: Receiver<VoiceCommand>,
     command_sender: Sender<VoiceCommand>,
@@ -99,7 +99,7 @@ struct Worker {
 
 impl Worker {
     fn new(
-        settings: SharedVoiceSettings,
+        settings: SharedVoiceRuntimeSettings,
         commands: Receiver<VoiceCommand>,
         command_sender: Sender<VoiceCommand>,
         events: Sender<VoiceEvent>,
@@ -196,11 +196,11 @@ impl Worker {
         match self.settings.mode {
             VoiceMode::Off => self.publish_phase(VoicePhase::Off),
             VoiceMode::PushToTalk => {
-                let Some(path) = self.settings.whisper_model.as_deref() else {
-                    self.fail("按住说话模式需要先选择 Whisper 模型".to_owned());
-                    return;
-                };
-                if let Err(error) = validate_model_file(path, MAX_WHISPER_MODEL_BYTES, "Whisper") {
+                if let Some(VoiceTranscriptionBackend::LocalWhisper(path)) =
+                    self.settings.backend.as_ref()
+                    && let Err(error) =
+                        validate_model_file(path, MAX_WHISPER_MODEL_BYTES, "Whisper")
+                {
                     self.fail(error);
                     return;
                 }
@@ -219,20 +219,18 @@ impl Worker {
             }
         }
         log::info!(
-            "语音配置已生效：revision={revision}, mode={}, whisper_configured={}, vad_embedded=true, gpu_requested={}",
+            "语音配置已生效：revision={revision}, mode={}, transcription_configured={}, vad_embedded=true, gpu_requested={}",
             self.settings.mode.id(),
-            self.settings.whisper_model.is_some(),
+            self.settings.backend.is_some(),
             self.settings.use_gpu
         );
     }
 
     fn prepare_auto_vad(&mut self) -> Result<(), String> {
-        let whisper_path = self
-            .settings
-            .whisper_model
-            .as_deref()
-            .ok_or_else(|| "自动语音模式需要先选择 Whisper 模型".to_owned())?;
-        validate_model_file(whisper_path, MAX_WHISPER_MODEL_BYTES, "Whisper")?;
+        if let Some(VoiceTranscriptionBackend::LocalWhisper(path)) = self.settings.backend.as_ref()
+        {
+            validate_model_file(path, MAX_WHISPER_MODEL_BYTES, "Whisper")?;
+        }
         self.vad = Some(RollingVad::load()?);
         Ok(())
     }
@@ -450,17 +448,38 @@ impl Worker {
             samples.len(),
             samples.len().saturating_mul(1_000) / 16_000
         );
-        let job = TranscriptionJob {
-            revision: self.revision,
-            utterance_id,
-            samples,
-            settings: self.settings.clone(),
-        };
-        if !self.transcription_queue.submit(job) {
-            self.transcription_pending = false;
-            self.transcription_utterance = None;
-            if self.is_current() {
-                self.fail("Whisper 转写任务已被配置切换取消".to_owned());
+        match self.settings.backend.as_ref() {
+            Some(VoiceTranscriptionBackend::LocalWhisper(_)) => {
+                let job = TranscriptionJob {
+                    revision: self.revision,
+                    utterance_id,
+                    samples,
+                    settings: self.settings.clone(),
+                };
+                if !self.transcription_queue.submit(job) {
+                    self.transcription_pending = false;
+                    self.transcription_utterance = None;
+                    if self.is_current() {
+                        self.fail("本地 Whisper 转写任务已被配置切换取消".to_owned());
+                    }
+                }
+            }
+            Some(VoiceTranscriptionBackend::Remote(model_id)) => {
+                let samples = samples
+                    .into_iter()
+                    .map(|sample| (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16)
+                    .collect();
+                self.publish_event(VoiceEvent::TranscriptionRequested {
+                    revision: self.revision,
+                    utterance_id,
+                    model_id: model_id.clone(),
+                    samples,
+                });
+            }
+            None => {
+                self.transcription_pending = false;
+                self.transcription_utterance = None;
+                self.fail("未选择 Transcription 模型".to_owned());
             }
         }
     }

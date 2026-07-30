@@ -9,7 +9,7 @@ mod provider_render;
 use gpui::{Context, Entity, Window};
 use gpui_component::input::InputState;
 
-use lunamate_agent::config::{LlmProvider, llm_provider_id};
+use lunamate_agent::config::{LlmProvider, ModelProvider, llm_provider_id};
 
 #[cfg(test)]
 pub(in crate::ui) use persona::MemoryScope;
@@ -21,8 +21,13 @@ pub(in crate::ui) use provider::{
 };
 
 /// 返回供应商图标资源路径；文件名使用与配置一致的稳定 Provider ID。
-pub(super) fn provider_icon(provider: LlmProvider) -> String {
-    format!("icons/providers/{}.svg", llm_provider_id(provider))
+pub(super) fn provider_icon(provider: impl Into<ModelProvider>) -> String {
+    match provider.into() {
+        ModelProvider::Genai(provider) => {
+            format!("icons/providers/{}.svg", llm_provider_id(provider))
+        }
+        ModelProvider::Doubao | ModelProvider::LocalWhisper => "icons/mic.svg".to_owned(),
+    }
 }
 
 /// 表单可选字段的空白归一化规则：仅空白等同于未设置。
@@ -52,7 +57,15 @@ pub(in crate::ui) fn provider_icon_for_test(provider: LlmProvider) -> String {
     provider_icon(provider)
 }
 
-pub(super) const fn provider_display_name(provider: LlmProvider) -> &'static str {
+pub(super) fn provider_display_name(provider: impl Into<ModelProvider>) -> &'static str {
+    match provider.into() {
+        ModelProvider::Genai(provider) => genai_provider_display_name(provider),
+        ModelProvider::Doubao => "豆包",
+        ModelProvider::LocalWhisper => "Local Whisper",
+    }
+}
+
+const fn genai_provider_display_name(provider: LlmProvider) -> &'static str {
     match provider {
         LlmProvider::OpenAI => "OpenAI",
         LlmProvider::OpenAIResp => "OpenAI Responses",
@@ -86,11 +99,13 @@ pub(super) const fn provider_display_name(provider: LlmProvider) -> &'static str
 /// 暴露 Provider 展示名，供测试断言目录内名称唯一。
 #[cfg(test)]
 pub(in crate::ui) const fn provider_display_name_for_test(provider: LlmProvider) -> &'static str {
-    provider_display_name(provider)
+    genai_provider_display_name(provider)
 }
 
 #[cfg(test)]
-pub(in crate::ui) use persona::{next_persona_id_for_test, provider_option_index_for_test};
+pub(in crate::ui) use persona::{
+    next_persona_id_for_test, provider_option_index_for_test, tts_model_option_index_for_test,
+};
 #[cfg(test)]
 pub(in crate::ui) use provider::{
     next_model_id_for_test, provider_from_display_name_for_test, reasoning_index_for_test,

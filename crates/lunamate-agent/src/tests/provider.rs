@@ -20,8 +20,8 @@ use tokio::time::{Instant, sleep, timeout};
 
 use crate::{
     config::{
-        AppLanguage, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider,
-        REASONING_EFFORT_LEVELS, ReasoningEffort,
+        AppLanguage, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider, ModelKind,
+        ModelProvider, REASONING_EFFORT_LEVELS, ReasoningEffort,
     },
     media::prepare_dynamic_image,
     memory::AssistantTrace,
@@ -518,10 +518,16 @@ fn auth_data_uses_direct_key_and_disables_environment_fallback_when_empty() {
     let mut model = LlmModelConfig {
         id: "cloud".to_owned(),
         label: "Cloud".to_owned(),
-        provider: LlmProvider::OpenAI,
+        kind: ModelKind::ChatCompletions,
+        provider: ModelProvider::Genai(LlmProvider::OpenAI),
         model: "gpt-5-mini".to_owned(),
         endpoint: None,
         api_key: Some("not-an-environment-name/key".to_owned()),
+        app_id: None,
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
         advanced: LlmAdvancedOptions::default(),
     };
 

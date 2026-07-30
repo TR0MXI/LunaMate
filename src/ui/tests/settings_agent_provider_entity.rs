@@ -5,7 +5,7 @@
 use gpui::{Entity, TestAppContext, VisualTestContext, prelude::*};
 use lunamate_agent::config::{
     DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MODEL_CONTEXT_TOKENS, LlmAdvancedOptions, LlmModelConfig,
-    LlmProvider, LlmSettings, ReasoningEffort,
+    LlmProvider, LlmSettings, ModelKind, ModelProvider, ReasoningEffort,
 };
 
 use crate::ui::settings::{ProviderSettingsDraft, ProviderSettingsView};
@@ -14,10 +14,34 @@ fn model(id: &str) -> LlmModelConfig {
     LlmModelConfig {
         id: id.to_owned(),
         label: format!("Model {id}"),
-        provider: LlmProvider::Ollama,
+        kind: ModelKind::ChatCompletions,
+        provider: ModelProvider::Genai(LlmProvider::Ollama),
         model: "qwen3:8b".to_owned(),
         endpoint: Some("http://localhost:11434/".to_owned()),
         api_key: None,
+        app_id: None,
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
+        advanced: LlmAdvancedOptions::default(),
+    }
+}
+
+fn local_whisper(id: &str, use_gpu: bool, language: Option<&str>) -> LlmModelConfig {
+    LlmModelConfig {
+        id: id.to_owned(),
+        label: format!("Whisper {id}"),
+        kind: ModelKind::Transcription,
+        provider: ModelProvider::LocalWhisper,
+        model: "whisper".to_owned(),
+        endpoint: None,
+        api_key: None,
+        app_id: None,
+        voice: None,
+        local_path: Some(format!("/models/{id}.bin").into()),
+        use_gpu,
+        whisper_language: language.map(str::to_owned),
         advanced: LlmAdvancedOptions::default(),
     }
 }
@@ -31,7 +55,7 @@ fn mount(
         gpui_tokio::init(cx);
     });
     let draft = ProviderSettingsDraft::from_settings_for_test(settings);
-    cx.add_window_view(|window, cx| ProviderSettingsView::new(draft, window, cx))
+    cx.add_window_view(|window, cx| ProviderSettingsView::new_for_test(draft, window, cx))
 }
 
 #[gpui::test]
@@ -52,6 +76,7 @@ fn the_persisted_selection_becomes_the_edited_model(cx: &mut TestAppContext) {
         LlmSettings {
             models: vec![model("a"), model("b"), model("c")],
             selected_model: Some("b".to_owned()),
+            selected_transcription_model: None,
         },
     );
 
@@ -68,6 +93,7 @@ fn a_missing_selection_falls_back_to_the_first_model(cx: &mut TestAppContext) {
         LlmSettings {
             models: vec![model("a"), model("b")],
             selected_model: Some("removed".to_owned()),
+            selected_transcription_model: None,
         },
     );
 
@@ -83,6 +109,7 @@ fn adding_a_model_selects_it_and_allocates_an_unused_id(cx: &mut TestAppContext)
         LlmSettings {
             models: vec![model("model-1")],
             selected_model: Some("model-1".to_owned()),
+            selected_transcription_model: None,
         },
     );
 
@@ -101,12 +128,77 @@ fn adding_a_model_selects_it_and_allocates_an_unused_id(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn capability_tabs_add_typed_models_without_replacing_the_chat_default(cx: &mut TestAppContext) {
+    let (view, cx) = mount(
+        cx,
+        LlmSettings {
+            models: vec![model("chat")],
+            selected_model: Some("chat".to_owned()),
+            selected_transcription_model: None,
+        },
+    );
+
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.select_kind_for_test(ModelKind::SpeechSynthesis, window, cx);
+        assert_eq!(view.active_kind_for_test(), ModelKind::SpeechSynthesis);
+        assert_eq!(view.editing_index_for_test(), None);
+        view.add_model_for_test(window, cx);
+
+        view.select_kind_for_test(ModelKind::Transcription, window, cx);
+        view.add_model_for_test(window, cx);
+
+        assert_eq!(
+            view.model_kinds_for_test(),
+            [
+                ModelKind::ChatCompletions,
+                ModelKind::SpeechSynthesis,
+                ModelKind::Transcription,
+            ]
+        );
+        assert_eq!(view.selected_model_for_test(), Some("chat"));
+        assert_eq!(
+            view.selected_transcription_model_for_test(),
+            Some("model-2")
+        );
+    });
+}
+
+#[gpui::test]
+fn transcription_selection_loads_each_models_own_local_preferences(cx: &mut TestAppContext) {
+    let (view, cx) = mount(
+        cx,
+        LlmSettings {
+            models: vec![
+                local_whisper("zh-gpu", true, Some("zh")),
+                local_whisper("auto-cpu", false, None),
+            ],
+            selected_model: None,
+            selected_transcription_model: Some("auto-cpu".to_owned()),
+        },
+    );
+
+    cx.update_window_entity(&view, |view, window, cx| {
+        assert_eq!(view.active_kind_for_test(), ModelKind::Transcription);
+        assert_eq!(view.editing_index_for_test(), Some(1));
+        assert_eq!(view.local_whisper_preferences_for_test(cx), (false, None));
+
+        view.select_model_for_test(0, window, cx);
+        assert_eq!(view.selected_transcription_model_for_test(), Some("zh-gpu"));
+        assert_eq!(
+            view.local_whisper_preferences_for_test(cx),
+            (true, Some("zh".to_owned()))
+        );
+    });
+}
+
+#[gpui::test]
 fn deleting_a_model_moves_the_selection_to_a_remaining_entry(cx: &mut TestAppContext) {
     let (view, cx) = mount(
         cx,
         LlmSettings {
             models: vec![model("a"), model("b"), model("c")],
             selected_model: Some("b".to_owned()),
+            selected_transcription_model: None,
         },
     );
 
@@ -127,6 +219,7 @@ fn deleting_the_last_model_clamps_the_selection_to_the_new_end(cx: &mut TestAppC
         LlmSettings {
             models: vec![model("a"), model("b")],
             selected_model: Some("b".to_owned()),
+            selected_transcription_model: None,
         },
     );
 
@@ -146,6 +239,7 @@ fn deleting_the_only_model_clears_the_editing_target(cx: &mut TestAppContext) {
         LlmSettings {
             models: vec![model("only")],
             selected_model: Some("only".to_owned()),
+            selected_transcription_model: None,
         },
     );
 
@@ -169,6 +263,7 @@ fn selecting_an_out_of_range_model_keeps_the_current_target(cx: &mut TestAppCont
         LlmSettings {
             models: vec![model("a"), model("b")],
             selected_model: Some("a".to_owned()),
+            selected_transcription_model: None,
         },
     );
 
@@ -190,6 +285,7 @@ fn window_state_is_transferable_across_a_settings_window_reopen(cx: &mut TestApp
         LlmSettings {
             models: vec![model("a")],
             selected_model: Some("a".to_owned()),
+            selected_transcription_model: None,
         },
     );
 
@@ -203,7 +299,7 @@ fn window_state_is_transferable_across_a_settings_window_reopen(cx: &mut TestApp
 
     // 用取回的草稿重建编辑器：新增条目必须保留，而不是回退到已发布配置。
     let (restored, cx) =
-        cx.add_window_view(|window, cx| ProviderSettingsView::new(draft, window, cx));
+        cx.add_window_view(|window, cx| ProviderSettingsView::new_for_test(draft, window, cx));
     restored.update(cx, |view, _cx| {
         assert_eq!(view.model_ids_for_test(), ["a", "model-1"]);
         assert_eq!(view.selected_model_for_test(), Some("model-1"));
@@ -225,6 +321,7 @@ fn advanced_options_survive_a_switch_between_entries(cx: &mut TestAppContext) {
         LlmSettings {
             models: vec![with_reasoning, model("b")],
             selected_model: Some("a".to_owned()),
+            selected_transcription_model: None,
         },
     );
 
@@ -258,6 +355,7 @@ fn disabled_advanced_options_are_not_persisted_even_with_prefilled_values(cx: &m
         LlmSettings {
             models: vec![model("a")],
             selected_model: Some("a".to_owned()),
+            selected_transcription_model: None,
         },
     );
 

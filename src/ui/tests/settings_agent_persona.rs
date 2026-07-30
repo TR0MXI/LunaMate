@@ -8,8 +8,8 @@ use gpui::{
 };
 use lunamate_agent::AgentMemory;
 use lunamate_agent::config::{
-    LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings, PersonaConfig,
-    PersonaContextLimits, PersonaSettings,
+    LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings, ModelKind, ModelProvider,
+    PersonaConfig, PersonaContextLimits, PersonaSettings,
 };
 use lunamate_agent::{
     ChatRole,
@@ -19,17 +19,41 @@ use std::{path::PathBuf, sync::Arc};
 
 use crate::ui::settings::{
     MemoryScope, PersonaSettingsDraft, PersonaSettingsView, next_persona_id_for_test,
-    provider_option_index_for_test,
+    provider_option_index_for_test, tts_model_option_index_for_test,
 };
 
 fn provider(id: &str) -> LlmModelConfig {
     LlmModelConfig {
         id: id.to_owned(),
         label: format!("Provider {id}"),
-        provider: LlmProvider::Ollama,
+        kind: ModelKind::ChatCompletions,
+        provider: ModelProvider::Genai(LlmProvider::Ollama),
         model: "qwen3:8b".to_owned(),
         endpoint: Some("http://localhost:11434/".to_owned()),
         api_key: None,
+        app_id: None,
+        voice: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
+        advanced: LlmAdvancedOptions::default(),
+    }
+}
+
+fn tts_model(id: &str) -> LlmModelConfig {
+    LlmModelConfig {
+        id: id.to_owned(),
+        label: format!("TTS {id}"),
+        kind: ModelKind::SpeechSynthesis,
+        provider: ModelProvider::Genai(LlmProvider::OpenAI),
+        model: "gpt-4o-mini-tts".to_owned(),
+        endpoint: None,
+        api_key: Some("test-key".to_owned()),
+        app_id: None,
+        voice: Some("alloy".to_owned()),
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
         advanced: LlmAdvancedOptions::default(),
     }
 }
@@ -38,6 +62,26 @@ fn persona(id: &str, bound: Option<&str>) -> PersonaConfig {
     let mut persona = PersonaConfig::new(id, format!("人格 {id}"));
     persona.model = bound.map(str::to_owned);
     persona
+}
+
+#[test]
+fn tts_binding_rows_ignore_chat_models_and_keep_zero_as_disabled() {
+    let providers = Arc::new(LlmSettings {
+        models: vec![provider("chat"), tts_model("voice-a"), tts_model("voice-b")],
+        selected_model: Some("chat".to_owned()),
+        selected_transcription_model: None,
+    });
+
+    assert_eq!(tts_model_option_index_for_test(&providers, None), 0);
+    assert_eq!(
+        tts_model_option_index_for_test(&providers, Some("voice-a")),
+        1
+    );
+    assert_eq!(
+        tts_model_option_index_for_test(&providers, Some("voice-b")),
+        2
+    );
+    assert_eq!(tts_model_option_index_for_test(&providers, Some("chat")), 0);
 }
 
 fn mount(
@@ -110,6 +154,7 @@ fn bound_provider_maps_to_the_selector_row_and_back() {
     let providers = std::sync::Arc::new(LlmSettings {
         models: vec![provider("a"), provider("b")],
         selected_model: Some("a".to_owned()),
+        selected_transcription_model: None,
     });
 
     // 第一项固定表示"跟随全局默认"，因此供应商条目从 1 开始。
@@ -166,6 +211,7 @@ fn switching_personas_keeps_each_bound_provider(cx: &mut TestAppContext) {
         LlmSettings {
             models: vec![provider("a"), provider("b")],
             selected_model: Some("a".to_owned()),
+            selected_transcription_model: None,
         },
         PersonaSettings {
             personas: vec![persona("bound", Some("b")), persona("inherit", None)],

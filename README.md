@@ -72,9 +72,8 @@ cargo run --release --locked
 ## 语音输入
 
 语音设置默认关闭。LunaMate 已将 Silero VAD v6.2.0 内嵌进应用，自动模式启用后直接使用，
-无需用户下载或选择 VAD 模型。使用语音输入前只需在设置的“语音”页面选择：
-
-- whisper.cpp GGML 格式的 Whisper 模型，用于本地语音转文字。
+无需用户下载或选择 VAD 模型。使用语音输入前，在模型设置的 STT 列表添加并选中一个
+Transcription 模型；语音设置页只控制录音模式。本地转写模型使用 whisper.cpp GGML 格式。
 
 自动模式持续监听并在检测到一句话后自动转写、提交，同时允许按住“语音输入”全局快捷键
 接管当前候选或活动录音，松开并转写后恢复自动监听；按住说话模式只在按住该快捷键时采集。
@@ -93,9 +92,9 @@ NVIDIA、AMD 和 Intel 设备。CUDA、ROCm 和 Intel SYCL 会直接链接供应
 它们加入同一个产物，没有对应运行库的机器会在应用启动前加载失败，因此不属于通用二进制。
 Windows 和 Linux 运行环境仍需由 GPU 驱动或系统软件包提供 Vulkan loader。
 
-设置中开启 GPU 后，Whisper 会尝试使用已编译的 Metal 或 Vulkan 设备；模型初始化或推理失败
-时 LunaMate 自动重试 CPU。whisper.cpp 1.8.3 当前仍强制 Silero VAD 使用 CPU，因此 GPU 开关
-只影响 Whisper 转写。
+每个本地 Whisper 模型可独立启用 GPU，并可指定目标语言；默认语言使用自动识别。Whisper 会
+尝试使用已编译的 Metal 或 Vulkan 设备，模型初始化或推理失败时 LunaMate 自动重试 CPU。
+whisper.cpp 1.8.3 当前仍强制 Silero VAD 使用 CPU，因此 GPU 开关只影响对应模型的 Whisper 转写。
 
 ### VAD 窗口与推理取消
 

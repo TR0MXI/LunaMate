@@ -37,7 +37,7 @@ use crate::{
         desktop_pet_window_min_size, desktop_pet_window_size, raster_dimensions_for_window,
         restored_window_bounds,
     },
-    voice::{VoiceController, VoiceShutdown},
+    voice::{SpeechPlayback, SpeechPlaybackShutdown, VoiceController, VoiceShutdown},
 };
 
 const MODELS_DIRECTORY: &str = "models";
@@ -391,7 +391,7 @@ pub(super) fn run() {
         .map_or_else(Client::default, client_from_model);
     let (model_iden, options) = model
         .as_ref()
-        .map(model_and_options_from_config)
+        .and_then(model_and_options_from_config)
         .map_or((None, None), |(model, options)| (Some(model), options));
     let limits = chat_limits(persona, snapshot.settings());
     let (agent_memory, agent_status) = match persistence {
@@ -435,7 +435,11 @@ pub(super) fn run() {
     let final_agent_save_for_app = final_agent_save.clone();
     let async_handle_for_app = async_handle.clone();
     let (voice_controller, voice_shutdown): (Option<VoiceController>, Option<VoiceShutdown>) =
-        match VoiceController::start(CONFIG.voice_settings()) {
+        match VoiceController::start(Arc::new(
+            CONFIG
+                .voice_settings()
+                .runtime(CONFIG.llm_settings().as_ref()),
+        )) {
             Ok((controller, shutdown)) => (Some(controller), Some(shutdown)),
             Err(error) => {
                 log::error!("无法启动语音服务：{error}");
@@ -443,6 +447,17 @@ pub(super) fn run() {
             }
         };
     let voice_for_app = voice_controller.clone();
+    let (speech_playback, speech_playback_shutdown): (
+        Option<SpeechPlayback>,
+        Option<SpeechPlaybackShutdown>,
+    ) = match SpeechPlayback::start() {
+        Ok((playback, shutdown)) => (Some(playback), Some(shutdown)),
+        Err(error) => {
+            log::warn!("TTS 播放服务不可用：{error}");
+            (None, None)
+        }
+    };
+    let speech_playback_for_app = speech_playback.clone();
 
     application()
         .with_assets(AppAssets)
@@ -465,6 +480,7 @@ pub(super) fn run() {
             let final_agent_save = final_agent_save_for_app.clone();
             let async_handle = async_handle_for_app.clone();
             let voice = voice_for_app.clone();
+            let speech_playback = speech_playback_for_app.clone();
 
             let result = cx.open_window(
                 WindowOptions {
@@ -545,6 +561,7 @@ pub(super) fn run() {
                             config.clone(),
                             agent_view,
                             voice,
+                            speech_playback,
                             None,
                             raster_dimensions,
                             system_tray.as_ref().map(|(tray, _)| Rc::clone(tray)),
@@ -599,6 +616,8 @@ pub(super) fn run() {
 
     let voice_shutdown_completed = voice_shutdown
         .is_none_or(|voice_shutdown| voice_shutdown.shutdown(VOICE_SHUTDOWN_WAIT_TIMEOUT));
+    let playback_shutdown_completed = speech_playback_shutdown
+        .is_none_or(|shutdown| shutdown.shutdown(VOICE_SHUTDOWN_WAIT_TIMEOUT));
 
     let final_save = final_agent_save.lock().take();
     if let Some(final_save) = final_save {
@@ -621,9 +640,9 @@ pub(super) fn run() {
             log::debug!("应用退出前的最终会话保存已完成");
         }
     }
-    if voice_shutdown_completed {
+    if voice_shutdown_completed && playback_shutdown_completed {
         log::info!("应用运行时资源已完成回收");
     } else {
-        log::warn!("应用收尾结束，但语音工作线程未确认退出");
+        log::warn!("应用收尾结束，但语音工作线程或播放线程未确认退出");
     }
 }

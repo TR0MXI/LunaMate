@@ -44,6 +44,7 @@ name = "露娜"
 system_prompt = "保持简洁"
 input_prompt = "用户说：{input}"
 model = "cloud"
+tts_model = "voice"
 live2d_model = "luna/luna.model3.json"
 max_context_messages = 16
 max_context_tokens = 8256
@@ -63,6 +64,7 @@ name = "学习助手"
     assert_eq!(settings.selected.as_deref(), Some("moon"));
     let moon = settings.active().expect("选中人格必须存在");
     assert_eq!(moon.model.as_deref(), Some("cloud"));
+    assert_eq!(moon.tts_model.as_deref(), Some("voice"));
     assert_eq!(moon.input_prompt, "用户说：{input}");
     assert_eq!(
         moon.live2d_model.as_deref(),
@@ -92,6 +94,7 @@ name = "学习助手"
     assert!(saved.contains("future_option = \"keep\""));
     assert!(saved.contains("max_context_tokens = 8256"));
     assert!(saved.contains("input_prompt = \"用户说：{input}\""));
+    assert!(saved.contains("tts_model = \"voice\""));
     assert!(saved.contains("live2d_model = \"luna/luna.model3.json\""));
 }
 

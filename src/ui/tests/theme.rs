@@ -232,8 +232,8 @@ fn core_settings_text_exists_in_every_supported_language() {
             "tools.outfit_change_notice"
         );
         assert_ne!(
-            rust_i18n::t!("voice.model_downloads", locale = locale),
-            "voice.model_downloads"
+            rust_i18n::t!("llm.whisper_language", locale = locale),
+            "llm.whisper_language"
         );
         assert_ne!(
             rust_i18n::t!("settings.shortcut", locale = locale),
@@ -244,12 +244,12 @@ fn core_settings_text_exists_in_every_supported_language() {
             "shortcut.toggle_chat_input"
         );
         assert_ne!(
-            rust_i18n::t!("voice.model_download_notice", locale = locale),
-            "voice.model_download_notice"
+            rust_i18n::t!("llm.whisper_language_default", locale = locale),
+            "llm.whisper_language_default"
         );
         assert_ne!(
-            rust_i18n::t!("voice.whisper_model_list", locale = locale),
-            "voice.whisper_model_list"
+            rust_i18n::t!("llm.whisper_language_hint", locale = locale),
+            "llm.whisper_language_hint"
         );
     }
 }

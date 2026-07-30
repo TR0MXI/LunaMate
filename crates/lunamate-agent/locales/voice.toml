@@ -1,0 +1,49 @@
+_version = 2
+
+[voice.error.invalid_configuration]
+"zh-CN" = "语音转写模型配置无效"
+"zh-TW" = "語音轉寫模型設定無效"
+"en" = "The transcription model configuration is invalid"
+"ja" = "文字起こしモデルの設定が無効です"
+
+[voice.error.invalid_input]
+"zh-CN" = "待转写音频无效"
+"zh-TW" = "待轉寫音訊無效"
+"en" = "The audio to transcribe is invalid"
+"ja" = "文字起こし対象の音声が無効です"
+
+[voice.error.unsupported_provider]
+"zh-CN" = "当前 Provider 不支持语音转写"
+"zh-TW" = "目前 Provider 不支援語音轉寫"
+"en" = "The current provider does not support transcription"
+"ja" = "現在の Provider は文字起こしをサポートしていません"
+
+[voice.error.network]
+"zh-CN" = "语音转写网络请求失败"
+"zh-TW" = "語音轉寫網路要求失敗"
+"en" = "The transcription network request failed"
+"ja" = "文字起こしのネットワーク要求に失敗しました"
+
+[voice.error.timeout]
+"zh-CN" = "语音转写请求超时"
+"zh-TW" = "語音轉寫要求逾時"
+"en" = "The transcription request timed out"
+"ja" = "文字起こし要求がタイムアウトしました"
+
+[voice.error.rejected]
+"zh-CN" = "语音转写请求被 Provider 拒绝"
+"zh-TW" = "語音轉寫要求被 Provider 拒絕"
+"en" = "The transcription request was rejected by the provider"
+"ja" = "文字起こし要求が Provider に拒否されました"
+
+[voice.error.invalid_response]
+"zh-CN" = "语音转写响应无效"
+"zh-TW" = "語音轉寫回應無效"
+"en" = "The transcription response is invalid"
+"ja" = "文字起こしの応答が無効です"
+
+[voice.error.response_too_large]
+"zh-CN" = "语音转写响应超过大小限制"
+"zh-TW" = "語音轉寫回應超過大小限制"
+"en" = "The transcription response exceeds the size limit"
+"ja" = "文字起こしの応答がサイズ上限を超えています"

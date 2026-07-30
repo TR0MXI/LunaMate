@@ -120,6 +120,18 @@ _version = 2
 "en" = "Conversation model"
 "ja" = "会話モデル"
 
+[persona.speech_synthesis_model]
+"zh-CN" = "Speech Synthesis 模型"
+"zh-TW" = "Speech Synthesis 模型"
+"en" = "Speech synthesis model"
+"ja" = "音声合成モデル"
+
+[persona.tts_disabled]
+"zh-CN" = "不启用语音合成"
+"zh-TW" = "不啟用語音合成"
+"en" = "Speech synthesis disabled"
+"ja" = "音声合成を使用しない"
+
 [persona.provider_inherit]
 "zh-CN" = "跟随全局默认供应商"
 "zh-TW" = "跟隨全域預設供應商"

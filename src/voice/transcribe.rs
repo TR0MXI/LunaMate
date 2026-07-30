@@ -14,7 +14,7 @@ use async_channel::Sender;
 use parking_lot::{Condvar, Mutex};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use crate::config::SharedVoiceSettings;
+use crate::config::{SharedVoiceRuntimeSettings, VoiceTranscriptionBackend};
 
 use super::VoiceCommand;
 
@@ -24,7 +24,7 @@ pub(super) struct TranscriptionJob {
     pub(super) revision: u64,
     pub(super) utterance_id: u64,
     pub(super) samples: Vec<f32>,
-    pub(super) settings: SharedVoiceSettings,
+    pub(super) settings: SharedVoiceRuntimeSettings,
 }
 
 pub(super) struct TranscriptionResult {
@@ -158,16 +158,22 @@ impl Transcriber {
         job: &TranscriptionJob,
         queue: &TranscriptionQueue,
     ) -> Result<String, String> {
-        let path = job
-            .settings
-            .whisper_model
-            .as_deref()
-            .ok_or_else(|| "尚未选择 Whisper 模型".to_owned())?;
+        let path = match job.settings.backend.as_ref() {
+            Some(VoiceTranscriptionBackend::LocalWhisper(path)) => path.as_path(),
+            Some(VoiceTranscriptionBackend::Remote(_)) | None => {
+                return Err("当前转写任务不是本地 Whisper".to_owned());
+            }
+        };
         validate_model_file(path, MAX_WHISPER_MODEL_BYTES, "Whisper")?;
         let request_gpu = job.settings.use_gpu;
         self.ensure_context(path, request_gpu)?;
         let ran_on_gpu = self.loaded_with_gpu;
-        match self.run_once(&job.samples, queue, job.revision) {
+        match self.run_once(
+            &job.samples,
+            job.settings.whisper_language.as_deref(),
+            queue,
+            job.revision,
+        ) {
             Ok(text) => Ok(text),
             Err(RunError::Inference(_)) if ran_on_gpu => {
                 if queue.is_cancelled(job.revision) {
@@ -183,8 +189,13 @@ impl Transcriber {
                 self.ensure_context(path, false)?;
                 // 同一模型和 GPU 偏好后续复用本次 CPU 回退，不在每个 utterance 重试坏设备。
                 self.loaded_for_gpu_request = true;
-                self.run_once(&job.samples, queue, job.revision)
-                    .map_err(RunError::into_string)
+                self.run_once(
+                    &job.samples,
+                    job.settings.whisper_language.as_deref(),
+                    queue,
+                    job.revision,
+                )
+                .map_err(RunError::into_string)
             }
             Err(error) => Err(error.into_string()),
         }
@@ -223,6 +234,7 @@ impl Transcriber {
     fn run_once(
         &self,
         samples: &[f32],
+        language: Option<&str>,
         queue: &TranscriptionQueue,
         revision: u64,
     ) -> Result<String, RunError> {
@@ -235,6 +247,8 @@ impl Transcriber {
             .map_err(|error| RunError::Inference(format!("无法创建 Whisper 推理状态：{error}")))?;
         let mut parameters = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         parameters.set_n_threads(inference_threads());
+        // whisper-rs 默认语言为英语；显式传入 None 才会走 Whisper 的自动识别路径。
+        parameters.set_language(language);
         parameters.set_translate(false);
         parameters.set_no_context(true);
         parameters.set_print_progress(false);

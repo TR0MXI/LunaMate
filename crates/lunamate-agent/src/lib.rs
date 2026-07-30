@@ -31,7 +31,9 @@ pub mod persistence;
 mod provider;
 mod session;
 mod store;
+pub mod stt;
 pub mod tools;
+pub mod tts;
 
 pub use memory::AgentMemory;
 pub use provider::{ScreenshotCapability, client_from_model, model_and_options_from_config};

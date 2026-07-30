@@ -42,62 +42,20 @@ _version = 2
 "en" = "Push to talk"
 "ja" = "押して話す"
 
-[voice.models]
-"zh-CN" = "本地模型"
-"zh-TW" = "本機模型"
-"en" = "Local Models"
-"ja" = "ローカルモデル"
-
-[voice.whisper_model]
-"zh-CN" = "Whisper 模型"
-"zh-TW" = "Whisper 模型"
-"en" = "Whisper model"
-"ja" = "Whisper モデル"
-
-[voice.model_downloads]
-"zh-CN" = "模型下载"
-"zh-TW" = "模型下載"
-"en" = "Model downloads"
-"ja" = "モデルのダウンロード"
-
-[voice.model_download_notice]
-"zh-CN" = "Silero VAD 已内置；语音转写仍需从官方列表获取 Whisper GGML 模型。"
-"zh-TW" = "Silero VAD 已內建；語音轉寫仍需從官方清單取得 Whisper GGML 模型。"
-"en" = "Silero VAD is built in. Speech transcription still requires a Whisper GGML model from the official list."
-"ja" = "Silero VAD は内蔵されています。音声文字起こしには、公式一覧の Whisper GGML モデルが必要です。"
-
-[voice.whisper_model_list]
-"zh-CN" = "Whisper GGML 模型列表"
-"zh-TW" = "Whisper GGML 模型清單"
-"en" = "Whisper GGML model list"
-"ja" = "Whisper GGML モデル一覧"
-
-[voice.inference]
-"zh-CN" = "推理"
-"zh-TW" = "推理"
-"en" = "Inference"
-"ja" = "推論"
-
-[voice.gpu_acceleration]
-"zh-CN" = "GPU 加速"
-"zh-TW" = "GPU 加速"
-"en" = "GPU acceleration"
-"ja" = "GPU アクセラレーション"
-
-[voice.select_model]
-"zh-CN" = "选择模型"
-"zh-TW" = "選擇模型"
-"en" = "Select model"
-"ja" = "モデルを選択"
-
 [voice.saved]
 "zh-CN" = "语音设置已保存"
 "zh-TW" = "語音設定已儲存"
 "en" = "Voice settings saved"
 "ja" = "音声設定を保存しました"
 
-[voice.picker_failed]
-"zh-CN" = "无法打开模型选择器"
-"zh-TW" = "無法開啟模型選擇器"
-"en" = "Could not open the model picker"
-"ja" = "モデル選択画面を開けませんでした"
+[voice.model_missing]
+"zh-CN" = "选择的 Transcription 模型不存在"
+"zh-TW" = "選擇的 Transcription 模型不存在"
+"en" = "The selected transcription model does not exist"
+"ja" = "選択した文字起こしモデルがありません"
+
+[voice.transcription_cancelled]
+"zh-CN" = "语音转写任务已取消"
+"zh-TW" = "語音轉寫工作已取消"
+"en" = "The transcription task was cancelled"
+"ja" = "文字起こしタスクはキャンセルされました"

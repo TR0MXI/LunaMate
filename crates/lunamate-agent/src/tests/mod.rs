@@ -8,3 +8,5 @@ mod persistence;
 mod provider;
 mod session;
 mod store;
+mod stt;
+mod tts;

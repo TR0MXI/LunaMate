@@ -1,9 +1,12 @@
 //! 组合麦克风采集、Silero VAD、Whisper 转写与可取消的语音事件通路。
 
 mod capture;
+mod playback;
 mod transcribe;
 mod vad;
 mod worker;
+
+pub(crate) use playback::{SpeechPlayback, SpeechPlaybackShutdown};
 
 #[cfg(test)]
 mod tests;
@@ -19,7 +22,7 @@ use std::{
 
 use async_channel::{Receiver, Sender};
 
-use crate::config::{SharedVoiceSettings, VoiceSettings};
+use crate::config::{SharedVoiceRuntimeSettings, VoiceRuntimeSettings};
 
 /// 语音管线当前对用户可见的阶段。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -106,6 +109,12 @@ pub(crate) enum VoiceEvent {
         utterance_id: u64,
         text: String,
     },
+    TranscriptionRequested {
+        revision: u64,
+        utterance_id: u64,
+        model_id: String,
+        samples: Vec<i16>,
+    },
     Error {
         revision: u64,
         message: String,
@@ -115,7 +124,7 @@ pub(crate) enum VoiceEvent {
 enum VoiceCommand {
     Configure {
         revision: u64,
-        settings: SharedVoiceSettings,
+        settings: SharedVoiceRuntimeSettings,
     },
     PushToTalk {
         revision: u64,
@@ -145,7 +154,9 @@ pub(crate) struct VoiceController {
 
 impl VoiceController {
     /// 启动两个专用工作线程，并立即应用启动配置。
-    pub(crate) fn start(settings: SharedVoiceSettings) -> Result<(Self, VoiceShutdown), String> {
+    pub(crate) fn start(
+        settings: SharedVoiceRuntimeSettings,
+    ) -> Result<(Self, VoiceShutdown), String> {
         // AudioReady 在采集端已经合并，无界控制通道保证 GPUI 提交配置时不等待 worker。
         let (commands, command_receiver) = async_channel::unbounded();
         // 语义事件频率受端点状态机限制；无界通道避免 UI 停止消费时反向卡住麦克风释放。
@@ -154,7 +165,7 @@ impl VoiceController {
         let revision = Arc::new(AtomicU64::new(1));
         let completion = std::sync::mpsc::sync_channel(1);
         let initial_mode = settings.mode.id();
-        let whisper_configured = settings.whisper_model.is_some();
+        let transcription_configured = settings.backend.is_some();
         let gpu_requested = settings.use_gpu;
         let worker = worker::spawn(
             settings,
@@ -166,7 +177,7 @@ impl VoiceController {
             completion.0,
         )?;
         log::info!(
-            "语音控制端已创建：revision=1, mode={initial_mode}, whisper_configured={whisper_configured}, vad_embedded=true, gpu_requested={gpu_requested}"
+            "语音控制端已创建：revision=1, mode={initial_mode}, transcription_configured={transcription_configured}, vad_embedded=true, gpu_requested={gpu_requested}"
         );
         Ok((
             Self {
@@ -199,7 +210,7 @@ impl VoiceController {
     }
 
     /// 用新配置替换整个语音 generation；旧转写结果会被 worker 丢弃。
-    pub(crate) fn configure(&self, settings: VoiceSettings) -> u64 {
+    pub(crate) fn configure(&self, settings: VoiceRuntimeSettings) -> u64 {
         let revision = self
             .revision
             .fetch_add(1, Ordering::AcqRel)
@@ -219,6 +230,22 @@ impl VoiceController {
         let _ = self
             .commands
             .try_send(VoiceCommand::PushToTalk { revision, pressed });
+    }
+
+    /// 把云端转写结果送回当前 generation；迟到结果由 worker 状态机丢弃。
+    pub(crate) fn complete_remote_transcription(
+        &self,
+        revision: u64,
+        utterance_id: u64,
+        result: Result<String, String>,
+    ) {
+        let _ = self.commands.try_send(VoiceCommand::TranscriptionFinished(
+            transcribe::TranscriptionResult {
+                revision,
+                utterance_id,
+                result,
+            },
+        ));
     }
 
     /// 窗口释放时先请求停止采集；最终 join 由应用退出边界完成。

@@ -44,9 +44,9 @@ pub(crate) use lunamate_agent::config::{
 pub(crate) use lunamate_agent::config::{
     CONTEXT_MESSAGES_MIN, CONTEXT_TOKENS_MAX, DEFAULT_CONTEXT_MESSAGES, DEFAULT_CONTEXT_TOKENS,
     DEFAULT_PERSONA_ID, LLM_PROVIDERS, LlmAdvancedOptions, LlmModelConfig, LlmProvider,
-    MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, PersonaConfig, PersonaContextLimits,
-    REASONING_EFFORT_LEVELS, ReasoningEffort, TEMPERATURE_MAX, llm_provider_from_id,
-    llm_provider_id,
+    MAX_OUTPUT_TOKENS_MAX, MODEL_CONTEXT_TOKENS_MAX, ModelKind, ModelProvider, PersonaConfig,
+    PersonaContextLimits, REASONING_EFFORT_LEVELS, ReasoningEffort, TEMPERATURE_MAX,
+    llm_provider_from_id, llm_provider_id,
 };
 pub(crate) use model::{
     ModelExpressionCategory, ModelResourceKey, ModelResourceKind, ModelResourceSettings,
@@ -65,7 +65,10 @@ pub(crate) use types::{
     LOGGING_MAX_FILE_SIZE_MB, LOGGING_MAX_KEEP_FILES, LOGGING_MIN_FILE_SIZE_MB,
     LOGGING_MIN_KEEP_FILES, LogLevel, LoggingSettings, ModelWindowSize, WindowPosition,
 };
-pub(crate) use voice::{SharedVoiceSettings, VoiceMode, VoiceSettings};
+pub(crate) use voice::{
+    SharedVoiceRuntimeSettings, SharedVoiceSettings, VoiceMode, VoiceRuntimeSettings,
+    VoiceSettings, VoiceTranscriptionBackend,
+};
 use voice::{parse_voice_settings, write_voice_settings};
 /// 全局应用配置；首次访问时从平台用户配置目录加载。
 pub(crate) static CONFIG: LazyLock<LunaConfig> = LazyLock::new(LunaConfig::load);

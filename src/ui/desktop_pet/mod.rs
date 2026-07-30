@@ -38,7 +38,7 @@ use crate::{
         configure_tray_menu_window, set_desktop_pet_window_visible,
     },
     shortcut::{ShortcutEvent, ShortcutManager},
-    voice::{VoiceActivitySnapshot, VoiceController, VoiceEvent, VoicePhase},
+    voice::{SpeechPlayback, VoiceActivitySnapshot, VoiceController, VoiceEvent, VoicePhase},
 };
 
 use super::{
@@ -183,6 +183,7 @@ pub(crate) struct DesktopPetView {
     config: Entity<SettingsView>,
     chat: Entity<AgentView>,
     voice: Option<VoiceController>,
+    speech_playback: Option<SpeechPlayback>,
     voice_mode: VoiceMode,
     voice_revision: u64,
     voice_activity: VoiceActivitySnapshot,
@@ -224,6 +225,7 @@ impl DesktopPetView {
         config: Entity<SettingsView>,
         chat: Entity<AgentView>,
         voice: Option<VoiceController>,
+        speech_playback: Option<SpeechPlayback>,
         initial_model: Option<PathBuf>,
         raster_dimensions: [u32; 2],
         system_tray: Option<Rc<SystemTray>>,
@@ -248,6 +250,9 @@ impl DesktopPetView {
             }
             if let Some(voice) = &this.voice {
                 voice.request_shutdown();
+            }
+            if let Some(playback) = &this.speech_playback {
+                playback.stop();
             }
             if let Some(handle) = this.tray_menu_window.take() {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());
@@ -320,7 +325,7 @@ impl DesktopPetView {
             }
         });
         let agent_event_subscription =
-            cx.subscribe(&chat, |_this, _, event: &AgentViewEvent, cx| match event {
+            cx.subscribe(&chat, |this, _, event: &AgentViewEvent, cx| match event {
                 AgentViewEvent::ChangeOutfit(request) => {
                     let request = request.clone();
                     cx.spawn(async move |this, cx| {
@@ -329,6 +334,19 @@ impl DesktopPetView {
                         });
                     })
                     .detach();
+                }
+                AgentViewEvent::StopSpeech => {
+                    if let Some(playback) = &this.speech_playback {
+                        playback.stop();
+                    }
+                }
+                AgentViewEvent::SpeechAudio {
+                    samples,
+                    sample_rate,
+                } => {
+                    if let Some(playback) = &this.speech_playback {
+                        playback.play(samples.clone(), *sample_rate);
+                    }
                 }
             });
         let config_subscription =
@@ -483,6 +501,7 @@ impl DesktopPetView {
             config,
             chat,
             voice,
+            speech_playback,
             voice_mode: CONFIG.voice_settings().mode,
             voice_revision,
             voice_activity,
@@ -581,7 +600,7 @@ impl DesktopPetView {
         self.release_voice_shortcut();
         self.voice_mode = settings.mode;
         if let Some(voice) = &self.voice {
-            let mut runtime_settings = settings.clone();
+            let mut runtime_settings = settings.runtime(CONFIG.llm_settings().as_ref());
             if !self.desktop_pet_visible {
                 runtime_settings.mode = VoiceMode::Off;
             }
@@ -595,6 +614,9 @@ impl DesktopPetView {
             chat.cancel_pending_voice();
             chat.set_voice_indicator_visible(false, cx);
         });
+        if let Some(playback) = &self.speech_playback {
+            playback.stop();
+        }
         self.sync_voice_level_task(cx);
         cx.notify();
     }
@@ -729,6 +751,9 @@ impl DesktopPetView {
                 revision,
                 utterance_id,
             } if revision == self.voice_revision => {
+                if let Some(playback) = &self.speech_playback {
+                    playback.stop();
+                }
                 let language = self.appearance.borrow().language;
                 self.chat.update(cx, |chat, cx| {
                     chat.voice_speech_started(utterance_id, language, cx);
@@ -750,6 +775,18 @@ impl DesktopPetView {
                 self.chat.update(cx, |chat, cx| {
                     chat.send_voice_transcript(utterance_id, text, cx);
                 });
+            }
+            VoiceEvent::TranscriptionRequested {
+                revision,
+                utterance_id,
+                model_id,
+                samples,
+            } if revision == self.voice_revision => {
+                if let Some(voice) = self.voice.clone() {
+                    self.chat.update(cx, |chat, cx| {
+                        chat.transcribe_voice(revision, utterance_id, model_id, samples, voice, cx);
+                    });
+                }
             }
             VoiceEvent::Error { revision, message } if revision == self.voice_revision => {
                 self.chat.update(cx, |chat, cx| {
@@ -1183,6 +1220,9 @@ impl DesktopPetView {
             chat.cancel_pending_voice();
             chat.set_voice_indicator_visible(false, cx);
         });
+        if let Some(playback) = &self.speech_playback {
+            playback.stop();
+        }
         self.gpu_shutdown_restart_cpu = false;
         self.close_after_gpu_shutdown = true;
         self.sync_cursor_tracking_task(cx);
