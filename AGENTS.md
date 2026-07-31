@@ -126,6 +126,8 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
   结果通过 GPUI 上下文回写，LLM 等 Tokio future 运行于 `gpui_tokio` runtime。
 - 后台任务必须可取消或识别 generation/revision。窗口关闭、模型或会话切换、请求替换后
   丢弃迟到结果，不得更新失效实体或资源。
+- 托盘隐藏桌宠时必须关闭麦克风与 VAD、释放 Whisper context、取消 Agent 活动请求并删除
+  触发该请求的整轮消息、停止 TTS，并回收 GPU underlay；显示后才允许新请求并重建 GPU 资源。
 - 高频数据使用有界通道、latest-value 状态、合并通知或限流；不得按 token、鼠标采样或
   动画采样无条件重绘，也不得让生产者无限积压。使用 GPUI Component 前完成初始化并按
   约定用 `Root` 包装窗口根视图。

@@ -557,6 +557,25 @@ impl ChatSession {
         self.set_response_state(response_id, ChatMessageState::Cancelled)
     }
 
+    /// 丢弃匹配响应所在的整轮消息；调用方必须已经中止网络请求。
+    pub fn discard_response_turn(&mut self, response_id: ResponseId) -> bool {
+        let Some(active) = self
+            .active_response
+            .filter(|active| active.id == response_id)
+        else {
+            return false;
+        };
+        self.active_response = None;
+        let message_ids = self
+            .messages
+            .iter()
+            .filter(|message| message.turn_id == active.turn_id)
+            .map(ChatMessage::id)
+            .collect::<Vec<_>>();
+        self.delete_messages(&message_ids)
+            .is_ok_and(|removed| removed != 0)
+    }
+
     /// 标记匹配的回复，并保留该终态供下一次模型请求按请求语言注入打断语义。
     pub fn interrupt_response_by_voice(&mut self, response_id: ResponseId) -> bool {
         let interrupted =

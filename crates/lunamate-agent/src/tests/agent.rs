@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::{
-    Agent, AgentMemory, ChatLimits, ChatOptions, Client, ModelIden,
+    Agent, AgentError, AgentInput, AgentMemory, ChatLimits, ChatOptions, Client, ModelIden,
     config::AppLanguage,
     memory::ContextUsage,
     persistence::{
@@ -313,4 +313,54 @@ fn stale_voice_results_do_not_consume_a_newer_utterance() {
     assert_eq!(agent.snapshot().pending_voice(), Some(8));
     assert_eq!(agent.take_voice_transcript(8), Some(AppLanguage::Japanese));
     assert_eq!(agent.snapshot().pending_voice(), None);
+}
+
+#[tokio::test]
+async fn suspended_agent_rejects_a_queued_send_without_creating_context() {
+    let agent = Agent::new(
+        Client::default(),
+        Some(ModelIden::new(
+            crate::config::LlmProvider::Ollama,
+            "qwen3:8b",
+        )),
+        None,
+        "",
+        AgentMemory::unavailable(),
+        "default",
+        ChatLimits::default(),
+        AppLanguage::English,
+        None,
+    );
+    let queued_revision = agent.request_revision();
+    assert!(!agent.suspend_and_discard_active_turn());
+
+    let suspended = agent
+        .clone()
+        .send(AgentInput {
+            text: "must not enter context".to_owned(),
+            image: None,
+            screenshot_capability: None,
+            outfits: Vec::new(),
+            outfit_revision: 0,
+            request_revision: agent.request_revision(),
+            language: AppLanguage::English,
+        })
+        .await;
+    assert!(matches!(suspended, Err(AgentError::Suspended)));
+    agent.resume_after_hidden();
+
+    let stale = agent
+        .clone()
+        .send(AgentInput {
+            text: "queued before hiding".to_owned(),
+            image: None,
+            screenshot_capability: None,
+            outfits: Vec::new(),
+            outfit_revision: 0,
+            request_revision: queued_revision,
+            language: AppLanguage::English,
+        })
+        .await;
+    assert!(matches!(stale, Err(AgentError::StaleInput)));
+    assert!(agent.snapshot().messages().is_empty());
 }

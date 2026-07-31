@@ -35,7 +35,13 @@ pub(super) struct TranscriptionResult {
 
 struct QueueState {
     pending: Option<TranscriptionJob>,
+    release_context: bool,
     shutdown: bool,
+}
+
+enum TranscriptionWork {
+    Job(TranscriptionJob),
+    ReleaseContext,
 }
 
 /// 只保留最新待处理 utterance；配置切换不会让旧任务占住单槽队列。
@@ -50,6 +56,7 @@ impl TranscriptionQueue {
         Arc::new(Self {
             state: Mutex::new(QueueState {
                 pending: None,
+                release_context: false,
                 shutdown: false,
             }),
             changed: Condvar::new(),
@@ -74,6 +81,13 @@ impl TranscriptionQueue {
         self.state.lock().pending = None;
     }
 
+    pub(super) fn release_context(&self) {
+        let mut state = self.state.lock();
+        state.pending = None;
+        state.release_context = true;
+        self.changed.notify_one();
+    }
+
     pub(super) fn shutdown(&self) {
         let mut state = self.state.lock();
         state.pending = None;
@@ -85,14 +99,18 @@ impl TranscriptionQueue {
         self.desired_revision.load(Ordering::Acquire) != revision || self.state.lock().shutdown
     }
 
-    fn next(&self) -> Option<TranscriptionJob> {
+    fn next(&self) -> Option<TranscriptionWork> {
         let mut state = self.state.lock();
         loop {
             if state.shutdown {
                 return None;
             }
+            if state.release_context {
+                state.release_context = false;
+                return Some(TranscriptionWork::ReleaseContext);
+            }
             if let Some(job) = state.pending.take() {
-                return Some(job);
+                return Some(TranscriptionWork::Job(job));
             }
             self.changed.wait(&mut state);
         }
@@ -102,11 +120,20 @@ impl TranscriptionQueue {
     pub(super) fn take_pending_for_test(&self) -> Option<TranscriptionJob> {
         self.state.lock().pending.take()
     }
+
+    #[cfg(test)]
+    pub(super) fn take_context_release_for_test(&self) -> bool {
+        std::mem::take(&mut self.state.lock().release_context)
+    }
 }
 
 pub(super) fn run(queue: Arc<TranscriptionQueue>, voice_commands: Sender<VoiceCommand>) {
     let mut transcriber = Transcriber::default();
-    while let Some(job) = queue.next() {
+    while let Some(work) = queue.next() {
+        let TranscriptionWork::Job(job) = work else {
+            transcriber.release_context();
+            continue;
+        };
         if queue.is_cancelled(job.revision) {
             continue;
         }
@@ -153,6 +180,13 @@ struct Transcriber {
 }
 
 impl Transcriber {
+    fn release_context(&mut self) {
+        self.context = None;
+        self.loaded_path = None;
+        self.loaded_for_gpu_request = false;
+        self.loaded_with_gpu = false;
+    }
+
     fn transcribe(
         &mut self,
         job: &TranscriptionJob,

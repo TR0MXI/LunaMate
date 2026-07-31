@@ -173,6 +173,8 @@ pub(crate) struct DesktopPetView {
     gpu_event_task: Option<Task<()>>,
     gpu_shutdown_pending: bool,
     gpu_shutdown_restart_cpu: bool,
+    gpu_released_for_hidden: bool,
+    gpu_restore_pending: bool,
     cpu_fallback_pending: bool,
     close_after_gpu_shutdown: bool,
     quitting: bool,
@@ -344,7 +346,9 @@ impl DesktopPetView {
                     samples,
                     sample_rate,
                 } => {
-                    if let Some(playback) = &this.speech_playback {
+                    if this.desktop_pet_visible
+                        && let Some(playback) = &this.speech_playback
+                    {
                         playback.play(samples.clone(), *sample_rate);
                     }
                 }
@@ -491,6 +495,8 @@ impl DesktopPetView {
             gpu_event_task: None,
             gpu_shutdown_pending: false,
             gpu_shutdown_restart_cpu: false,
+            gpu_released_for_hidden: false,
+            gpu_restore_pending: false,
             cpu_fallback_pending,
             close_after_gpu_shutdown: false,
             quitting: false,
@@ -540,31 +546,7 @@ impl DesktopPetView {
         if view.show_fps {
             view.start_fps_task(cx);
         }
-        if let Some(events) = gpu_events {
-            view.gpu_event_task = Some(cx.spawn(async move |this, cx| {
-                loop {
-                    match events.recv().await {
-                        Ok(event) => {
-                            let keep_running = this
-                                .update(cx, |this, cx| this.handle_gpu_event(event, cx))
-                                .unwrap_or(false);
-                            if !keep_running {
-                                return;
-                            }
-                        }
-                        Err(_) => {
-                            let _ = this.update(cx, |this, cx| {
-                                if this.gpu_underlay.is_some() {
-                                    log::warn!("{}", t!("log.gpu_worker_exited"));
-                                    this.fallback_to_cpu(cx);
-                                }
-                            });
-                            return;
-                        }
-                    }
-                }
-            }));
-        }
+        view.start_gpu_event_task(cx);
         if let Some(events) = voice_events {
             view.voice_event_task = Some(cx.spawn(async move |this, cx| {
                 while let Ok(event) = events.recv().await {
@@ -594,6 +576,42 @@ impl DesktopPetView {
         view.load_model(initial_model, cx);
         view.sync_cursor_tracking_task(cx);
         view
+    }
+
+    fn start_gpu_event_task(&mut self, cx: &mut Context<Self>) {
+        if self.gpu_event_task.is_some() {
+            return;
+        }
+        let Some(events) = self.gpu_underlay.as_ref().map(GpuUnderlay::events) else {
+            return;
+        };
+        self.gpu_event_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        let keep_running = this
+                            .update(cx, |this, cx| this.handle_gpu_event(event, cx))
+                            .unwrap_or(false);
+                        if !keep_running {
+                            let _ = this.update(cx, |this, _| {
+                                this.gpu_event_task = None;
+                            });
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = this.update(cx, |this, cx| {
+                            if this.gpu_underlay.is_some() {
+                                log::warn!("{}", t!("log.gpu_worker_exited"));
+                                this.fallback_to_cpu(cx);
+                            }
+                            this.gpu_event_task = None;
+                        });
+                        return;
+                    }
+                }
+            }
+        }));
     }
 
     fn apply_voice_settings(&mut self, settings: &VoiceSettings, cx: &mut Context<Self>) {
@@ -957,7 +975,8 @@ impl DesktopPetView {
     }
 
     fn apply_agent_outfit_request(&mut self, request: &AgentOutfitRequest, cx: &mut Context<Self>) {
-        if !CONFIG.allow_agent_outfit_change()
+        if !self.desktop_pet_visible
+            || !CONFIG.allow_agent_outfit_change()
             || !self.chat.read(cx).outfit_request_is_current(request)
         {
             request.complete(false);
@@ -1294,6 +1313,7 @@ impl DesktopPetView {
             return;
         };
         log::debug!("正在停止 Live2D GPU worker：generation={generation}");
+        self.gpu_event_task = None;
         let worker = underlay.request_shutdown();
         let completion = Arc::new(GpuShutdownCompletion::default());
         self.gpu_shutdown_pending = true;
@@ -1321,6 +1341,9 @@ impl DesktopPetView {
                 log::debug!("Live2D GPU worker 已完成回收：generation={generation}");
                 if this.close_after_gpu_shutdown {
                     window.remove_window();
+                } else if this.gpu_restore_pending && this.desktop_pet_visible {
+                    this.gpu_restore_pending = false;
+                    this.restore_gpu_underlay(window, cx);
                 } else if this.gpu_shutdown_restart_cpu && this.model_generation == generation {
                     this.selected_model = None;
                     this.load_model(model_path, cx);
@@ -1385,7 +1408,41 @@ impl DesktopPetView {
         }));
     }
 
-    /// 在原生窗口显隐成功后同步模型调度状态；隐藏不会卸载模型主体。
+    fn restore_gpu_underlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.gpu_underlay.is_some() || !self.gpu_released_for_hidden || self.quitting {
+            return;
+        }
+        let underlay = match GpuUnderlay::attach(window) {
+            Ok(Some(underlay)) => underlay,
+            Ok(None) => {
+                log::info!("桌宠恢复显示时 GPU underlay 不可用，正在重建 CPU renderer");
+                self.restore_cpu_after_hidden(cx);
+                return;
+            }
+            Err(error) => {
+                log::warn!("桌宠恢复显示时 GPU underlay 创建失败：{error}");
+                self.restore_cpu_after_hidden(cx);
+                return;
+            }
+        };
+        self.gpu_underlay = Some(underlay);
+        self.gpu_shutdown_restart_cpu = false;
+        self.gpu_restore_pending = false;
+        self.gpu_released_for_hidden = false;
+        self.start_gpu_event_task(cx);
+        self.reload_model(self.selected_model.clone(), cx);
+    }
+
+    fn restore_cpu_after_hidden(&mut self, cx: &mut Context<Self>) {
+        self.gpu_shutdown_restart_cpu = false;
+        self.gpu_restore_pending = false;
+        self.gpu_released_for_hidden = false;
+        if self.model_task.is_none() && self.selected_model.is_some() {
+            self.reload_model(self.selected_model.clone(), cx);
+        }
+    }
+
+    /// 在原生窗口显隐成功后同步模型、语音和 Agent 生命周期。
     pub(crate) fn set_desktop_pet_visible(
         &mut self,
         visible: bool,
@@ -1405,13 +1462,17 @@ impl DesktopPetView {
             self.model_generation
         );
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
+        self.chat.update(cx, |chat, cx| {
+            if visible {
+                chat.resume_after_hidden();
+            } else {
+                chat.suspend_for_hidden(cx);
+            }
+        });
         let voice_settings = CONFIG.voice_settings();
         self.apply_voice_settings(&voice_settings, cx);
         self.frame_rate_meter.reset();
         self.actual_fps = 0.0;
-        if let Some(underlay) = &self.gpu_underlay {
-            underlay.set_paused(!visible);
-        }
         if let Some(wake) = &self.frame_rate_wake {
             wake.wake();
         }
@@ -1421,9 +1482,29 @@ impl DesktopPetView {
             if self.show_fps {
                 self.start_fps_task(cx);
             }
+            if self.gpu_released_for_hidden {
+                if self.gpu_shutdown_pending {
+                    self.gpu_restore_pending = true;
+                    self.gpu_shutdown_restart_cpu = false;
+                } else {
+                    self.restore_gpu_underlay(window, cx);
+                }
+            }
         } else {
             self.fps_task = None;
+            self.gpu_restore_pending = false;
+            if self.gpu_shutdown_pending && self.gpu_released_for_hidden {
+                self.gpu_shutdown_restart_cpu = true;
+            }
             self.release_rendered_images(window);
+            if self.gpu_underlay.is_some() && !self.gpu_shutdown_pending {
+                if let Some(underlay) = &self.gpu_underlay {
+                    underlay.set_paused(true);
+                }
+                self.gpu_released_for_hidden = true;
+                self.gpu_shutdown_restart_cpu = true;
+                self.begin_gpu_shutdown(self.model_generation, self.selected_model.clone(), cx);
+            }
         }
         self.sync_cursor_tracking_task(cx);
         cx.notify();

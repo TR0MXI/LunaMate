@@ -192,6 +192,14 @@ impl Worker {
         self.manual_samples = None;
         self.transcription_pending = false;
         self.normalized.clear();
+        if self.settings.mode == VoiceMode::Off
+            || !matches!(
+                self.settings.backend.as_ref(),
+                Some(VoiceTranscriptionBackend::LocalWhisper(_))
+            )
+        {
+            self.transcription_queue.release_context();
+        }
 
         match self.settings.mode {
             VoiceMode::Off => self.publish_phase(VoicePhase::Off),

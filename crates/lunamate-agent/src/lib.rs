@@ -99,6 +99,7 @@ pub struct AgentInput {
     pub screenshot_capability: Option<Arc<dyn ScreenshotCapability>>,
     pub outfits: Vec<OutfitOption>,
     pub outfit_revision: u64,
+    pub request_revision: u64,
     pub language: AppLanguage,
 }
 
@@ -192,7 +193,9 @@ struct AgentState {
     status: Option<String>,
     reply_message_id: Option<u64>,
     active_request: Option<ActiveRequest>,
+    request_revision: u64,
     switching_memory: bool,
+    suspended: bool,
     shutting_down: bool,
     pending_voice: Option<PendingVoice>,
 }
@@ -264,7 +267,9 @@ impl Agent {
                 status: initial_status,
                 reply_message_id: None,
                 active_request: None,
+                request_revision: 1,
                 switching_memory: false,
+                suspended: false,
                 shutting_down: false,
                 pending_voice: None,
             }),
@@ -320,7 +325,9 @@ impl Agent {
                 status: restore_status.or(initial_status),
                 reply_message_id: None,
                 active_request: None,
+                request_revision: 1,
                 switching_memory: false,
+                suspended: false,
                 shutting_down: false,
                 pending_voice: None,
             }),
@@ -363,6 +370,11 @@ impl Agent {
                 .as_ref()
                 .map(|pending| pending.utterance_id),
         }
+    }
+
+    /// 返回宿主构造下一次输入时必须携带的生命周期 revision。
+    pub fn request_revision(&self) -> u64 {
+        self.state.lock().request_revision
     }
 
     pub fn memory(&self) -> AgentMemory {
@@ -610,17 +622,23 @@ impl Agent {
     /// 创建并执行一轮完整请求，直到收到终态、取消或网络任务结束。
     pub async fn send(self: Arc<Self>, input: AgentInput) -> Result<ResponseId, AgentError> {
         let runtime = self.runtime.read().clone();
-        let model = runtime.model.clone().ok_or(AgentError::ModelUnavailable)?;
-        if runtime.limits.max_request_tokens < 8 {
-            return Err(AgentError::ContextWindowExhausted);
-        }
         let (response_id, request, abort_registration) = {
             let mut state = self.state.lock();
             if state.shutting_down {
                 return Err(AgentError::ShuttingDown);
             }
+            if state.suspended {
+                return Err(AgentError::Suspended);
+            }
+            if input.request_revision != state.request_revision {
+                return Err(AgentError::StaleInput);
+            }
             if state.switching_memory {
                 return Err(AgentError::MemorySwitching);
+            }
+            let model = runtime.model.clone().ok_or(AgentError::ModelUnavailable)?;
+            if runtime.limits.max_request_tokens < 8 {
+                return Err(AgentError::ContextWindowExhausted);
             }
             let started = state
                 .session
@@ -718,6 +736,51 @@ impl Agent {
             self.notify_state();
         }
         cancelled
+    }
+
+    /// 挂起 Agent，取消当前请求并移除触发它的整轮消息。
+    pub fn suspend_and_discard_active_turn(&self) -> bool {
+        let discarded = {
+            let mut state = self.state.lock();
+            state.suspended = true;
+            state.request_revision = next_revision(state.request_revision);
+            state.pending_voice = None;
+            let discarded = state
+                .session
+                .active_response_id()
+                .map(|response_id| {
+                    abort_active_request(&mut state, "hidden");
+                    state.session.discard_response_turn(response_id)
+                })
+                .unwrap_or(false);
+            if discarded {
+                state.reply_message_id = None;
+                state.status = None;
+            }
+            discarded
+        };
+        if discarded {
+            self.publish_live_context();
+            self.persist(true);
+        }
+        self.notify_state();
+        discarded
+    }
+
+    /// 解除桌宠隐藏期间的 Agent 挂起状态。
+    pub fn resume_after_hidden(&self) {
+        let changed = {
+            let mut state = self.state.lock();
+            if state.suspended {
+                state.suspended = false;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.notify_state();
+        }
     }
 
     /// 在 VAD 确认新语音开始时打断当前回复，并为下一轮保留语音打断标记。
@@ -982,6 +1045,15 @@ impl Agent {
         language: AppLanguage,
     ) -> bool {
         if let ChatStreamEvent::ChangeOutfit(request) = event {
+            let current = {
+                let state = self.state.lock();
+                request_is_current(&state, response_id, runtime_revision)
+                    && state.session.active_response_id() == Some(response_id)
+            };
+            if !current {
+                request.complete(false);
+                return false;
+            }
             if self
                 .effects
                 .try_send(AgentEffect::ChangeOutfit(request.clone()))
@@ -1189,6 +1261,8 @@ pub enum AgentError {
     ModelUnavailable,
     ContextWindowExhausted,
     MemorySwitching,
+    Suspended,
+    StaleInput,
     ShuttingDown,
     Session(String),
     Persistence(String),
@@ -1206,6 +1280,8 @@ impl AgentError {
             Self::MemorySwitching => {
                 t!("chat.persona_switching", locale = language.id()).to_string()
             }
+            Self::Suspended => t!("chat.stopped", locale = language.id()).to_string(),
+            Self::StaleInput => t!("chat.stopped", locale = language.id()).to_string(),
             Self::ShuttingDown => t!("chat.stopped", locale = language.id()).to_string(),
             Self::Session(message) | Self::Persistence(message) => message.clone(),
         }
@@ -1218,6 +1294,8 @@ impl fmt::Display for AgentError {
             Self::ModelUnavailable => write!(formatter, "Agent 模型尚未配置"),
             Self::ContextWindowExhausted => write!(formatter, "Agent 上下文窗口没有可用输入预算"),
             Self::MemorySwitching => write!(formatter, "Agent 正在切换人格记忆"),
+            Self::Suspended => write!(formatter, "Agent 当前已挂起"),
+            Self::StaleInput => write!(formatter, "Agent 输入已过期"),
             Self::ShuttingDown => write!(formatter, "Agent 正在关闭"),
             Self::Session(message) => write!(formatter, "Agent 会话操作失败：{message}"),
             Self::Persistence(message) => write!(formatter, "Agent 持久化失败：{message}"),

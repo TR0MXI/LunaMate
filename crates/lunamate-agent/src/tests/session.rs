@@ -892,6 +892,38 @@ fn deleting_multiple_messages_is_atomic_while_a_selected_turn_is_active() {
 }
 
 #[test]
+fn discarding_an_active_response_removes_its_entire_turn() {
+    let mut session = ChatSession::default();
+    let completed = session
+        .start_turn("kept question")
+        .expect("保留轮次应可开始");
+    session
+        .append_response(completed.response_id, "kept answer")
+        .expect("保留回复应可写入");
+    assert!(session.finish_response(completed.response_id));
+    let active = session
+        .start_turn("discarded question")
+        .expect("待丢弃轮次应可开始");
+    session
+        .append_response(active.response_id, "partial answer")
+        .expect("部分回复应可写入");
+
+    assert!(session.discard_response_turn(active.response_id));
+    assert_eq!(session.active_response_id(), None);
+    assert_eq!(session.messages().len(), 2);
+    assert!(
+        session
+            .messages()
+            .iter()
+            .all(|message| !message.content().contains("discarded"))
+    );
+    assert!(matches!(
+        session.append_response(active.response_id, "late"),
+        Err(ChatError::StaleResponse)
+    ));
+}
+
+#[test]
 fn deleting_messages_never_transfers_an_assistant_trace() {
     let mut session = ChatSession::default();
     for (question, answer, reasoning) in [

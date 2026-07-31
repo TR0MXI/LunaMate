@@ -51,6 +51,18 @@ fn stale_or_shutdown_transcription_cannot_enter_the_queue() {
 }
 
 #[test]
+fn context_release_clears_pending_transcription_and_wakes_the_worker() {
+    let desired_revision = Arc::new(AtomicU64::new(1));
+    let queue = TranscriptionQueue::new(desired_revision);
+    assert!(queue.submit(job(1, 10)));
+
+    queue.release_context();
+
+    assert!(queue.take_pending_for_test().is_none());
+    assert!(queue.take_context_release_for_test());
+}
+
+#[test]
 fn configured_language_catalog_matches_the_linked_whisper_runtime() {
     let linked = (0..=whisper_rs::get_lang_max_id())
         .map(|id| whisper_rs::get_lang_str(id).expect("Whisper 语言 ID 应当存在"))

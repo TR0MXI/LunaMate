@@ -13,7 +13,8 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 use gpui_tokio::Tokio;
 use lunamate_agent::{
-    Agent, AgentEffect, AgentInput, AgentSnapshot, Client, chat_limits, client_from_model,
+    Agent, AgentEffect, AgentError, AgentInput, AgentSnapshot, Client, chat_limits,
+    client_from_model,
     config::{AgentConfigSnapshot, AppLanguage},
     media::ImageAttachment,
     model_and_options_from_config,
@@ -63,6 +64,8 @@ pub struct AgentView {
     voice_transcription_abort: Option<tokio::task::AbortHandle>,
     speech_task: Option<Task<()>>,
     speech_abort: Option<tokio::task::AbortHandle>,
+    speech_revision: u64,
+    suspended: bool,
     messages_scroll: ScrollHandle,
     input_visible: bool,
     voice_indicator_visible: bool,
@@ -146,6 +149,8 @@ impl AgentView {
             voice_transcription_abort: None,
             speech_task: None,
             speech_abort: None,
+            speech_revision: 0,
+            suspended: false,
             messages_scroll: ScrollHandle::new(),
             input_visible: false,
             voice_indicator_visible: false,
@@ -173,7 +178,9 @@ impl AgentView {
         }
         if became_terminal {
             self.schedule_reply_fade(cx);
-            self.start_speech(self.snapshot.clone(), cx);
+            if !self.suspended {
+                self.start_speech(self.snapshot.clone(), cx);
+            }
         }
         self.messages_scroll.scroll_to_bottom();
         cx.notify();
@@ -359,6 +366,28 @@ impl AgentView {
         self.agent.cancel_pending_voice();
     }
 
+    /// 隐藏桌宠时挂起 Agent，并丢弃触发中的整轮对话。
+    pub fn suspend_for_hidden(&mut self, cx: &mut Context<Self>) {
+        if self.suspended {
+            return;
+        }
+        self.suspended = true;
+        self.cancel_remote_transcription();
+        self.cancel_speech();
+        self.agent.suspend_and_discard_active_turn();
+        self.sync_agent_snapshot(cx);
+        cx.emit(AgentViewEvent::StopSpeech);
+    }
+
+    /// 显示桌宠后允许新的 Agent 请求进入 Provider。
+    pub fn resume_after_hidden(&mut self) {
+        if !self.suspended {
+            return;
+        }
+        self.suspended = false;
+        self.agent.resume_after_hidden();
+    }
+
     pub fn transcribe_voice(
         &mut self,
         revision: u64,
@@ -446,7 +475,8 @@ impl AgentView {
         language: AppLanguage,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.snapshot.is_streaming()
+        if self.suspended
+            || self.snapshot.is_streaming()
             || self.snapshot.is_switching_memory()
             || self.snapshot.is_shutting_down()
         {
@@ -463,11 +493,14 @@ impl AgentView {
             screenshot_capability: host_screenshot_capability(),
             outfits,
             outfit_revision: self.outfit_revision,
+            request_revision: self.agent.request_revision(),
             language,
         };
         let agent = self.agent.clone();
         Tokio::spawn(cx, async move {
-            if let Err(error) = agent.clone().send(request).await {
+            if let Err(error) = agent.clone().send(request).await
+                && !matches!(error, AgentError::Suspended | AgentError::StaleInput)
+            {
                 agent.set_status(Some(error.localized_message(language)));
             }
         })
@@ -492,6 +525,7 @@ impl AgentView {
 
     fn start_speech(&mut self, snapshot: AgentSnapshot, cx: &mut Context<Self>) {
         self.cancel_speech();
+        let revision = self.speech_revision;
         let personas = CONFIG.persona_settings();
         let Some(persona) = personas.active() else {
             return;
@@ -522,7 +556,10 @@ impl AgentView {
         self.speech_task = Some(cx.spawn(async move |this, cx| {
             match task.await {
                 Ok(Ok(audio)) => {
-                    let _ = this.update(cx, |_this, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        if this.suspended || this.speech_revision != revision {
+                            return;
+                        }
                         let sample_rate = audio.sample_rate();
                         cx.emit(AgentViewEvent::SpeechAudio {
                             samples: audio.into_samples(),
@@ -537,13 +574,16 @@ impl AgentView {
                 Err(_) => {}
             }
             let _ = this.update(cx, |this, _| {
-                this.speech_abort = None;
-                this.speech_task = None;
+                if this.speech_revision == revision {
+                    this.speech_abort = None;
+                    this.speech_task = None;
+                }
             });
         }));
     }
 
     fn cancel_speech(&mut self) {
+        self.speech_revision = self.speech_revision.wrapping_add(1).max(1);
         if let Some(abort) = self.speech_abort.take() {
             abort.abort();
         }

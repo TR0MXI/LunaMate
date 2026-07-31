@@ -189,6 +189,8 @@ GPUI 点击
   本地 Whisper 作为 Transcription Provider、把 Speech Synthesis 模型绑定到人格。
 - [x] 助手完整回复通过人格绑定模型合成为有界 24 kHz PCM，在独立 CPAL 播放线程重采样，
   新输入、语音打断、配置切换和窗口关闭时停止旧合成或播放。
+- [x] 托盘隐藏桌宠时关闭采集与 VAD、卸载 Whisper context、取消并移除活动 Agent 轮次、
+  阻止迟到 TTS 播放并回收 Live2D GPU underlay，恢复显示后按当前配置重建运行时资源。
 - [x] 录音时显示底部音量波形，并在用户说话时打断流式回复、保留带标注的部分上下文。
 - [x] 通用构建固定包含 macOS Metal 或 Windows/Linux Vulkan，运行时按偏好启用并在失败时回退 CPU。
 - [x] 移除本地 `whisper-rs-sys` patch，VAD 只通过 whisper-rs 公开安全接口推理。
