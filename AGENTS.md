@@ -2,8 +2,8 @@
 
 本文只记录长期有效的项目约束，避免复制易过期的实现快照：
 
-- 依赖、feature、lint 和构建配置以 `Cargo.toml` 为准，精确版本与 Git commit 以
-  `Cargo.lock` 为准。
+- 依赖、feature 和 lint 以 `Cargo.toml` 为准，精确版本与 Git commit 以 `Cargo.lock`
+  为准；第三方原生库的跨机器构建环境以 `.cargo/config.toml` 为准。
 - 已实现能力以源码为准，计划与验收项以 `TODO.md` 为准；Mocari 来源和本地差异以
   `vendor/mocari/LUNAMATE.md` 为准。
 
@@ -107,6 +107,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
   固定包含 Vulkan。CUDA、ROCm 与 Intel SYCL 会直接链接供应商运行库，不得加入通用二进制；
   Windows 和 Linux 运行时由系统或 GPU 驱动提供 Vulkan loader。如需支持供应商后端，必须先
   设计可选后端动态加载与独立产物策略。
+- ggml 必须关闭 `GGML_NATIVE`，避免发布产物绑定构建机器的本地 CPU 指令集，也避免共享编译
+  缓存把本机优化对象复用于不同型号的 CI runner；若上游改为默认生成可移植的运行时分派代码，
+  可复核并移除该环境约束。
 - SurrealDB 生产依赖只启用 SurrealKV 与 Rustls，测试才启用 Mem；不要启用远程协议、
   原生 TLS、HTTP、脚本、ML 或其 allocator，除非对应能力已有明确需求和验收。
 

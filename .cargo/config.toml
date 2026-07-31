@@ -1,0 +1,3 @@
+[env]
+# 发布产物与共享编译缓存不得绑定构建机器的本地 CPU 指令集。
+GGML_NATIVE = { value = "OFF", force = true }
