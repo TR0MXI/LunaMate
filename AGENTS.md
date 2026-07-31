@@ -5,7 +5,7 @@
 - 依赖、feature 和 lint 以 `Cargo.toml` 为准，精确版本与 Git commit 以 `Cargo.lock`
   为准；第三方原生库的跨机器构建环境以 `.cargo/config.toml` 为准。
 - 已实现能力以源码为准，计划与验收项以 `TODO.md` 为准；Mocari 来源和本地差异以
-  `vendor/mocari/LUNAMATE.md` 为准。
+  `crates/lunamate-mocari/LUNAMATE.md` 为准。
 
 ## 快速原型阶段
 
@@ -84,7 +84,7 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
   crate 前评估现有方案、维护状态、安全、许可证、测试、体积、线程和系统依赖。
 - 项目维护的工作空间成员共同使用的依赖必须在根 `[workspace.dependencies]` 固定来源、版本与
   基础 feature，成员清单通过 `workspace = true` 继承，避免 GPUI、Tokio、serde 等共享类型出现
-  版本分叉；保留原始 manifest 的 `vendor/mocari` 除外。
+  版本分叉；保留原始 manifest 的 `crates/lunamate-mocari` 除外。
 - GPUI 相关 Git 依赖必须兼容并解析到同一 Zed commit，依赖图中只保留一套 GPUI 类型。
   Live2D 代码只使用 `gpui_wgpu::wgpu`，underlay GPU 资源不得传入 GPUI renderer；
   不要用个人 fork 或另一版 GPUI 绕过类型冲突。
@@ -93,10 +93,10 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
 - `global-hotkey` 只用于 Windows、macOS 与 X11 的系统级快捷键；原生 Wayland 使用 XDG
   GlobalShortcuts portal、稳定应用/动作 ID 和合成器返回的绑定子集，不得把 preferred trigger
   或本地配置伪装为注册成功。发布包必须安装与应用 ID 匹配的 desktop entry。
-- `vendor/mocari` 是第三方源码边界；保留 MIT `LICENSE`、原始 manifest 和
+- `crates/lunamate-mocari` 是仓库内维护的第三方源码边界；保留 MIT `LICENSE`、原始 manifest 和
   `LUNAMATE.md`，本地修改限于当前集成、安全或性能所必需的修复，并同步记录差异。升级相关依赖时
   检查 `[patch.crates-io]` 是否可以移除。
-- `vendor/mocari` 同时是非默认 workspace 成员，以便不构建 LunaMate 的语音和桌面依赖就能独立
+- `crates/lunamate-mocari` 同时是非默认 workspace 成员，以便不构建 LunaMate 的语音和桌面依赖就能独立
   运行库测试与 Criterion 基准；根目录默认命令覆盖 `lunamate` 与 `lunamate-agent`，不自动运行
   Mocari 基准。`benchmark-support` 只能用于合成数据基准，不得进入生产依赖 feature。
 - Silero VAD v6.2.0 模型作为记录来源和 MIT 许可证的固定资源内嵌进最终二进制，自动模式不得

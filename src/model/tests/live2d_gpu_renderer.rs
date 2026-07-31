@@ -34,7 +34,7 @@ fn postmultiplied_alpha_pipeline_accepts_float_intermediate_texture() {
 }
 
 #[test]
-fn vendored_mocari_renderer_accepts_gpui_wgpu_device() {
+fn maintained_mocari_renderer_accepts_gpui_wgpu_device() {
     let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
     let _renderer = WgpuLive2dRenderer::new(&device, wgpu::TextureFormat::Bgra8Unorm);
 }

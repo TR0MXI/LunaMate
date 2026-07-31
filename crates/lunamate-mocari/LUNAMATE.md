@@ -1,6 +1,7 @@
-# LunaMate vendoring notes
+# LunaMate maintenance notes
 
-This directory contains the source of Mocari 0.4.0, vendored for LunaMate.
+This crate contains the source of Mocari 0.4.0 maintained in the LunaMate
+workspace.
 
 - Upstream: https://github.com/Eatgrapes/Mocari
 - Upstream commit: `0a5f39647c9ea8c299d6c284d5f26e824bf76716`
@@ -56,7 +57,7 @@ Local changes:
 - The motion parser accepts VTube Studio recording exports marked as version 0;
   those files use the same curve and segment layout as Cubism motion version 3.
 - Upstream examples, integration tests, and development dependencies are not
-  included in the application dependency copy.
+  included in this workspace crate.
 - The local-only `benchmark-support` feature exposes a synthetic two-keyform
   warp chain to Criterion. `deformer_composition` measures warmed steady-state
   scratch; `deformer_composition_allocations` asserts that it performs zero

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/lunamate-agent", "vendor/mocari"]
+members = [".", "crates/lunamate-agent", "crates/lunamate-mocari"]
 default-members = [".", "crates/lunamate-agent"]
 resolver = "3"
 
@@ -24,7 +24,7 @@ gpui_wgpu = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 log = "0.4.33"
 lunamate-agent = { path = "crates/lunamate-agent" }
-mocari = { version = "0.4.0", path = "vendor/mocari", features = ["wgpu"] }
+mocari = { version = "0.4.0", path = "crates/lunamate-mocari", features = ["wgpu"] }
 parking_lot = "0.12.5"
 raw-window-handle = "0.6.2"
 ringbuf = "0.4.8"

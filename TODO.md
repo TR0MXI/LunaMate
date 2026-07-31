@@ -25,7 +25,7 @@ GPUI 点击
 - [x] Wayland 使用 `wl_subsurface.place_below(parent)` 和独立 Vulkan surface。
 - [x] X11 及 GPU 初始化、透明 Alpha、surface/device 失败时回退 CPU renderer。
 - [x] 使用 Mocari WGPU renderer 处理网格、绘制顺序、蒙版和混合模式。
-- [x] 将 Mocari 0.4.0 源码与 MIT 许可证纳入 `vendor/mocari`，记录上游 commit 和本地差异。
+- [x] 将 Mocari 0.4.0 源码与 MIT 许可证纳入 `crates/lunamate-mocari` 维护，记录上游 commit 和本地差异。
 - [x] 将 Mocari backend 适配到 `gpui_wgpu::wgpu` 29，移除 WGPU 30 及其 core、HAL 和 Naga 依赖副本。
 - [x] GPU 帧成功 present 后再发布对应 HitArea，帧通知使用有界合并通道。
 - [x] 窗口关闭前停止 GPU worker，并按 surface、原生 attachment 的顺序释放资源。
