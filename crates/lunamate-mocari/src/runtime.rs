@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 
+#[cfg(feature = "benchmark-support")]
+use crate::moc3::update_moc3_drawable_meshes_unpruned;
 use crate::{
     core::{PhysicsOptions, PhysicsRuntime, clamp_parameter_value, draw_order_from_raw},
     json::{Model3, Physics3, Pose3, copy_pose_link_opacities, update_pose_group_opacities},
@@ -707,6 +709,7 @@ impl ModelRuntime {
                 &self.bindings,
                 &self.ids,
                 &self.offscreen,
+                &self.glues,
                 &self.parameter_values,
             )?;
         } else {
@@ -720,11 +723,41 @@ impl ModelRuntime {
                 &self.parameter_values,
                 &self.mesh_update_scratch.drawable_part_opacities,
             )?;
+            self.glues.apply_with_scratch(
+                &mut self.meshes,
+                &self.bindings,
+                &self.parameter_values,
+                &mut self.mesh_update_scratch.keyforms,
+            )?;
         }
         Some(())
     }
 
     fn apply_mesh_post_processing(&mut self) -> Option<()> {
+        self.apply_group_render_orders();
+        Some(())
+    }
+
+    #[cfg(feature = "benchmark-support")]
+    pub fn update_meshes_unpruned_for_benchmark(&mut self) -> Option<()> {
+        self.update_part_opacities()?;
+        update_drawable_part_opacities(
+            self.art_meshes.meshes().len(),
+            &self.offscreen,
+            &self.part_opacities,
+            &mut self.mesh_update_scratch.drawable_part_opacities,
+        )?;
+        update_moc3_drawable_meshes_unpruned(
+            &mut self.meshes,
+            &mut self.mesh_update_scratch,
+            &self.art_meshes,
+            &self.art_mesh_keyforms,
+            &self.deformers,
+            &self.bindings,
+            &self.ids,
+            &self.offscreen,
+            &self.parameter_values,
+        )?;
         self.glues.apply_with_scratch(
             &mut self.meshes,
             &self.bindings,

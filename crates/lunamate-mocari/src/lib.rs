@@ -60,3 +60,6 @@ pub use crate::error::{Error, Result};
 pub use crate::expression::{ExpressionManager, ExpressionPlayer};
 pub use crate::motion::MotionPlayer;
 pub use crate::runtime::{HitAreaInfo, ModelRuntime, ParameterInfo};
+
+#[cfg(test)]
+mod tests;

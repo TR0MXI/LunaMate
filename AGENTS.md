@@ -218,6 +218,16 @@ cargo bench --locked -p mocari --bench deformer_composition --features benchmark
 cargo bench --locked -p mocari --bench deformer_composition_allocations --features benchmark-support
 ```
 
+用户自备模型的运行时网格更新基准通过环境变量传入模型、状态和驱动参数，不把模型路径或
+模型专属参数固化到仓库：
+
+```bash
+LUNAMATE_BENCH_MODEL=/path/to/model.model3.json \
+LUNAMATE_BENCH_STATES='default;outfit:ParamOutfit=1' \
+LUNAMATE_BENCH_DRIVE_PARAMETER=ParamAngleX \
+cargo bench --locked -p mocari --bench runtime_mesh_update --features benchmark-support
+```
+
 - 目标平台系统依赖导致命令失败时，记录准确原因，不得删除 feature、测试或错误处理来掩盖问题。
 - 涉及窗口、透明度、缩放、鼠标命中或 GPU 渲染的变更，必须在真实目标桌面环境验证。
 - 实时状态测试覆盖取消、超时、迟到或乱序结果、大 frame delta、模型缺失和窗口关闭。

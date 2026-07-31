@@ -209,6 +209,40 @@ impl Moc3Glues {
         parameter_values: &[f32],
         keyform_scratch: &mut Moc3KeyformScratch,
     ) -> Option<()> {
+        self.apply_with_scratch_and_required(
+            meshes,
+            bindings,
+            parameter_values,
+            keyform_scratch,
+            None,
+        )
+    }
+
+    pub(crate) fn apply_required_with_scratch(
+        &self,
+        meshes: &mut [Moc3DrawableMesh],
+        bindings: &Moc3KeyformBindings,
+        parameter_values: &[f32],
+        keyform_scratch: &mut Moc3KeyformScratch,
+        geometry_required: &[bool],
+    ) -> Option<()> {
+        self.apply_with_scratch_and_required(
+            meshes,
+            bindings,
+            parameter_values,
+            keyform_scratch,
+            Some(geometry_required),
+        )
+    }
+
+    fn apply_with_scratch_and_required(
+        &self,
+        meshes: &mut [Moc3DrawableMesh],
+        bindings: &Moc3KeyformBindings,
+        parameter_values: &[f32],
+        keyform_scratch: &mut Moc3KeyformScratch,
+        geometry_required: Option<&[bool]>,
+    ) -> Option<()> {
         for index in 0..self.len() {
             let info_count = usize::try_from(*self.info_counts.get(index)?).ok()?;
             if info_count == 0 {
@@ -220,6 +254,12 @@ impl Moc3Glues {
 
             let mesh_a = usize::try_from(*self.art_mesh_indices_a.get(index)?).ok()?;
             let mesh_b = usize::try_from(*self.art_mesh_indices_b.get(index)?).ok()?;
+            if let Some(required) = geometry_required
+                && !*required.get(mesh_a)?
+                && !*required.get(mesh_b)?
+            {
+                continue;
+            }
             let intensity =
                 self.interpolate_intensity(index, bindings, parameter_values, keyform_scratch)?;
             let info_begin = usize::try_from(*self.info_begin_indices.get(index)?).ok()?;
@@ -231,6 +271,37 @@ impl Moc3Glues {
         }
 
         Some(())
+    }
+
+    pub(crate) fn expand_geometry_required(&self, required: &mut [bool]) -> Option<()> {
+        loop {
+            let mut changed = false;
+            for index in 0..self.len() {
+                let info_count = usize::try_from(*self.info_counts.get(index)?).ok()?;
+                if info_count == 0 {
+                    continue;
+                }
+                if info_count % 2 != 0 {
+                    return None;
+                }
+                let mesh_a = usize::try_from(*self.art_mesh_indices_a.get(index)?).ok()?;
+                let mesh_b = usize::try_from(*self.art_mesh_indices_b.get(index)?).ok()?;
+                if mesh_a == mesh_b {
+                    return None;
+                }
+                let required_a = *required.get(mesh_a)?;
+                let required_b = *required.get(mesh_b)?;
+                if required_a == required_b {
+                    continue;
+                }
+                *required.get_mut(mesh_a)? = true;
+                *required.get_mut(mesh_b)? = true;
+                changed = true;
+            }
+            if !changed {
+                return Some(());
+            }
+        }
     }
 
     fn interpolate_intensity(

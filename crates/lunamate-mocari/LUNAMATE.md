@@ -39,6 +39,14 @@ Local changes:
   composition invalidates partial results without discarding those capacities;
   cloning a runtime starts with empty scratch instead of copying the retained
   buffers.
+- Steady mesh updates evaluate every drawable's exact opacity, colors, and order,
+  then update positions only for visible drawables and the transitive mask/glue
+  geometry they consume. Invisible geometry is refreshed before it becomes
+  visible again. A previous-frame hidden-vertex threshold keeps ordinary and
+  fully visible models on the original fused update path when dependency planning
+  would cost more than it saves. Models with offscreen metadata conservatively
+  retain the full geometry path until Mocari implements the corresponding effect
+  passes.
 - Warp and rotation deformers expose prepared `WarpTarget` and `RotationTarget`
   values that validate the grid geometry, precompute the extrapolation basis and
   build the rotation matrix once per deformer, plus a batched `transform_slice`.
@@ -61,8 +69,10 @@ Local changes:
 - The local-only `benchmark-support` feature exposes a synthetic two-keyform
   warp chain to Criterion. `deformer_composition` measures warmed steady-state
   scratch; `deformer_composition_allocations` asserts that it performs zero
-  allocations. Criterion, allocation-counter, and mimalloc are dev-only
-  dependencies and the feature is not enabled by LunaMate's production edge.
+  allocations. `runtime_mesh_update` loads a user-supplied model and verifies the
+  optimized path against an unpruned reference before measuring named parameter
+  states. Criterion, allocation-counter, and mimalloc are dev-only dependencies
+  and the feature is not enabled by LunaMate's production edge.
 - Three retained unit tests that require the undistributed Hiyori model are
   ignored by default and can be run manually after supplying that asset.
 

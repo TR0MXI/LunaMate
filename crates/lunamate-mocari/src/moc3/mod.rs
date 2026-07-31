@@ -40,6 +40,8 @@ pub use header::{Endianness, Moc3Header, Moc3Version};
 pub use ids::Moc3Ids;
 pub use keyform_bindings::Moc3KeyformBindings;
 pub use keyforms::{Moc3ArtMeshKeyformInfo, Moc3ArtMeshKeyforms};
+#[cfg(feature = "benchmark-support")]
+pub(crate) use mesh_build::update_moc3_drawable_meshes_unpruned;
 pub(crate) use mesh_build::{
     Moc3MeshUpdateScratch, update_moc3_drawable_meshes_with_parameters_offscreen_and_part_opacities,
 };
@@ -50,6 +52,8 @@ pub use mesh_build::{
     build_moc3_drawable_meshes_with_parameters_and_offscreen_state,
     build_moc3_drawable_meshes_with_parameters_offscreen_and_part_opacities,
 };
+#[cfg(test)]
+pub(crate) use mesh_build::{geometry_required_for_test, should_prune_geometry_for_test};
 pub use offscreen::Moc3OffscreenInfo;
 pub use offsets::Moc3SectionOffsets;
 pub use parts::Moc3Parts;

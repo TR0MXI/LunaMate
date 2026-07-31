@@ -2,12 +2,15 @@ use crate::core::Vector2;
 
 use super::{
     Moc3ArtMeshKeyformInfo, Moc3ArtMeshKeyforms, Moc3ArtMeshes, Moc3Deformers, Moc3DrawableMesh,
-    Moc3DrawableVertex, Moc3Ids, Moc3KeyformBindings, Moc3OffscreenInfo, build_moc3_drawable_mesh,
+    Moc3DrawableVertex, Moc3Glues, Moc3Ids, Moc3KeyformBindings, Moc3OffscreenInfo,
+    build_moc3_drawable_mesh,
     compose::ComposedDeformers,
     keyform_bindings::{Moc3KeyformScratch, Moc3KeyformSlot},
 };
 
 const MAX_ART_MESH_INTERPOLATION_VALUES: usize = 4_000_000;
+const MIN_PRUNABLE_VERTICES: usize = 1_024;
+const MIN_PRUNABLE_VERTEX_PERCENT: usize = 25;
 
 #[derive(Debug, Default)]
 pub(crate) struct Moc3MeshUpdateScratch {
@@ -15,6 +18,8 @@ pub(crate) struct Moc3MeshUpdateScratch {
     pub(crate) keyforms: Moc3KeyformScratch,
     composed: ComposedDeformers,
     pub(crate) drawable_part_opacities: Vec<f32>,
+    drawable_slots: Vec<Vec<Moc3KeyformSlot>>,
+    geometry_required: Vec<bool>,
 }
 
 impl Clone for Moc3MeshUpdateScratch {
@@ -143,10 +148,25 @@ pub(crate) fn update_moc3_drawable_meshes_with_parameters_offscreen_and_part_opa
     bindings: &Moc3KeyformBindings,
     ids: &Moc3Ids,
     offscreen: &Moc3OffscreenInfo,
+    glues: &Moc3Glues,
     parameter_values: &[f32],
 ) -> Option<()> {
     if meshes.len() != art_meshes.meshes().len() {
         return None;
+    }
+    if !should_prune_geometry(meshes, offscreen) {
+        update_moc3_drawable_meshes_unpruned(
+            meshes,
+            scratch,
+            art_meshes,
+            art_mesh_keyforms,
+            deformers,
+            bindings,
+            ids,
+            offscreen,
+            parameter_values,
+        )?;
+        return glues.apply_with_scratch(meshes, bindings, parameter_values, &mut scratch.keyforms);
     }
 
     deformers.compose_into(
@@ -155,16 +175,25 @@ pub(crate) fn update_moc3_drawable_meshes_with_parameters_offscreen_and_part_opa
         &mut scratch.keyforms,
         &mut scratch.composed,
     )?;
+    reset_drawable_slots(&mut scratch.drawable_slots, meshes.len())?;
     for (art_mesh_index, mesh) in meshes.iter_mut().enumerate() {
-        update_moc3_drawable_mesh_for_pose(
-            mesh,
-            &mut scratch.positions,
+        let keyform_count = art_mesh_keyforms.art_mesh_keyforms(art_mesh_index)?.len();
+        let slots = bindings.keyform_slots_into(
+            art_meshes.art_mesh_keyform_binding_band_index(art_mesh_index)?,
+            keyform_count,
+            parameter_values,
             &mut scratch.keyforms,
+        )?;
+        let drawable_slots = scratch.drawable_slots.get_mut(art_mesh_index)?;
+        drawable_slots.clear();
+        drawable_slots.try_reserve(slots.len()).ok()?;
+        drawable_slots.extend_from_slice(slots);
+        update_moc3_drawable_scalars_for_pose(
+            mesh,
             art_meshes,
             art_mesh_keyforms,
             &scratch.composed,
-            bindings,
-            parameter_values,
+            drawable_slots,
             art_mesh_index,
         )?;
     }
@@ -180,7 +209,189 @@ pub(crate) fn update_moc3_drawable_meshes_with_parameters_offscreen_and_part_opa
         meshes.get_mut(drawable_index)?.set_opacity(0.0);
     }
 
+    update_geometry_required(meshes, offscreen, glues, &mut scratch.geometry_required)?;
+    for (art_mesh_index, mesh) in meshes.iter_mut().enumerate() {
+        if !*scratch.geometry_required.get(art_mesh_index)? {
+            continue;
+        }
+        update_moc3_drawable_geometry_for_pose(
+            mesh,
+            &mut scratch.positions,
+            art_meshes,
+            art_mesh_keyforms,
+            &scratch.composed,
+            scratch.drawable_slots.get(art_mesh_index)?,
+            art_mesh_index,
+        )?;
+    }
+    glues.apply_required_with_scratch(
+        meshes,
+        bindings,
+        parameter_values,
+        &mut scratch.keyforms,
+        &scratch.geometry_required,
+    )?;
+
     Some(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_moc3_drawable_meshes_unpruned(
+    meshes: &mut [Moc3DrawableMesh],
+    scratch: &mut Moc3MeshUpdateScratch,
+    art_meshes: &Moc3ArtMeshes,
+    art_mesh_keyforms: &Moc3ArtMeshKeyforms,
+    deformers: &Moc3Deformers,
+    bindings: &Moc3KeyformBindings,
+    ids: &Moc3Ids,
+    offscreen: &Moc3OffscreenInfo,
+    parameter_values: &[f32],
+) -> Option<()> {
+    if meshes.len() != art_meshes.meshes().len() {
+        return None;
+    }
+    deformers.compose_into(
+        bindings,
+        parameter_values,
+        &mut scratch.keyforms,
+        &mut scratch.composed,
+    )?;
+    for (art_mesh_index, mesh) in meshes.iter_mut().enumerate() {
+        update_moc3_drawable_mesh_for_pose_unpruned(
+            mesh,
+            &mut scratch.positions,
+            &mut scratch.keyforms,
+            art_meshes,
+            art_mesh_keyforms,
+            &scratch.composed,
+            bindings,
+            parameter_values,
+            art_mesh_index,
+        )?;
+    }
+    for (drawable_index, part_opacity) in
+        scratch.drawable_part_opacities.iter().copied().enumerate()
+    {
+        let mesh = meshes.get_mut(drawable_index)?;
+        mesh.set_opacity(mesh.opacity() * part_opacity);
+    }
+    for drawable_index in offscreen.effect_source_drawable_indices(ids) {
+        meshes.get_mut(drawable_index)?.set_opacity(0.0);
+    }
+    Some(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_moc3_drawable_mesh_for_pose_unpruned(
+    mesh: &mut Moc3DrawableMesh,
+    positions: &mut Vec<Vector2>,
+    keyform_scratch: &mut Moc3KeyformScratch,
+    art_meshes: &Moc3ArtMeshes,
+    art_mesh_keyforms: &Moc3ArtMeshKeyforms,
+    composed: &ComposedDeformers,
+    bindings: &Moc3KeyformBindings,
+    parameter_values: &[f32],
+    art_mesh_index: usize,
+) -> Option<()> {
+    let keyform_count = art_mesh_keyforms.art_mesh_keyforms(art_mesh_index)?.len();
+    let slots = bindings.keyform_slots_into(
+        art_meshes.art_mesh_keyform_binding_band_index(art_mesh_index)?,
+        keyform_count,
+        parameter_values,
+        keyform_scratch,
+    )?;
+    update_moc3_drawable_scalars_for_pose(
+        mesh,
+        art_meshes,
+        art_mesh_keyforms,
+        composed,
+        slots,
+        art_mesh_index,
+    )?;
+    update_moc3_drawable_geometry_for_pose(
+        mesh,
+        positions,
+        art_meshes,
+        art_mesh_keyforms,
+        composed,
+        slots,
+        art_mesh_index,
+    )
+}
+
+fn should_prune_geometry(meshes: &[Moc3DrawableMesh], offscreen: &Moc3OffscreenInfo) -> bool {
+    if offscreen.offscreen_count() != 0 {
+        return false;
+    }
+    let mut total_vertices = 0_usize;
+    let mut hidden_vertices = 0_usize;
+    for mesh in meshes {
+        let vertices = mesh.vertices().len();
+        total_vertices = total_vertices.saturating_add(vertices);
+        if mesh.opacity().is_finite() && mesh.opacity() <= 0.0 {
+            hidden_vertices = hidden_vertices.saturating_add(vertices);
+        }
+    }
+    hidden_vertices >= MIN_PRUNABLE_VERTICES
+        && hidden_vertices.saturating_mul(100)
+            >= total_vertices.saturating_mul(MIN_PRUNABLE_VERTEX_PERCENT)
+}
+
+#[cfg(test)]
+pub(crate) fn should_prune_geometry_for_test(
+    meshes: &[Moc3DrawableMesh],
+    offscreen: &Moc3OffscreenInfo,
+) -> bool {
+    should_prune_geometry(meshes, offscreen)
+}
+
+fn reset_drawable_slots(slots: &mut Vec<Vec<Moc3KeyformSlot>>, count: usize) -> Option<()> {
+    if slots.len() < count {
+        slots.try_reserve(count - slots.len()).ok()?;
+        slots.resize_with(count, Vec::new);
+    } else {
+        slots.truncate(count);
+    }
+    Some(())
+}
+
+fn update_geometry_required(
+    meshes: &[Moc3DrawableMesh],
+    offscreen: &Moc3OffscreenInfo,
+    glues: &Moc3Glues,
+    required: &mut Vec<bool>,
+) -> Option<()> {
+    required.clear();
+    required.try_reserve(meshes.len()).ok()?;
+    required.resize(meshes.len(), offscreen.offscreen_count() != 0);
+    if offscreen.offscreen_count() != 0 {
+        return Some(());
+    }
+
+    // 蒙版源自身可以完全透明，但其纹理 Alpha 和当前几何仍会裁剪可见目标；glue
+    // 又会双向修改端点，因此从可见目标扩展出完整几何依赖闭包后才能安全跳过网格。
+    for (drawable_index, mesh) in meshes.iter().enumerate() {
+        if mesh.opacity() <= 0.0 {
+            continue;
+        }
+        *required.get_mut(drawable_index)? = true;
+        for &mask_index in mesh.masks() {
+            let mask_index = usize::try_from(mask_index).ok()?;
+            *required.get_mut(mask_index)? = true;
+        }
+    }
+    glues.expand_geometry_required(required)
+}
+
+#[cfg(test)]
+pub(crate) fn geometry_required_for_test(
+    meshes: &[Moc3DrawableMesh],
+    offscreen: &Moc3OffscreenInfo,
+    glues: &Moc3Glues,
+) -> Option<Vec<bool>> {
+    let mut required = Vec::new();
+    update_geometry_required(meshes, offscreen, glues, &mut required)?;
+    Some(required)
 }
 
 fn build_moc3_drawable_mesh_for_pose(
@@ -249,24 +460,14 @@ fn build_moc3_drawable_mesh_for_pose(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_moc3_drawable_mesh_for_pose(
+fn update_moc3_drawable_scalars_for_pose(
     mesh: &mut Moc3DrawableMesh,
-    positions: &mut Vec<Vector2>,
-    keyform_scratch: &mut Moc3KeyformScratch,
     art_meshes: &Moc3ArtMeshes,
     art_mesh_keyforms: &Moc3ArtMeshKeyforms,
     composed: &ComposedDeformers,
-    bindings: &Moc3KeyformBindings,
-    parameter_values: &[f32],
+    slots: &[Moc3KeyformSlot],
     art_mesh_index: usize,
 ) -> Option<()> {
-    let keyform_count = art_mesh_keyforms.art_mesh_keyforms(art_mesh_index)?.len();
-    let slots = bindings.keyform_slots_into(
-        art_meshes.art_mesh_keyform_binding_band_index(art_mesh_index)?,
-        keyform_count,
-        parameter_values,
-        keyform_scratch,
-    )?;
     let parent_deformer_index = art_meshes.art_mesh_parent_deformer_index(art_mesh_index)?;
     let opacity = interpolate_art_mesh_opacity(art_mesh_keyforms, art_mesh_index, slots)?
         * composed.deformer_opacity(parent_deformer_index);
@@ -282,9 +483,29 @@ fn update_moc3_drawable_mesh_for_pose(
         composed.deformer_colors(parent_deformer_index);
     let multiply_color = combine_multiply_color(multiply_color, parent_multiply_color);
     let screen_color = combine_screen_color(screen_color, parent_screen_color);
-    interpolate_art_mesh_positions_into(art_mesh_keyforms, art_mesh_index, slots, positions)?;
-    composed.transform_vertices(parent_deformer_index, positions)?;
 
+    mesh.set_opacity(opacity);
+    mesh.set_draw_order(draw_order);
+    mesh.set_render_order(art_meshes.art_mesh_render_order(art_mesh_index)?);
+    mesh.set_multiply_color(multiply_color);
+    mesh.set_screen_color(screen_color);
+    Some(())
+}
+
+fn update_moc3_drawable_geometry_for_pose(
+    mesh: &mut Moc3DrawableMesh,
+    positions: &mut Vec<Vector2>,
+    art_meshes: &Moc3ArtMeshes,
+    art_mesh_keyforms: &Moc3ArtMeshKeyforms,
+    composed: &ComposedDeformers,
+    slots: &[Moc3KeyformSlot],
+    art_mesh_index: usize,
+) -> Option<()> {
+    interpolate_art_mesh_positions_into(art_mesh_keyforms, art_mesh_index, slots, positions)?;
+    composed.transform_vertices(
+        art_meshes.art_mesh_parent_deformer_index(art_mesh_index)?,
+        positions,
+    )?;
     if mesh.vertices().len() != positions.len() {
         return None;
     }
@@ -292,12 +513,6 @@ fn update_moc3_drawable_mesh_for_pose(
         let uv = vertex.uv();
         *vertex = Moc3DrawableVertex::new([position.x(), -position.y()], uv);
     }
-
-    mesh.set_opacity(opacity);
-    mesh.set_draw_order(draw_order);
-    mesh.set_render_order(art_meshes.art_mesh_render_order(art_mesh_index)?);
-    mesh.set_multiply_color(multiply_color);
-    mesh.set_screen_color(screen_color);
     Some(())
 }
 

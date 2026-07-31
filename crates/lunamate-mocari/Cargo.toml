@@ -29,6 +29,11 @@ name = "deformer_composition_allocations"
 harness = false
 required-features = ["benchmark-support"]
 
+[[bench]]
+name = "runtime_mesh_update"
+harness = false
+required-features = ["benchmark-support"]
+
 [dev-dependencies]
 allocation-counter = "0.8.1"
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
