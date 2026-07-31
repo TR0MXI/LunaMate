@@ -4,19 +4,30 @@ use crate::platform::tray::{TrayIconStyle, TrayMenuAnchor, tray_icon_rgba};
 
 #[test]
 fn tray_icon_has_expected_rgba_shape() {
-    let pixels = tray_icon_rgba(TrayIconStyle::default());
+    let pixels =
+        tray_icon_rgba(TrayIconStyle::default()).expect("内嵌的 Lucide 月亮 SVG 应当可以栅格化");
     assert_eq!(pixels.len(), 32 * 32 * 4);
     assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 0));
     assert!(pixels.chunks_exact(4).any(|pixel| pixel[3] == 255));
+    assert!(
+        pixels
+            .chunks_exact(4)
+            .any(|pixel| (1..255).contains(&pixel[3]))
+    );
 }
 
 #[test]
 fn tray_icon_uses_the_current_theme_semantic_colors() {
-    let style = TrayIconStyle::new([1, 2, 3], [4, 5, 6]);
-    let pixels = tray_icon_rgba(style);
+    let style = TrayIconStyle::new([1, 2, 3]);
+    let pixels = tray_icon_rgba(style).expect("内嵌的 Lucide 月亮 SVG 应当可以栅格化");
 
     assert!(pixels.chunks_exact(4).any(|pixel| pixel == [1, 2, 3, 255]));
-    assert!(pixels.chunks_exact(4).any(|pixel| pixel == [4, 5, 6, 255]));
+    assert!(
+        pixels
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] != 0)
+            .all(|pixel| pixel[..3] == [1, 2, 3])
+    );
 }
 
 #[test]

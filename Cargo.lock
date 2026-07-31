@@ -5210,6 +5210,7 @@ dependencies = [
  "objc",
  "parking_lot",
  "raw-window-handle",
+ "resvg 0.46.0",
  "ringbuf",
  "rubato",
  "rust-i18n",

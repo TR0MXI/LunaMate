@@ -7,6 +7,10 @@ use tokio::runtime::Handle;
 const ACTION_CHANNEL_CAPACITY: usize = 16;
 const TRAY_ICON_SIZE: u32 = 32;
 const FALLBACK_TRAY_ICON_LOGICAL_SIZE: f32 = 24.0;
+const TRAY_ICON_SVG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/icons/moon.svg"
+));
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SystemTrayAction {
@@ -93,22 +97,21 @@ struct TrayLabels {
     quit: String,
 }
 
-/// 描述托盘位图使用的两种语义色；原生菜单本身仍由桌面环境绘制。
+/// 描述托盘月亮图标使用的语义色；原生菜单本身仍由桌面环境绘制。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TrayIconStyle {
-    moon: [u8; 3],
-    star: [u8; 3],
+    foreground: [u8; 3],
 }
 
 impl TrayIconStyle {
-    pub(crate) fn new(moon: [u8; 3], star: [u8; 3]) -> Self {
-        Self { moon, star }
+    pub(crate) fn new(foreground: [u8; 3]) -> Self {
+        Self { foreground }
     }
 }
 
 impl Default for TrayIconStyle {
     fn default() -> Self {
-        Self::new([126, 102, 255], [255, 211, 94])
+        Self::new([126, 102, 255])
     }
 }
 
@@ -191,31 +194,25 @@ fn dispatch_action(actions: &Sender<SystemTrayAction>, action: SystemTrayAction)
     }
 }
 
-pub(in crate::platform) fn tray_icon_rgba(style: TrayIconStyle) -> Vec<u8> {
-    let mut pixels = vec![0; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
-    for y in 0..TRAY_ICON_SIZE {
-        for x in 0..TRAY_ICON_SIZE {
-            let sample_x = x as f32 + 0.5;
-            let sample_y = y as f32 + 0.5;
-            let moon = circle_coverage(sample_x, sample_y, 14.0, 16.0, 11.5)
-                * (1.0 - circle_coverage(sample_x, sample_y, 18.5, 12.5, 10.0));
-            let star = circle_coverage(sample_x, sample_y, 23.0, 23.0, 2.0);
-            let (color, alpha) = if star > moon {
-                (style.star, star)
-            } else {
-                (style.moon, moon)
-            };
-            let offset = ((y * TRAY_ICON_SIZE + x) * 4) as usize;
-            pixels[offset..offset + 3].copy_from_slice(&color);
-            pixels[offset + 3] = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
-        }
-    }
-    pixels
-}
+pub(in crate::platform) fn tray_icon_rgba(style: TrayIconStyle) -> Result<Vec<u8>, String> {
+    let tree = resvg::usvg::Tree::from_data(TRAY_ICON_SVG, &resvg::usvg::Options::default())
+        .map_err(|error| format!("无法解析内嵌托盘 SVG：{error}"))?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(TRAY_ICON_SIZE, TRAY_ICON_SIZE)
+        .ok_or_else(|| "无法分配托盘图标位图".to_owned())?;
+    let source_size = tree.size();
+    let scale = (TRAY_ICON_SIZE as f32 / source_size.width())
+        .min(TRAY_ICON_SIZE as f32 / source_size.height());
+    let translate_x = (TRAY_ICON_SIZE as f32 - source_size.width() * scale) / 2.0;
+    let translate_y = (TRAY_ICON_SIZE as f32 - source_size.height() * scale) / 2.0;
+    let transform =
+        resvg::tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, translate_x, translate_y);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-fn circle_coverage(x: f32, y: f32, center_x: f32, center_y: f32, radius: f32) -> f32 {
-    let distance = (x - center_x).hypot(y - center_y);
-    (radius + 0.5 - distance).clamp(0.0, 1.0)
+    let mut pixels = pixmap.take();
+    for pixel in pixels.chunks_exact_mut(4).filter(|pixel| pixel[3] != 0) {
+        pixel[..3].copy_from_slice(&style.foreground);
+    }
+    Ok(pixels)
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -272,7 +269,7 @@ mod imp {
                 .map_err(|error| format!("无法创建系统托盘菜单：{error}"))?;
 
             let icon = Icon::from_rgba(
-                tray_icon_rgba(TrayIconStyle::default()),
+                tray_icon_rgba(TrayIconStyle::default())?,
                 TRAY_ICON_SIZE,
                 TRAY_ICON_SIZE,
             )
@@ -357,7 +354,7 @@ mod imp {
             self.hide_desktop_pet.set_text(labels.hide_desktop_pet);
             self.settings.set_text(labels.settings);
             self.quit.set_text(labels.quit);
-            let icon = Icon::from_rgba(tray_icon_rgba(style), TRAY_ICON_SIZE, TRAY_ICON_SIZE)
+            let icon = Icon::from_rgba(tray_icon_rgba(style)?, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
                 .map_err(|error| format!("无法生成主题托盘图标：{error}"))?;
             #[cfg(target_os = "macos")]
             self.tray_icon
@@ -535,7 +532,7 @@ mod imp {
             let (shutdown, shutdown_receiver) = async_channel::bounded(1);
             let presentation = Arc::new(Mutex::new(TrayPresentation {
                 labels,
-                icon: linux_icon(TrayIconStyle::default()),
+                icon: linux_icon(TrayIconStyle::default())?,
             }));
             let tray = LinuxTray {
                 actions,
@@ -594,7 +591,7 @@ mod imp {
         ) -> Result<(), String> {
             *self.presentation.lock() = TrayPresentation {
                 labels,
-                icon: linux_icon(style),
+                icon: linux_icon(style)?,
             };
             match self.refresh.try_send(()) {
                 Ok(()) | Err(TrySendError::Full(())) => Ok(()),
@@ -617,16 +614,16 @@ mod imp {
         }
     }
 
-    fn linux_icon(style: TrayIconStyle) -> ksni::Icon {
-        let mut data = tray_icon_rgba(style);
+    fn linux_icon(style: TrayIconStyle) -> Result<ksni::Icon, String> {
+        let mut data = tray_icon_rgba(style)?;
         for pixel in data.chunks_exact_mut(4) {
             pixel.rotate_right(1);
         }
-        ksni::Icon {
+        Ok(ksni::Icon {
             width: TRAY_ICON_SIZE as i32,
             height: TRAY_ICON_SIZE as i32,
             data,
-        }
+        })
     }
 }
 

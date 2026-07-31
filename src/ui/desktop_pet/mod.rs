@@ -1813,10 +1813,7 @@ fn sync_system_tray_appearance(tray: Option<&SystemTray>, cx: &App) {
         return;
     };
     let palette = UiPalette::from_app(cx);
-    let style = TrayIconStyle::new(
-        rgb8_over(palette.primary, palette.background),
-        rgb8_over(palette.warning, palette.background),
-    );
+    let style = TrayIconStyle::new(rgb8_over(palette.primary, palette.background));
     if let Err(error) = tray.sync_appearance(style) {
         log::warn!("{}", t!("log.tray_appearance_failed", error = error));
     }

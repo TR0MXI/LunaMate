@@ -78,6 +78,7 @@ cpal = "0.18.1"
 rubato = "0.16.2"
 global-hotkey.workspace = true
 tempfile = "3.27.0"
+resvg = { version = "0.46.0", default-features = false }
 
 [patch.crates-io]
 # 上游 PR #14 修复了 2.0.1 中的 Rust future-incompatibility 警告。
