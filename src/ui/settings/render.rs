@@ -1,7 +1,8 @@
 //! 组装设置主体布局，并根据当前侧栏分区调度页面渲染。
 
 use gpui::{
-    AnyElement, AnyView, Context, IntoElement, Render, StyleRefinement, Window, div, prelude::*, px,
+    AnyElement, AnyView, Context, IntoElement, KeyDownEvent, MouseButton, Render, StyleRefinement,
+    Window, div, prelude::*, px,
 };
 use rust_i18n::t;
 
@@ -98,6 +99,10 @@ impl Render for SettingsView {
             .flex()
             .text_color(palette.foreground)
             .bg(palette.background)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.handle_input_key_down(event, window, cx);
+            }))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.blur())
             .child(self.render_sidebar(cx))
             .child(
                 div()

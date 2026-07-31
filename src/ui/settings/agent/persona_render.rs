@@ -1,8 +1,8 @@
 //! 渲染人格列表、五个编辑分区、上下文气泡与危险操作确认框。
 
 use gpui::{
-    AnyElement, Context, Entity, IntoElement, MouseButton, Pixels, Point, Render, Window, canvas,
-    div, prelude::*, px, svg,
+    AnyElement, Context, Entity, IntoElement, KeyDownEvent, MouseButton, Pixels, Point, Render,
+    Window, canvas, div, prelude::*, px, svg,
 };
 use gpui_component::{
     Sizable as _, StyledExt as _,
@@ -330,6 +330,7 @@ impl PersonaSettingsView {
                 div()
                     .w_full()
                     .h(px(220.0))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(Input::new(form.system_prompt).h_full()),
             )
             .child(section_label(
@@ -340,6 +341,7 @@ impl PersonaSettingsView {
                 div()
                     .w_full()
                     .h(px(150.0))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(Input::new(form.input_prompt).h_full()),
             )
             .into_any_element()
@@ -350,7 +352,10 @@ impl PersonaSettingsView {
         let form = self.form();
         let usage = self.usage();
         let usage_error = self.usage_error().map(str::to_owned);
-        let clear_label = t!("persona.memory_clear").to_string();
+        let selected_count = self.selected_context_messages();
+        let clear_label = t!("persona.context_delete_all").to_string();
+        let delete_selected_label =
+            t!("persona.context_delete_selected", count = selected_count).to_string();
 
         div()
             .id("persona-context-scroll")
@@ -396,6 +401,34 @@ impl PersonaSettingsView {
                         88.0,
                         palette,
                     ))
+                    .when(selected_count > 0, |this| {
+                        this.child(
+                            div()
+                                .id("delete-selected-context-messages")
+                                .debug_selector(|| "delete-selected-context-messages".to_owned())
+                                .size(px(30.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_md()
+                                .text_color(palette.danger)
+                                .cursor_pointer()
+                                .hover(move |style| style.bg(palette.danger.opacity(0.12)))
+                                .tooltip(move |window, cx| {
+                                    Tooltip::new(delete_selected_label.clone()).build(window, cx)
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.request_delete_selected_context_messages(cx);
+                                }))
+                                .child(
+                                    svg()
+                                        .path("icons/trash-2.svg")
+                                        .size_4()
+                                        .text_color(palette.danger),
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .id("clear-context-memory")
@@ -465,6 +498,14 @@ impl PersonaSettingsView {
             .bg(palette.sidebar.opacity(0.45))
             .mt_3()
             .p_3()
+            .track_focus(self.context_focus())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event, window, cx| {
+                    this.start_context_selection_drag(event, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .on_mouse_move(cx.listener(|this, event, _, cx| {
                 this.update_context_selection_position(event, cx);
             }))
@@ -559,10 +600,12 @@ impl PersonaSettingsView {
         let view_for_edit = view.clone();
         let view_for_delete = view.clone();
         let view_for_copy = view.clone();
+        let message_bounds = message.bounds.clone();
 
         div()
             .id(("context-message", message_id))
             .debug_selector(move || format!("context-card-{message_id}"))
+            .relative()
             .w_full()
             .min_h(px(48.0))
             .flex()
@@ -577,17 +620,7 @@ impl PersonaSettingsView {
             } else {
                 palette.background.opacity(0.0)
             })
-            .on_mouse_move(cx.listener(move |this, event, _, cx| {
-                this.update_context_selection_drag(message_id, event, cx);
-            }))
-            .when(!editing, |this| {
-                this.cursor_pointer().on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event, _, cx| {
-                        this.start_context_selection_drag(message_id, event, cx);
-                    }),
-                )
-            })
+            .when(!editing, |this| this.cursor_pointer())
             .when(!editing, |this| {
                 this.on_mouse_down(
                     MouseButton::Right,
@@ -667,6 +700,14 @@ impl PersonaSettingsView {
                     }))
             })
             .child(
+                canvas(
+                    move |bounds, _, _| message_bounds.set(bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(
                 div()
                     .w_full()
                     .min_w_0()
@@ -702,8 +743,10 @@ impl PersonaSettingsView {
         palette: UiPalette,
     ) -> AnyElement {
         let bubble = div()
+            .debug_selector(move || format!("context-bubble-{}", message.id))
             .min_w(px(64.0))
             .max_w(px(520.0))
+            .when(editing, |this| this.w(px(520.0)).max_w_full())
             .overflow_hidden()
             .rounded_md()
             .border_1()
@@ -720,9 +763,15 @@ impl PersonaSettingsView {
         if editing {
             bubble
                 .child(
-                    Input::new(&message.input)
-                        .appearance(false)
-                        .focus_bordered(false),
+                    div()
+                        .w_full()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            Input::new(&message.input)
+                                .w_full()
+                                .appearance(false)
+                                .focus_bordered(false),
+                        ),
                 )
                 .into_any_element()
         } else {
@@ -939,6 +988,7 @@ fn context_stat(
                     div()
                         .debug_selector(move || input_selector.to_owned())
                         .w(px(input_width))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(Input::new(input).small()),
                 ),
         )
@@ -987,6 +1037,10 @@ impl Render for PersonaSettingsView {
             .min_w_0()
             .flex()
             .text_color(palette.foreground)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.handle_key_down(event, window, cx);
+            }))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.blur())
             .child(self.render_persona_list(cx))
             .child(self.render_editor(cx))
             .when_some(status, |this, status| {

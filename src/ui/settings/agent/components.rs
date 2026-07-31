@@ -1,6 +1,9 @@
 //! 提供供应商与人格设置页共享的展示组件，不持有任何配置状态。
 
-use gpui::{AnyElement, ClickEvent, Div, IntoElement, Stateful, Window, div, prelude::*, px, svg};
+use gpui::{
+    AnyElement, ClickEvent, Div, IntoElement, MouseButton, Stateful, Window, div, prelude::*, px,
+    svg,
+};
 use gpui_component::StyledExt as _;
 
 use crate::ui::UiPalette;
@@ -31,7 +34,13 @@ pub(super) fn form_field(label: String, control: impl IntoElement, palette: UiPa
                 .text_color(palette.muted_foreground)
                 .child(label),
         )
-        .child(div().w_full().min_w_0().child(control))
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(control),
+        )
 }
 
 /// 带启用开关的高级参数行：关闭时该参数不会随请求发送，输入框只保留建议值。
@@ -78,7 +87,13 @@ pub(super) fn optional_field(
                         .on_click(on_toggle),
                 ),
         )
-        .child(div().w_full().min_w_0().child(control))
+        .child(
+            div()
+                .w_full()
+                .min_w_0()
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(control),
+        )
         .child(
             div()
                 .text_xs()

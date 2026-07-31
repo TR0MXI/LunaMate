@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use gpui::{
-    AnyElement, Context, IntoElement, Pixels, Point, Render, Window, div, prelude::*, px, svg,
+    AnyElement, Context, IntoElement, MouseButton, Pixels, Point, Render, Window, div, prelude::*,
+    px, svg,
 };
 use gpui_component::{Sizable, StyledExt, input::Input, tooltip::Tooltip};
 use rust_i18n::t;
@@ -641,7 +642,13 @@ impl SettingsView {
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(div().min_w_0().flex_1().child(Input::new(&input).small()))
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(Input::new(&input).small()),
+                )
                 .child(
                     self.icon_button(
                         format!("save-model-resource-name:{id_token}"),

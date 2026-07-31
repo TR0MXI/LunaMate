@@ -294,6 +294,12 @@ _version = 2
 "en" = "Delete"
 "ja" = "削除"
 
+[persona.context_delete_all]
+"zh-CN" = "删除全部上下文消息"
+"zh-TW" = "刪除全部上下文訊息"
+"en" = "Delete all context messages"
+"ja" = "すべてのコンテキストメッセージを削除"
+
 [persona.context_copied]
 "zh-CN" = "已复制所选消息"
 "zh-TW" = "已複製所選訊息"

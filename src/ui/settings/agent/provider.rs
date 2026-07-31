@@ -25,7 +25,7 @@ use lunamate_agent::config::{
 
 use crate::config::CONFIG;
 
-use super::{non_empty, provider_display_name, set_input};
+use super::{InputEditSession, non_empty, provider_display_name, set_input};
 
 /// 思考强度选择器第一项表示"沿用 Provider 默认值"，最后一项表示自定义 token 预算。
 const REASONING_AUTO_INDEX: usize = 0;
@@ -89,6 +89,7 @@ pub(in crate::ui) struct ProviderSettingsView {
     pub(super) advanced_expanded: bool,
     status: Option<String>,
     loading_form: bool,
+    input_edit: Option<InputEditSession>,
     submitted_draft: LlmSettings,
     save_revision: u64,
     config_writes_in_flight: usize,
@@ -330,6 +331,7 @@ impl ProviderSettingsView {
             advanced_expanded: false,
             status: None,
             loading_form: false,
+            input_edit: None,
             submitted_draft,
             save_revision: 0,
             config_writes_in_flight: 0,
@@ -1071,6 +1073,20 @@ impl ProviderSettingsView {
     pub(super) const fn use_gpu(&self) -> bool {
         self.use_gpu
     }
+
+    pub(super) fn cancel_input_edit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(edit) = self.input_edit.take() else {
+            return false;
+        };
+        self.loading_form = true;
+        edit.restore(window, cx);
+        self.loading_form = false;
+        true
+    }
 }
 
 fn subscribe_form_input(
@@ -1078,11 +1094,36 @@ fn subscribe_form_input(
     window: &mut Window,
     cx: &mut Context<ProviderSettingsView>,
 ) -> Subscription {
-    cx.subscribe_in(input, window, |this, _, event: &InputEvent, _, cx| {
-        if matches!(event, InputEvent::Blur) && !this.loading_form {
-            this.save(cx);
-        }
-    })
+    cx.subscribe_in(
+        input,
+        window,
+        |this, input, event: &InputEvent, window, cx| match event {
+            InputEvent::Focus => {
+                if !this.loading_form {
+                    this.input_edit = Some(InputEditSession::begin(input, cx));
+                }
+            }
+            InputEvent::PressEnter { .. } => {
+                if !this.loading_form {
+                    this.save(cx);
+                    window.blur();
+                }
+            }
+            InputEvent::Blur => {
+                if this
+                    .input_edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.belongs_to(input))
+                {
+                    this.input_edit = None;
+                }
+                if !this.loading_form {
+                    this.save(cx);
+                }
+            }
+            InputEvent::Change => {}
+        },
+    )
 }
 
 /// 渲染层需要的全部表单实体引用，避免逐个字段暴露可变状态。

@@ -13,9 +13,9 @@ use std::{
 };
 
 use gpui::{
-    AppContext, Bounds, ClipboardItem, Context, Entity, EventEmitter, Modifiers, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, SharedString, Subscription, Task,
-    Window,
+    AppContext, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, KeyDownEvent,
+    Modifiers, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle,
+    SharedString, Size, Subscription, Task, Window,
 };
 use gpui_component::{
     IndexPath,
@@ -37,7 +37,7 @@ use rust_i18n::t;
 
 use crate::config::CONFIG;
 
-use super::{provider_display_name, set_input};
+use super::{InputEditSession, provider_display_name, set_input};
 
 /// 人格绑定供应商的第一项固定表示"跟随全局默认供应商"。
 const BOUND_PROVIDER_INHERIT: &str = "\u{2014}";
@@ -63,7 +63,7 @@ struct Live2dModelOption {
 }
 
 struct ContextSelectionDrag {
-    anchor_id: u64,
+    anchor_id: Option<u64>,
     base: HashSet<u64>,
     start: Point<Pixels>,
     current: Point<Pixels>,
@@ -220,6 +220,7 @@ pub(super) struct ContextMessageEditor {
     pub(super) id: u64,
     pub(super) role: ChatRole,
     pub(super) input: Entity<InputState>,
+    pub(super) bounds: Rc<Cell<Bounds<Pixels>>>,
     saved_content: String,
     tokens: usize,
     fixed_tokens: usize,
@@ -248,6 +249,7 @@ pub(in crate::ui) struct PersonaSettingsView {
     context_selection_drag: Option<ContextSelectionDrag>,
     context_view_bounds: Rc<Cell<Bounds<Pixels>>>,
     context_editing: Option<u64>,
+    context_focus: FocusHandle,
     context_scroll: ScrollHandle,
     context_loading: bool,
     context_error: Option<String>,
@@ -264,6 +266,7 @@ pub(in crate::ui) struct PersonaSettingsView {
     pending_confirm: Option<PendingConfirm>,
     status: Option<String>,
     loading_form: bool,
+    input_edit: Option<InputEditSession>,
     submitted_draft: PersonaSettings,
     save_revision: u64,
     config_writes_in_flight: usize,
@@ -456,6 +459,7 @@ impl PersonaSettingsView {
             context_selection_drag: None,
             context_view_bounds: Rc::new(Cell::new(Bounds::default())),
             context_editing: None,
+            context_focus: cx.focus_handle(),
             context_scroll: ScrollHandle::new(),
             context_loading: false,
             context_error: None,
@@ -472,6 +476,7 @@ impl PersonaSettingsView {
             pending_confirm: None,
             status: None,
             loading_form: false,
+            input_edit: None,
             submitted_draft,
             save_revision: 0,
             config_writes_in_flight: 0,
@@ -483,11 +488,11 @@ impl PersonaSettingsView {
             write_tasks: Vec::new(),
         };
         view.form_subscriptions = vec![
-            subscribe_form_input(&view.name_input, window, cx),
-            subscribe_form_input(&view.system_prompt_input, window, cx),
-            subscribe_form_input(&view.input_prompt_input, window, cx),
-            subscribe_form_input(&view.context_messages_input, window, cx),
-            subscribe_form_input(&view.context_tokens_input, window, cx),
+            subscribe_form_input(&view.name_input, true, window, cx),
+            subscribe_form_input(&view.system_prompt_input, false, window, cx),
+            subscribe_form_input(&view.input_prompt_input, false, window, cx),
+            subscribe_form_input(&view.context_messages_input, true, window, cx),
+            subscribe_form_input(&view.context_tokens_input, true, window, cx),
             cx.subscribe(
                 &view.provider_select,
                 |this, _, _: &SelectEvent<Vec<SharedString>>, cx| {
@@ -1289,6 +1294,7 @@ impl PersonaSettingsView {
                 id: message.id,
                 role: message.role,
                 input,
+                bounds: Rc::new(Cell::new(Bounds::default())),
                 saved_content: message.content,
                 tokens: message.tokens,
                 fixed_tokens: message.fixed_tokens,
@@ -1811,6 +1817,10 @@ impl PersonaSettingsView {
         self.context_editing == Some(message_id)
     }
 
+    pub(super) fn context_focus(&self) -> &FocusHandle {
+        &self.context_focus
+    }
+
     pub(super) fn context_view_bounds(&self) -> Rc<Cell<Bounds<Pixels>>> {
         self.context_view_bounds.clone()
     }
@@ -1837,7 +1847,94 @@ impl PersonaSettingsView {
             return;
         };
         self.context_editing = Some(message_id);
-        input.update(cx, |input, cx| input.focus(window, cx));
+        cx.on_next_frame(window, move |this, window, cx| {
+            if this.context_editing == Some(message_id) {
+                input.update(cx, |input, cx| input.focus(window, cx));
+            }
+        });
+        cx.notify();
+    }
+
+    pub(super) fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        if key.eq_ignore_ascii_case("escape") {
+            if self.pending_confirm.is_some() {
+                window.prevent_default();
+                cx.stop_propagation();
+                self.cancel_confirm(cx);
+                return;
+            }
+            if let Some(message_id) = self.context_editing {
+                window.prevent_default();
+                cx.stop_propagation();
+                self.cancel_context_message_edit(message_id, window, cx);
+                return;
+            }
+            if let Some(edit) = self.input_edit.take() {
+                window.prevent_default();
+                cx.stop_propagation();
+                self.loading_form = true;
+                edit.restore(window, cx);
+                self.loading_form = false;
+                return;
+            }
+            if !self.context_selected.is_empty() {
+                window.prevent_default();
+                cx.stop_propagation();
+                self.context_selected.clear();
+                cx.notify();
+            }
+            return;
+        }
+        if self.active_page != PersonaPage::Context
+            || self.context_editing.is_some()
+            || self.pending_confirm.is_some()
+        {
+            return;
+        }
+        if event.keystroke.modifiers.alt && key.eq_ignore_ascii_case("a") {
+            window.prevent_default();
+            cx.stop_propagation();
+            self.select_all_context_messages(cx);
+        } else if key.eq_ignore_ascii_case("delete") && !self.context_selected.is_empty() {
+            window.prevent_default();
+            cx.stop_propagation();
+            self.request_delete_selected_context_messages(cx);
+        }
+    }
+
+    fn cancel_context_message_edit(
+        &mut self,
+        message_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((input, saved)) = self
+            .context_editors
+            .iter()
+            .find(|message| message.id == message_id)
+            .map(|message| (message.input.clone(), message.saved_content.clone()))
+        else {
+            return;
+        };
+        set_input(&input, &saved, window, cx);
+        self.context_editing = None;
+        window.blur();
+        cx.notify();
+    }
+
+    fn select_all_context_messages(&mut self, cx: &mut Context<Self>) {
+        self.context_selection_drag = None;
+        self.context_selected = self
+            .context_editors
+            .iter()
+            .map(|message| message.id)
+            .collect();
         cx.notify();
     }
 
@@ -1871,15 +1968,21 @@ impl PersonaSettingsView {
 
     pub(super) fn start_context_selection_drag(
         &mut self,
-        message_id: u64,
         event: &MouseDownEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.context_loading {
             return;
         }
+        self.context_focus.focus(window, cx);
+        let anchor_id = self
+            .context_editors
+            .iter()
+            .find(|message| message.bounds.get().contains(&event.position))
+            .map(|message| message.id);
         self.context_selection_drag = Some(ContextSelectionDrag {
-            anchor_id: message_id,
+            anchor_id,
             base: self.context_selected.clone(),
             start: event.position,
             current: event.position,
@@ -1891,7 +1994,6 @@ impl PersonaSettingsView {
 
     pub(super) fn update_context_selection_drag(
         &mut self,
-        message_id: u64,
         event: &MouseMoveEvent,
         cx: &mut Context<Self>,
     ) {
@@ -1911,32 +2013,14 @@ impl PersonaSettingsView {
             cx.notify();
             return;
         }
-        let anchor_id = drag.anchor_id;
         let additive = drag.additive;
         let base = drag.base.clone();
-        let Some(anchor) = self
-            .context_editors
-            .iter()
-            .position(|message| message.id == anchor_id)
-        else {
-            return;
-        };
-        let Some(current) = self
-            .context_editors
-            .iter()
-            .position(|message| message.id == message_id)
-        else {
-            return;
-        };
-        let (start, end) = if anchor <= current {
-            (anchor, current)
-        } else {
-            (current, anchor)
-        };
+        let selection = selection_bounds(drag.start, drag.current);
         let mut selected = if additive { base } else { HashSet::new() };
         selected.extend(
-            self.context_editors[start..=end]
+            self.context_editors
                 .iter()
+                .filter(|message| message.bounds.get().intersects(&selection))
                 .map(|message| message.id),
         );
         self.context_selected = selected;
@@ -1948,12 +2032,7 @@ impl PersonaSettingsView {
         event: &MouseMoveEvent,
         cx: &mut Context<Self>,
     ) {
-        if let Some(drag) = &mut self.context_selection_drag
-            && event.dragging()
-        {
-            drag.current = event.position;
-            cx.notify();
-        }
+        self.update_context_selection_drag(event, cx);
     }
 
     pub(super) fn finish_context_selection_drag(
@@ -1965,9 +2044,15 @@ impl PersonaSettingsView {
             return;
         };
         if !drag.moved {
-            self.context_selected = drag.base;
-            if !self.context_selected.insert(drag.anchor_id) {
-                self.context_selected.remove(&drag.anchor_id);
+            self.context_selected = if drag.additive {
+                drag.base
+            } else {
+                HashSet::new()
+            };
+            if let Some(anchor_id) = drag.anchor_id
+                && !self.context_selected.insert(anchor_id)
+            {
+                self.context_selected.remove(&anchor_id);
             }
         }
         cx.notify();
@@ -2218,6 +2303,49 @@ impl PersonaSettingsView {
         self.context_selected.len()
     }
 
+    /// 进入指定消息的编辑态，供无头测试验证编辑布局与 Esc 回退。
+    #[cfg(test)]
+    pub(crate) fn begin_context_message_edit_for_test(
+        &mut self,
+        message_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.begin_context_message_edit(message_id, window, cx);
+    }
+
+    /// 直接修改消息输入值，避免测试依赖平台文本输入法。
+    #[cfg(test)]
+    pub(crate) fn set_context_message_content_for_test(
+        &mut self,
+        message_id: u64,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(input) = self
+            .context_editors
+            .iter()
+            .find(|message| message.id == message_id)
+            .map(|message| message.input.clone())
+        {
+            set_input(&input, value, window, cx);
+        }
+    }
+
+    /// 返回消息编辑器当前文本，供测试确认取消编辑未提交修改。
+    #[cfg(test)]
+    pub(crate) fn context_message_content_for_test(
+        &self,
+        message_id: u64,
+        cx: &Context<Self>,
+    ) -> Option<String> {
+        self.context_editors
+            .iter()
+            .find(|message| message.id == message_id)
+            .map(|message| message.input.read(cx).value().to_string())
+    }
+
     /// 复制当前选择，供无头测试验证多选顺序与剪贴板内容。
     #[cfg(test)]
     pub(crate) fn copy_selected_context_messages_for_test(&mut self, cx: &mut Context<Self>) {
@@ -2368,14 +2496,48 @@ fn live2d_option_state(
 
 fn subscribe_form_input(
     input: &Entity<InputState>,
+    single_line: bool,
     window: &mut Window,
     cx: &mut Context<PersonaSettingsView>,
 ) -> Subscription {
-    cx.subscribe_in(input, window, |this, _, event: &InputEvent, _, cx| {
-        if matches!(event, InputEvent::Blur) && !this.loading_form {
-            this.save(cx);
-        }
-    })
+    cx.subscribe_in(
+        input,
+        window,
+        move |this, input, event: &InputEvent, window, cx| match event {
+            InputEvent::Focus => {
+                if !this.loading_form {
+                    this.input_edit = Some(InputEditSession::begin(input, cx));
+                }
+            }
+            InputEvent::PressEnter { .. } if single_line => {
+                if !this.loading_form {
+                    this.save(cx);
+                    window.blur();
+                }
+            }
+            InputEvent::Blur => {
+                if this
+                    .input_edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.belongs_to(input))
+                {
+                    this.input_edit = None;
+                }
+                if !this.loading_form {
+                    this.save(cx);
+                }
+            }
+            InputEvent::Change | InputEvent::PressEnter { .. } => {}
+        },
+    )
+}
+
+fn selection_bounds(start: Point<Pixels>, current: Point<Pixels>) -> Bounds<Pixels> {
+    let left = start.x.min(current.x);
+    let top = start.y.min(current.y);
+    let width = (start.x - current.x).abs().max(Pixels::from(1.0));
+    let height = (start.y - current.y).abs().max(Pixels::from(1.0));
+    Bounds::new(Point::new(left, top), Size::new(width, height))
 }
 
 fn selection_is_additive(modifiers: Modifiers) -> bool {

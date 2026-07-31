@@ -1,6 +1,6 @@
 //! 渲染运行时、语音输入、窗口、外观、语言与调试设置页面。
 
-use gpui::{AnyElement, Context, Entity, IntoElement, div, prelude::*, px};
+use gpui::{AnyElement, Context, Entity, IntoElement, MouseButton, div, prelude::*, px};
 use gpui_component::{
     StyledExt,
     input::{InputState, NumberInput},
@@ -603,6 +603,7 @@ fn compact_number_input(input: &Entity<InputState>, palette: UiPalette) -> gpui:
         .relative()
         .w(px(120.0))
         .flex_none()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(NumberInput::new(input).w_full().flex_none())
         // 内置 Minus 图标在部分渲染环境中不可见，补一条不参与命中测试的横线。
         .child(

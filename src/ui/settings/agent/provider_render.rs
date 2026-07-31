@@ -1,6 +1,9 @@
 //! 渲染供应商列表、连接表单、高级参数折叠项与保存反馈。
 
-use gpui::{AnyElement, Context, IntoElement, Render, Window, div, prelude::*, px, svg};
+use gpui::{
+    AnyElement, Context, IntoElement, KeyDownEvent, MouseButton, Render, Window, div, prelude::*,
+    px, svg,
+};
 use gpui_component::{
     StyledExt as _,
     input::{Input, InputContentType},
@@ -717,6 +720,15 @@ impl Render for ProviderSettingsView {
             .min_w_0()
             .flex()
             .text_color(palette.foreground)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key.eq_ignore_ascii_case("escape")
+                    && this.cancel_input_edit(window, cx)
+                {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            }))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.blur())
             .child(self.render_provider_list(cx))
             .child(self.render_editor(cx))
             .when_some(status, |this, status| {

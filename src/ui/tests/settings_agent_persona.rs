@@ -649,6 +649,12 @@ fn context_bubbles_use_whole_row_selection_without_inline_controls(cx: &mut Test
     view.update(cx, |view, _| {
         assert_eq!(view.selected_context_messages_for_test(), 1);
     });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("delete-selected-context-messages")
+            .is_some(),
+        "选择消息后应显示仅删除选择项的入口"
+    );
 
     cx.simulate_mouse_down(center, MouseButton::Right, Modifiers::none());
     cx.run_until_parked();
@@ -742,6 +748,157 @@ fn dragging_from_a_message_selects_a_contiguous_message_range(cx: &mut TestAppCo
         assert_eq!(view.selected_context_messages_for_test(), 3);
     });
     cx.simulate_mouse_up(cursor, MouseButton::Left, Modifiers::none());
+}
+
+#[gpui::test]
+fn dragging_from_viewport_padding_selects_messages(cx: &mut TestAppContext) {
+    let (view, cx) = mount(
+        cx,
+        LlmSettings::default(),
+        PersonaSettings {
+            personas: vec![persona("moon", None)],
+            selected: Some("moon".to_owned()),
+            pending_deletions: Vec::new(),
+        },
+    );
+
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.show_context_for_test(cx);
+        view.load_context_messages_for_test(
+            (1_u64..=3)
+                .map(|id| ContextMessage {
+                    id,
+                    role: ChatRole::User,
+                    content: format!("消息 {id}"),
+                    tokens: 6,
+                    fixed_tokens: 4,
+                    trace: None,
+                })
+                .collect(),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let scroll = cx
+        .debug_bounds("context-message-scroll")
+        .expect("上下文滚动视口应已渲染");
+    let third = cx
+        .debug_bounds("context-card-3")
+        .expect("第三条消息应已渲染");
+    let start = point(scroll.origin.x + px(4.0), third.origin.y - px(80.0));
+    let cursor = point(
+        third.origin.x + third.size.width / 2.0,
+        third.origin.y + third.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(cursor, MouseButton::Left, Modifiers::none());
+    view.update(cx, |view, _| {
+        assert_eq!(view.selected_context_messages_for_test(), 3);
+    });
+    cx.simulate_mouse_up(cursor, MouseButton::Left, Modifiers::none());
+}
+
+#[gpui::test]
+fn context_keyboard_shortcuts_select_delete_and_cancel_edit(cx: &mut TestAppContext) {
+    let (view, cx) = mount(
+        cx,
+        LlmSettings::default(),
+        PersonaSettings {
+            personas: vec![persona("moon", None)],
+            selected: Some("moon".to_owned()),
+            pending_deletions: Vec::new(),
+        },
+    );
+
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.show_context_for_test(cx);
+        view.load_context_messages_for_test(
+            (1_u64..=3)
+                .map(|id| ContextMessage {
+                    id,
+                    role: ChatRole::User,
+                    content: format!("消息 {id}"),
+                    tokens: 6,
+                    fixed_tokens: 4,
+                    trace: None,
+                })
+                .collect(),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let first = cx
+        .debug_bounds("context-card-1")
+        .expect("第一条消息应已渲染");
+    let first_center = point(
+        first.origin.x + first.size.width / 2.0,
+        first.origin.y + first.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(first_center, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(first_center, MouseButton::Left, Modifiers::none());
+    cx.simulate_keystrokes("alt-a");
+    view.update(cx, |view, _| {
+        assert_eq!(view.selected_context_messages_for_test(), 3);
+    });
+    cx.simulate_keystrokes("delete");
+    view.update(cx, |view, cx| {
+        assert!(view.pending_confirm_for_test().is_some());
+        view.cancel_confirm_for_test(cx);
+    });
+
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.begin_context_message_edit_for_test(1, window, cx);
+        view.set_context_message_content_for_test(1, "未提交修改", window, cx);
+    });
+    cx.simulate_keystrokes("escape");
+    view.update(cx, |view, cx| {
+        assert_eq!(
+            view.context_message_content_for_test(1, cx).as_deref(),
+            Some("消息 1")
+        );
+    });
+}
+
+#[gpui::test]
+fn context_message_editor_uses_the_available_bubble_width(cx: &mut TestAppContext) {
+    let (view, cx) = mount(
+        cx,
+        LlmSettings::default(),
+        PersonaSettings {
+            personas: vec![persona("moon", None)],
+            selected: Some("moon".to_owned()),
+            pending_deletions: Vec::new(),
+        },
+    );
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.show_context_for_test(cx);
+        view.load_context_messages_for_test(
+            vec![ContextMessage {
+                id: 1,
+                role: ChatRole::Assistant,
+                content: "需要编辑的长消息".to_owned(),
+                tokens: 8,
+                fixed_tokens: 4,
+                trace: None,
+            }],
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.begin_context_message_edit_for_test(1, window, cx);
+    });
+    cx.run_until_parked();
+
+    let bubble = cx
+        .debug_bounds("context-bubble-1")
+        .expect("编辑气泡应已渲染");
+    assert!(bubble.size.width >= px(300.0));
 }
 
 #[gpui::test]

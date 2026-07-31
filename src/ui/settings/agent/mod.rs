@@ -11,6 +11,30 @@ use gpui_component::input::InputState;
 
 use lunamate_agent::config::{LlmProvider, ModelProvider, llm_provider_id};
 
+/// 单次输入焦点周期的原始值，用于 Esc 放弃尚未提交的修改。
+pub(super) struct InputEditSession {
+    input: Entity<InputState>,
+    original: String,
+}
+
+impl InputEditSession {
+    pub(super) fn begin<V>(input: &Entity<InputState>, cx: &Context<V>) -> Self {
+        Self {
+            input: input.clone(),
+            original: input.read(cx).value().to_string(),
+        }
+    }
+
+    pub(super) fn belongs_to(&self, input: &Entity<InputState>) -> bool {
+        self.input == *input
+    }
+
+    pub(super) fn restore<V: 'static>(self, window: &mut Window, cx: &mut Context<V>) {
+        set_input(&self.input, &self.original, window, cx);
+        window.blur();
+    }
+}
+
 #[cfg(test)]
 pub(in crate::ui) use persona::MemoryScope;
 pub(in crate::ui) use persona::{

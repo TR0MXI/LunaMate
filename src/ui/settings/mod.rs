@@ -40,6 +40,7 @@ use crate::{
 };
 
 use super::{apply, apply_language};
+use agent::InputEditSession;
 pub(in crate::ui) use agent::{
     ContextMutationCompletion, PersonaSettingsDraft, PersonaSettingsEvent, PersonaSettingsView,
     ProviderSettingsDraft, ProviderSettingsEvent, ProviderSettingsView,
@@ -169,6 +170,7 @@ pub(crate) struct SettingsView {
     log_max_size_input: Option<Entity<InputState>>,
     log_keep_files_input: Option<Entity<InputState>>,
     model_resource_name_input: Option<Entity<InputState>>,
+    input_edit: Option<InputEditSession>,
     shortcut_focus: Option<FocusHandle>,
     preview_capabilities: ModelPreviewCapabilities,
     model_resources: SharedModelResourceSettings,
@@ -210,6 +212,7 @@ pub(crate) struct SettingsView {
     custom_frame_rate_input_revision: u64,
     custom_frame_rate_save_task: Option<Task<()>>,
     logging_input_subscriptions: Vec<Subscription>,
+    appearance_input_subscriptions: Vec<Subscription>,
     model_resource_name_subscription: Option<Subscription>,
     shortcut_focus_subscription: Option<Subscription>,
     logging_input_revision: u64,
@@ -255,6 +258,7 @@ impl SettingsView {
             log_max_size_input: None,
             log_keep_files_input: None,
             model_resource_name_input: None,
+            input_edit: None,
             shortcut_focus: None,
             preview_capabilities: ModelPreviewCapabilities::default(),
             model_resources: CONFIG.model_resource_settings(),
@@ -297,6 +301,7 @@ impl SettingsView {
             custom_frame_rate_input_revision: 0,
             custom_frame_rate_save_task: None,
             logging_input_subscriptions: Vec::new(),
+            appearance_input_subscriptions: Vec::new(),
             model_resource_name_subscription: None,
             shortcut_focus_subscription: None,
             logging_input_revision: 0,
@@ -455,12 +460,33 @@ impl SettingsView {
             .unwrap_or_else(ProviderSettingsDraft::current);
         let provider_settings_view = cx.new(|cx| ProviderSettingsView::new(draft, window, cx));
         self.activate_persona_settings(window, cx);
-        self.custom_accent_input = Some(cx.new(|cx| {
+        let custom_accent_input = cx.new(|cx| {
             InputState::new(window, cx).default_value(self.appearance.custom.accent.clone())
-        }));
-        self.custom_background_input = Some(cx.new(|cx| {
+        });
+        let custom_background_input = cx.new(|cx| {
             InputState::new(window, cx).default_value(self.appearance.custom.background.clone())
-        }));
+        });
+        self.appearance_input_subscriptions =
+            [custom_accent_input.clone(), custom_background_input.clone()]
+                .into_iter()
+                .map(|appearance_input| {
+                    cx.subscribe_in(
+                        &appearance_input,
+                        window,
+                        |this, input, event: &InputEvent, window, cx| match event {
+                            InputEvent::Focus => this.begin_input_edit(input, cx),
+                            InputEvent::PressEnter { .. } => {
+                                this.apply_custom_theme(window, cx);
+                                window.blur();
+                            }
+                            InputEvent::Blur => this.finish_input_edit(input),
+                            InputEvent::Change => {}
+                        },
+                    )
+                })
+                .collect();
+        self.custom_accent_input = Some(custom_accent_input);
+        self.custom_background_input = Some(custom_background_input);
         let custom_frame_rate = custom_frame_rate_seed(self.frame_rate);
         let custom_frame_rate_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -478,10 +504,15 @@ impl SettingsView {
             window,
             |this, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Change => this.schedule_custom_frame_rate_save(input, cx),
-                InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                InputEvent::PressEnter { .. } => {
+                    this.commit_custom_frame_rate_input(input, window, cx);
+                    window.blur();
+                }
+                InputEvent::Blur => {
+                    this.finish_input_edit(input);
                     this.commit_custom_frame_rate_input(input, window, cx);
                 }
-                InputEvent::Focus => {}
+                InputEvent::Focus => this.begin_input_edit(input, cx),
             },
         ));
         self.custom_frame_rate_input = Some(custom_frame_rate_input);
@@ -508,28 +539,40 @@ impl SettingsView {
                 .max(f64::from(LOGGING_MAX_KEEP_FILES))
         });
         self.logging_input_subscriptions = vec![
-            cx.subscribe(
+            cx.subscribe_in(
                 &log_max_size_input,
-                |this, input, event: &InputEvent, cx| match event {
+                window,
+                |this, input, event: &InputEvent, window, cx| match event {
                     InputEvent::Change => {
-                        this.schedule_logging_save(&input, Self::set_log_max_size_from_input, cx);
+                        this.schedule_logging_save(input, Self::set_log_max_size_from_input, cx);
                     }
-                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
-                        this.commit_logging_input(&input, Self::set_log_max_size_from_input, cx);
+                    InputEvent::PressEnter { .. } => {
+                        this.commit_logging_input(input, Self::set_log_max_size_from_input, cx);
+                        window.blur();
                     }
-                    InputEvent::Focus => {}
+                    InputEvent::Blur => {
+                        this.finish_input_edit(input);
+                        this.commit_logging_input(input, Self::set_log_max_size_from_input, cx);
+                    }
+                    InputEvent::Focus => this.begin_input_edit(input, cx),
                 },
             ),
-            cx.subscribe(
+            cx.subscribe_in(
                 &log_keep_files_input,
-                |this, input, event: &InputEvent, cx| match event {
+                window,
+                |this, input, event: &InputEvent, window, cx| match event {
                     InputEvent::Change => {
-                        this.schedule_logging_save(&input, Self::set_log_keep_files_from_input, cx);
+                        this.schedule_logging_save(input, Self::set_log_keep_files_from_input, cx);
                     }
-                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
-                        this.commit_logging_input(&input, Self::set_log_keep_files_from_input, cx);
+                    InputEvent::PressEnter { .. } => {
+                        this.commit_logging_input(input, Self::set_log_keep_files_from_input, cx);
+                        window.blur();
                     }
-                    InputEvent::Focus => {}
+                    InputEvent::Blur => {
+                        this.finish_input_edit(input);
+                        this.commit_logging_input(input, Self::set_log_keep_files_from_input, cx);
+                    }
+                    InputEvent::Focus => this.begin_input_edit(input, cx),
                 },
             ),
         ];
@@ -539,10 +582,17 @@ impl SettingsView {
         self.model_resource_name_subscription = Some(cx.subscribe_in(
             &model_resource_name_input,
             window,
-            |this, input, event: &InputEvent, _, cx| {
-                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+            |this, input, event: &InputEvent, window, cx| match event {
+                InputEvent::Focus => this.begin_input_edit(input, cx),
+                InputEvent::PressEnter { .. } => {
+                    this.commit_model_resource_name(input, cx);
+                    window.blur();
+                }
+                InputEvent::Blur => {
+                    this.finish_input_edit(input);
                     this.commit_model_resource_name(input, cx);
                 }
+                InputEvent::Change => {}
             },
         ));
         self.model_resource_name_input = Some(model_resource_name_input);
@@ -562,6 +612,37 @@ impl SettingsView {
         ));
         self.provider_settings_view = Some(provider_settings_view);
         cx.notify();
+    }
+
+    fn begin_input_edit(&mut self, input: &Entity<InputState>, cx: &Context<Self>) {
+        self.input_edit = Some(InputEditSession::begin(input, cx));
+    }
+
+    fn finish_input_edit(&mut self, input: &Entity<InputState>) {
+        if self
+            .input_edit
+            .as_ref()
+            .is_some_and(|edit| edit.belongs_to(input))
+        {
+            self.input_edit = None;
+        }
+    }
+
+    fn handle_input_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.keystroke.key.eq_ignore_ascii_case("escape") {
+            return;
+        }
+        let Some(edit) = self.input_edit.take() else {
+            return;
+        };
+        window.prevent_default();
+        cx.stop_propagation();
+        edit.restore(window, cx);
     }
 
     fn activate_persona_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -907,6 +988,7 @@ impl SettingsView {
         self.log_max_size_input = None;
         self.log_keep_files_input = None;
         self.model_resource_name_input = None;
+        self.input_edit = None;
         self.model_resource_name_subscription = None;
         self.editing_model_resource = None;
         self.shortcut_focus = None;
@@ -915,6 +997,7 @@ impl SettingsView {
         self.persona_settings_subscription = None;
         self.custom_frame_rate_subscription = None;
         self.logging_input_subscriptions.clear();
+        self.appearance_input_subscriptions.clear();
         cx.notify();
     }
 

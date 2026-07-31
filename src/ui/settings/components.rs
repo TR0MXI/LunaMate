@@ -1,6 +1,6 @@
 //! 提供设置页面共享的轻量展示组件，不持有配置状态。
 
-use gpui::{AnyElement, Entity, IntoElement, Window, div, prelude::*, px};
+use gpui::{AnyElement, Entity, IntoElement, MouseButton, Window, div, prelude::*, px};
 use gpui_component::{
     StyledExt,
     input::{Input, InputState},
@@ -114,7 +114,12 @@ pub(super) fn color_input(input: Entity<InputState>, color: &str, palette: UiPal
                 .border_color(palette.border)
                 .bg(color),
         )
-        .child(div().w(px(180.0)).child(Input::new(&input)))
+        .child(
+            div()
+                .w(px(180.0))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(Input::new(&input)),
+        )
 }
 
 pub(super) fn frame_rate_button(
