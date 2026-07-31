@@ -63,6 +63,20 @@ fn context_release_clears_pending_transcription_and_wakes_the_worker() {
 }
 
 #[test]
+fn cancelling_one_utterance_does_not_cancel_the_next_in_the_same_revision() {
+    let desired_revision = Arc::new(AtomicU64::new(1));
+    let queue = TranscriptionQueue::new(desired_revision);
+    assert!(queue.submit(job(1, 10)));
+
+    queue.cancel_utterance(1, 10);
+
+    assert!(queue.take_pending_for_test().is_none());
+    assert!(queue.is_cancelled_for_test(1, 10));
+    assert!(!queue.is_cancelled_for_test(1, 11));
+    assert!(queue.submit(job(1, 11)));
+}
+
+#[test]
 fn configured_language_catalog_matches_the_linked_whisper_runtime() {
     let linked = (0..=whisper_rs::get_lang_max_id())
         .map(|id| whisper_rs::get_lang_str(id).expect("Whisper 语言 ID 应当存在"))

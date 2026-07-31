@@ -866,6 +866,9 @@ impl DesktopPetView {
         if !pressed || !self.voice_mode.supports_push_to_talk() {
             return;
         }
+        self.chat.update(cx, |chat, cx| {
+            chat.voice_input_pressed(cx);
+        });
         self.set_push_to_talk(true);
         let background = cx.background_executor().clone();
         self.voice_shortcut_release_task = Some(cx.spawn(async move |this, cx| {

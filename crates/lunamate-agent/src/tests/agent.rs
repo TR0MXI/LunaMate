@@ -85,6 +85,68 @@ async fn invalid_current_session_recovers_and_can_be_replaced_on_shutdown() {
 }
 
 #[tokio::test]
+async fn persistence_from_a_non_tokio_thread_uses_the_agent_runtime() {
+    let database = TestDatabase::open_memory()
+        .await
+        .expect("内存数据库应可打开");
+    let agent = load(
+        AgentMemory::new(Some(database.callbacks())),
+        AppLanguage::English,
+        None,
+    )
+    .await;
+    let background_agent = agent.clone();
+
+    std::thread::spawn(move || background_agent.persist(true))
+        .join()
+        .expect("非 Tokio 线程触发持久化不应 panic");
+    tokio::task::yield_now().await;
+
+    let saved = database
+        .read_document("agent", "chat-session/default")
+        .await
+        .expect("后台持久化不应返回数据库错误")
+        .expect("后台持久化应写入当前会话");
+    assert!(serde_json::from_slice::<serde_json::Value>(saved.contents()).is_ok());
+}
+
+#[tokio::test]
+async fn voice_barge_in_from_a_non_tokio_thread_persists_the_interrupted_chat() {
+    let database = TestDatabase::open_memory()
+        .await
+        .expect("内存数据库应可打开");
+    let agent = load(
+        AgentMemory::new(Some(database.callbacks())),
+        AppLanguage::English,
+        None,
+    )
+    .await;
+    {
+        let mut state = agent.state.lock();
+        state
+            .session
+            .start_turn_with_image("in-flight", None, AppLanguage::English)
+            .expect("测试应能创建活动回复");
+        state.reply_message_id = state.session.messages().back().map(|message| message.id());
+    }
+    let background_agent = agent.clone();
+
+    std::thread::spawn(move || {
+        assert!(background_agent.voice_started(1, AppLanguage::English));
+    })
+    .join()
+    .expect("语音打断不应让非 Tokio 线程 panic");
+    tokio::task::yield_now().await;
+
+    let saved = database
+        .read_document("agent", "chat-session/default")
+        .await
+        .expect("语音打断后的后台持久化不应返回数据库错误")
+        .expect("语音打断后的会话应写入数据库");
+    assert!(serde_json::from_slice::<serde_json::Value>(saved.contents()).is_ok());
+}
+
+#[tokio::test]
 async fn unsupported_future_session_is_not_overwritten_on_shutdown() {
     let database = TestDatabase::open_memory()
         .await
@@ -313,6 +375,40 @@ fn stale_voice_results_do_not_consume_a_newer_utterance() {
     assert_eq!(agent.snapshot().pending_voice(), Some(8));
     assert_eq!(agent.take_voice_transcript(8), Some(AppLanguage::Japanese));
     assert_eq!(agent.snapshot().pending_voice(), None);
+}
+
+#[tokio::test]
+async fn voice_barge_in_invalidates_a_queued_text_request() {
+    let agent = Arc::new(Agent::new(
+        Client::default(),
+        None,
+        None,
+        "",
+        AgentMemory::unavailable(),
+        "default",
+        ChatLimits::default(),
+        AppLanguage::English,
+        None,
+    ));
+    let queued_revision = agent.request_revision();
+
+    assert!(agent.voice_started(9, AppLanguage::English));
+    let result = Agent::send(
+        Arc::clone(&agent),
+        AgentInput {
+            text: "stale text".to_owned(),
+            image: None,
+            screenshot_capability: None,
+            outfits: Vec::new(),
+            outfit_revision: 0,
+            request_revision: queued_revision,
+            language: AppLanguage::English,
+        },
+    )
+    .await;
+
+    assert!(matches!(result, Err(AgentError::StaleInput)));
+    assert_eq!(agent.snapshot().pending_voice(), Some(9));
 }
 
 #[tokio::test]

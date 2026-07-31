@@ -20,6 +20,7 @@ use futures::{
 pub use genai::{Client, ModelIden, chat::ChatOptions};
 use parking_lot::{Mutex, RwLock};
 use rust_i18n::t;
+use tokio::runtime::Handle;
 use tokio::sync::watch;
 
 rust_i18n::i18n!("locales", fallback = "en", minify_key = true);
@@ -221,6 +222,7 @@ struct PendingVoice {
 pub struct Agent {
     runtime: RwLock<AgentRuntime>,
     state: Mutex<AgentState>,
+    persistence_runtime: Option<Handle>,
     state_revision: AtomicU64,
     state_updates: watch::Sender<u64>,
     effects: async_channel::Sender<AgentEffect>,
@@ -273,6 +275,7 @@ impl Agent {
                 shutting_down: false,
                 pending_voice: None,
             }),
+            persistence_runtime: Handle::try_current().ok(),
             state_revision: AtomicU64::new(0),
             state_updates,
             effects,
@@ -331,6 +334,7 @@ impl Agent {
                 shutting_down: false,
                 pending_voice: None,
             }),
+            persistence_runtime: Some(Handle::current()),
             state_revision: AtomicU64::new(0),
             state_updates,
             effects,
@@ -724,6 +728,7 @@ impl Agent {
             let Some(response_id) = state.session.active_response_id() else {
                 return false;
             };
+            state.request_revision = next_revision(state.request_revision);
             abort_active_request(&mut state, "user_stop");
             let cancelled = state.session.cancel_response(response_id);
             if cancelled {
@@ -790,6 +795,7 @@ impl Agent {
             let Some(response_id) = state.session.active_response_id() else {
                 return false;
             };
+            state.request_revision = next_revision(state.request_revision);
             abort_active_request(&mut state, "voice_interruption");
             state.session.interrupt_response_by_voice(response_id)
         };
@@ -819,6 +825,7 @@ impl Agent {
                 persona: runtime.active_persona,
                 language,
             });
+            state.request_revision = next_revision(state.request_revision);
             let Some(response_id) = state.session.active_response_id() else {
                 return true;
             };
@@ -843,14 +850,17 @@ impl Agent {
         {
             return None;
         }
-        let pending = state.pending_voice.take()?;
-        (pending.utterance_id == utterance_id
-            && pending.runtime_revision == runtime.revision
-            && pending.persona == runtime.active_persona
-            && !state.switching_memory
-            && !state.shutting_down
-            && state.session.active_response_id().is_none())
-        .then_some(pending.language)
+        let pending = state.pending_voice.as_ref()?;
+        if pending.runtime_revision != runtime.revision
+            || pending.persona != runtime.active_persona
+            || state.switching_memory
+            || state.shutting_down
+            || state.session.active_response_id().is_some()
+        {
+            state.pending_voice = None;
+            return None;
+        }
+        state.pending_voice.take().map(|pending| pending.language)
     }
 
     pub fn cancel_voice(&self, utterance_id: u64) {
@@ -1134,7 +1144,11 @@ impl Agent {
                 operation,
             )
         };
-        tokio::spawn(async move {
+        let Some(runtime) = self.persistence_runtime.clone() else {
+            log::error!("保存聊天会话失败：Agent 未绑定 Tokio runtime");
+            return;
+        };
+        runtime.spawn(async move {
             if let Err(error) = save.0.save_reserved(save.1, save.2).await {
                 log::error!("保存聊天会话失败：error_kind={}", error.diagnostic_kind());
             }

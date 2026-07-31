@@ -140,6 +140,10 @@ enum VoiceCommand {
         message: String,
     },
     TranscriptionFinished(transcribe::TranscriptionResult),
+    CancelTranscription {
+        revision: u64,
+        utterance_id: u64,
+    },
     Shutdown,
 }
 
@@ -246,6 +250,14 @@ impl VoiceController {
                 result,
             },
         ));
+    }
+
+    /// 取消指定句段的云端或本地转写，并让自动模式尽快恢复监听。
+    pub(crate) fn cancel_remote_transcription(&self, revision: u64, utterance_id: u64) {
+        let _ = self.commands.try_send(VoiceCommand::CancelTranscription {
+            revision,
+            utterance_id,
+        });
     }
 
     /// 窗口释放时先请求停止采集；最终 join 由应用退出边界完成。

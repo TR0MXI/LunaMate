@@ -62,6 +62,7 @@ pub struct AgentView {
     image_picker_task: Option<Task<()>>,
     voice_transcription_task: Option<Task<()>>,
     voice_transcription_abort: Option<tokio::task::AbortHandle>,
+    voice_transcription_request: Option<RemoteTranscriptionRequest>,
     speech_task: Option<Task<()>>,
     speech_abort: Option<tokio::task::AbortHandle>,
     speech_revision: u64,
@@ -79,6 +80,13 @@ pub struct AgentView {
 struct PendingImage {
     attachment: ImageAttachment,
     preview: Arc<Image>,
+}
+
+#[derive(Clone)]
+struct RemoteTranscriptionRequest {
+    revision: u64,
+    utterance_id: u64,
+    voice: VoiceController,
 }
 
 impl AgentView {
@@ -147,6 +155,7 @@ impl AgentView {
             image_picker_task: None,
             voice_transcription_task: None,
             voice_transcription_abort: None,
+            voice_transcription_request: None,
             speech_task: None,
             speech_abort: None,
             speech_revision: 0,
@@ -339,7 +348,14 @@ impl AgentView {
             return;
         }
         self.agent.voice_started(utterance_id, language);
+        self.sync_agent_snapshot(cx);
         cx.notify();
+    }
+
+    /// 在按键边沿立即停止本地语音，语义层打断仍等待真实语音确认。
+    pub fn voice_input_pressed(&mut self, cx: &mut Context<Self>) {
+        self.cancel_speech();
+        cx.emit(AgentViewEvent::StopSpeech);
     }
 
     pub fn send_voice_transcript(
@@ -355,7 +371,7 @@ impl AgentView {
     }
 
     pub fn voice_utterance_cancelled(&mut self, utterance_id: u64) {
-        self.cancel_remote_transcription();
+        self.cancel_remote_transcription_for(utterance_id);
         self.cancel_speech();
         self.agent.cancel_voice(utterance_id);
     }
@@ -416,15 +432,41 @@ impl AgentView {
                 .await
                 .map_err(|error| error.localized_message(language))
         });
+        let request = RemoteTranscriptionRequest {
+            revision,
+            utterance_id,
+            voice: voice.clone(),
+        };
         self.voice_transcription_abort = Some(task.abort_handle());
+        self.voice_transcription_request = Some(request.clone());
         self.voice_transcription_task = Some(cx.spawn(async move |this, cx| {
             let result = task.await.unwrap_or_else(|_| {
                 Err(t!("voice.transcription_cancelled", locale = language.id()).to_string())
             });
-            voice.complete_remote_transcription(revision, utterance_id, result);
+            let current = this
+                .update(cx, |this, _| {
+                    this.voice_transcription_request
+                        .as_ref()
+                        .is_some_and(|request| {
+                            request.revision == revision && request.utterance_id == utterance_id
+                        })
+                })
+                .unwrap_or(false);
+            if current {
+                voice.complete_remote_transcription(revision, utterance_id, result);
+            }
             let _ = this.update(cx, |this, _| {
-                this.voice_transcription_abort = None;
-                this.voice_transcription_task = None;
+                if this
+                    .voice_transcription_request
+                    .as_ref()
+                    .is_some_and(|request| {
+                        request.revision == revision && request.utterance_id == utterance_id
+                    })
+                {
+                    this.voice_transcription_request = None;
+                    this.voice_transcription_abort = None;
+                    this.voice_transcription_task = None;
+                }
             });
         }));
     }
@@ -517,10 +559,25 @@ impl AgentView {
     }
 
     fn cancel_remote_transcription(&mut self) {
+        if let Some(request) = self.voice_transcription_request.take() {
+            request
+                .voice
+                .cancel_remote_transcription(request.revision, request.utterance_id);
+        }
         if let Some(abort) = self.voice_transcription_abort.take() {
             abort.abort();
         }
         self.voice_transcription_task = None;
+    }
+
+    fn cancel_remote_transcription_for(&mut self, utterance_id: u64) {
+        if self
+            .voice_transcription_request
+            .as_ref()
+            .is_some_and(|request| request.utterance_id == utterance_id)
+        {
+            self.cancel_remote_transcription();
+        }
     }
 
     fn start_speech(&mut self, snapshot: AgentSnapshot, cx: &mut Context<Self>) {
@@ -536,12 +593,10 @@ impl AgentView {
         let Some(model_id) = persona.tts_model.as_deref() else {
             return;
         };
-        let Some(message) = snapshot
-            .messages()
-            .iter()
-            .rev()
-            .find(|message| message.role() == lunamate_agent::ChatRole::Assistant)
-        else {
+        let Some(message) = snapshot.messages().iter().find(|message| {
+            Some(message.id()) == snapshot.reply_message_id()
+                && message.role() == lunamate_agent::ChatRole::Assistant
+        }) else {
             return;
         };
         if !matches!(message.state(), lunamate_agent::ChatMessageState::Complete) {

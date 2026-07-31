@@ -35,6 +35,7 @@ pub(super) struct TranscriptionResult {
 
 struct QueueState {
     pending: Option<TranscriptionJob>,
+    cancelled_through_utterance: Option<(u64, u64)>,
     release_context: bool,
     shutdown: bool,
 }
@@ -56,6 +57,7 @@ impl TranscriptionQueue {
         Arc::new(Self {
             state: Mutex::new(QueueState {
                 pending: None,
+                cancelled_through_utterance: None,
                 release_context: false,
                 shutdown: false,
             }),
@@ -65,7 +67,7 @@ impl TranscriptionQueue {
     }
 
     pub(super) fn submit(&self, job: TranscriptionJob) -> bool {
-        if self.is_cancelled(job.revision) {
+        if self.is_cancelled(job.revision, job.utterance_id) {
             return false;
         }
         let mut state = self.state.lock();
@@ -79,6 +81,24 @@ impl TranscriptionQueue {
 
     pub(super) fn cancel_pending(&self) {
         self.state.lock().pending = None;
+    }
+
+    pub(super) fn cancel_utterance(&self, revision: u64, utterance_id: u64) {
+        let mut state = self.state.lock();
+        if state
+            .pending
+            .as_ref()
+            .is_some_and(|job| job.revision == revision && job.utterance_id == utterance_id)
+        {
+            state.pending = None;
+        }
+        state.cancelled_through_utterance = Some(match state.cancelled_through_utterance {
+            Some((cancelled_revision, cancelled_id)) if cancelled_revision == revision => {
+                (revision, cancelled_id.max(utterance_id))
+            }
+            _ => (revision, utterance_id),
+        });
+        self.changed.notify_one();
     }
 
     pub(super) fn release_context(&self) {
@@ -95,8 +115,15 @@ impl TranscriptionQueue {
         self.changed.notify_all();
     }
 
-    fn is_cancelled(&self, revision: u64) -> bool {
-        self.desired_revision.load(Ordering::Acquire) != revision || self.state.lock().shutdown
+    fn is_cancelled(&self, revision: u64, utterance_id: u64) -> bool {
+        let state = self.state.lock();
+        self.desired_revision.load(Ordering::Acquire) != revision
+            || state.shutdown
+            || state.cancelled_through_utterance.is_some_and(
+                |(cancelled_revision, cancelled_id)| {
+                    cancelled_revision == revision && utterance_id <= cancelled_id
+                },
+            )
     }
 
     fn next(&self) -> Option<TranscriptionWork> {
@@ -125,6 +152,11 @@ impl TranscriptionQueue {
     pub(super) fn take_context_release_for_test(&self) -> bool {
         std::mem::take(&mut self.state.lock().release_context)
     }
+
+    #[cfg(test)]
+    pub(super) fn is_cancelled_for_test(&self, revision: u64, utterance_id: u64) -> bool {
+        self.is_cancelled(revision, utterance_id)
+    }
 }
 
 pub(super) fn run(queue: Arc<TranscriptionQueue>, voice_commands: Sender<VoiceCommand>) {
@@ -134,13 +166,13 @@ pub(super) fn run(queue: Arc<TranscriptionQueue>, voice_commands: Sender<VoiceCo
             transcriber.release_context();
             continue;
         };
-        if queue.is_cancelled(job.revision) {
+        if queue.is_cancelled(job.revision, job.utterance_id) {
             continue;
         }
         let started = Instant::now();
         let sample_count = job.samples.len();
         let result = transcriber.transcribe(&job, &queue);
-        if queue.is_cancelled(job.revision) {
+        if queue.is_cancelled(job.revision, job.utterance_id) {
             log::debug!(
                 "丢弃已过期的 Whisper 结果：revision={}, utterance_id={}",
                 job.revision,
@@ -207,10 +239,11 @@ impl Transcriber {
             job.settings.whisper_language.as_deref(),
             queue,
             job.revision,
+            job.utterance_id,
         ) {
             Ok(text) => Ok(text),
             Err(RunError::Inference(_)) if ran_on_gpu => {
-                if queue.is_cancelled(job.revision) {
+                if queue.is_cancelled(job.revision, job.utterance_id) {
                     return Err("Whisper 转写已取消".to_owned());
                 }
                 log::warn!(
@@ -228,6 +261,7 @@ impl Transcriber {
                     job.settings.whisper_language.as_deref(),
                     queue,
                     job.revision,
+                    job.utterance_id,
                 )
                 .map_err(RunError::into_string)
             }
@@ -271,6 +305,7 @@ impl Transcriber {
         language: Option<&str>,
         queue: &TranscriptionQueue,
         revision: u64,
+        utterance_id: u64,
     ) -> Result<String, RunError> {
         let context = self
             .context
@@ -290,7 +325,11 @@ impl Transcriber {
         parameters.set_print_special(false);
         parameters.set_print_timestamps(false);
         parameters.set_suppress_blank(true);
-        let cancellation = InferenceCancellation { queue, revision };
+        let cancellation = InferenceCancellation {
+            queue,
+            revision,
+            utterance_id,
+        };
         // SAFETY: `cancellation` 在同步 `state.full` 返回前保持固定地址；回调只读取线程安全的
         // revision/关闭状态，whisper.cpp 不会在 `full` 返回后继续调用本次参数中的回调。
         unsafe {
@@ -324,6 +363,7 @@ impl Transcriber {
 struct InferenceCancellation<'a> {
     queue: &'a TranscriptionQueue,
     revision: u64,
+    utterance_id: u64,
 }
 
 unsafe extern "C" fn abort_inference(user_data: *mut c_void) -> bool {
@@ -333,7 +373,9 @@ unsafe extern "C" fn abort_inference(user_data: *mut c_void) -> bool {
     // SAFETY: 指针由 `run_once` 中仍存活的 `InferenceCancellation` 创建，C 侧只在同步
     // `whisper_full_with_state` 调用期间借用它，且该回调不修改指针目标。
     let cancellation = unsafe { &*user_data.cast::<InferenceCancellation<'_>>() };
-    cancellation.queue.is_cancelled(cancellation.revision)
+    cancellation
+        .queue
+        .is_cancelled(cancellation.revision, cancellation.utterance_id)
 }
 
 enum RunError {

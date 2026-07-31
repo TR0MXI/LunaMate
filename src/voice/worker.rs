@@ -165,6 +165,10 @@ impl Worker {
                 VoiceCommand::TranscriptionFinished(result) => {
                     self.finish_transcription(result);
                 }
+                VoiceCommand::CancelTranscription {
+                    revision,
+                    utterance_id,
+                } => self.cancel_transcription(revision, utterance_id),
                 VoiceCommand::Shutdown => break,
             }
         }
@@ -314,7 +318,10 @@ impl Worker {
         };
         for event in events {
             match event {
-                EndpointEvent::Started => self.begin_utterance(),
+                EndpointEvent::Started => {
+                    self.cancel_transcription_utterance();
+                    self.begin_utterance();
+                }
                 EndpointEvent::Complete(samples) => {
                     self.dispatch_transcription(samples);
                     break;
@@ -348,13 +355,14 @@ impl Worker {
     }
 
     fn set_push_to_talk(&mut self, pressed: bool) {
-        if !self.settings.mode.supports_push_to_talk() || self.transcription_pending {
+        if !self.settings.mode.supports_push_to_talk() {
             return;
         }
         if pressed {
             if self.manual_samples.is_some() {
                 return;
             }
+            self.cancel_transcription_utterance();
             if self.settings.mode.uses_vad() && self.vad.is_none() {
                 return;
             }
@@ -490,6 +498,12 @@ impl Worker {
                 self.fail("未选择 Transcription 模型".to_owned());
             }
         }
+        if self.transcription_pending
+            && self.settings.mode.uses_vad()
+            && let Err(error) = self.resume_automatic_capture()
+        {
+            self.fail(error);
+        }
     }
 
     fn finish_transcription(&mut self, result: TranscriptionResult) {
@@ -529,6 +543,7 @@ impl Worker {
             }
         }
         if self.settings.mode.uses_vad()
+            && self.capture.is_none()
             && let Err(error) = self.resume_automatic_capture()
         {
             self.fail(error);
@@ -566,11 +581,32 @@ impl Worker {
 
     fn cancel_transcription_utterance(&mut self) {
         if let Some(utterance_id) = self.transcription_utterance.take() {
+            self.transcription_queue
+                .cancel_utterance(self.revision, utterance_id);
+            self.transcription_pending = false;
             self.publish_event(VoiceEvent::UtteranceCancelled {
                 revision: self.revision,
                 utterance_id,
             });
         }
+    }
+
+    fn cancel_transcription(&mut self, revision: u64, utterance_id: u64) {
+        if revision != self.revision
+            || !self.is_current()
+            || self.transcription_utterance != Some(utterance_id)
+        {
+            return;
+        }
+        self.cancel_transcription_utterance();
+        if self.settings.mode.uses_vad()
+            && self.capture.is_none()
+            && let Err(error) = self.resume_automatic_capture()
+        {
+            self.fail(error);
+            return;
+        }
+        self.publish_phase(VoicePhase::Listening);
     }
 
     fn fail(&mut self, message: String) {

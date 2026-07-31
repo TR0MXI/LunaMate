@@ -160,6 +160,8 @@ GPUI 点击
   top_p；模型窗口只用于本地 token 裁剪，未显式启用的请求参数不随请求发送。
 - [x] 用单色品牌图标区分供应商条目，并记录来源、许可证与商标归属。
 - [x] 实现可停止、可拒绝迟到结果并按批次刷新 UI 的流式文本对话。
+- [x] 后台持久化使用 Agent 创建时绑定的 Tokio runtime，避免 GPUI 线程触发裸 spawn 导致
+  Windows Release 进程 fast-fail。
 - [x] 在桌宠窗口提供聊天开关、底部单行输入栏，以及可滚动并在终态后渐隐的主题回复层。
 - [x] 按人格保存以消息数和 token 约束的有界会话，并在重启后把未完成回复恢复为中断状态；
   切换人格时先落盘旧上下文再换入新上下文，换入完成前拒绝新消息。
@@ -192,6 +194,8 @@ GPUI 点击
 - [x] 托盘隐藏桌宠时关闭采集与 VAD、卸载 Whisper context、取消并移除活动 Agent 轮次、
   阻止迟到 TTS 播放并回收 Live2D GPU underlay，恢复显示后按当前配置重建运行时资源。
 - [x] 录音时显示底部音量波形，并在用户说话时打断流式回复、保留带标注的部分上下文。
+- [x] 优化现有 STT-Chat-TTS 打断：按键边沿先停止播放，VAD 新句段取消旧转写和排队请求，
+  远端转写及 Whisper 按 utterance 拒绝迟到结果，播放层按 generation 即时静音。
 - [x] 通用构建固定包含 macOS Metal 或 Windows/Linux Vulkan，运行时按偏好启用并在失败时回退 CPU。
 - [x] 移除本地 `whisper-rs-sys` patch，VAD 只通过 whisper-rs 公开安全接口推理。
 - [x] 移除同步 abort setter 不需要的 `raw-api` feature。
