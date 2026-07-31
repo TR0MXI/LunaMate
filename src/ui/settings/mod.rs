@@ -10,7 +10,7 @@ mod tool_page;
 mod window;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -22,6 +22,7 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState, MaskPattern};
 use lunamate_agent::{Agent, chat_limits, tools::OutfitOption};
+use rapidhash::RapidHashMap;
 use rust_i18n::t;
 
 use crate::{
@@ -196,7 +197,7 @@ pub(crate) struct SettingsView {
     shortcuts: ShortcutSettings,
     shortcut_recording: Option<ShortcutAction>,
     shortcut_runtime_errors: Vec<String>,
-    shortcut_runtime_bindings: HashMap<ShortcutAction, String>,
+    shortcut_runtime_bindings: RapidHashMap<ShortcutAction, String>,
     is_refreshing: bool,
     revision: u64,
     catalog_revision: u64,
@@ -285,7 +286,7 @@ impl SettingsView {
             shortcuts: CONFIG.shortcut_settings().as_ref().clone(),
             shortcut_recording: None,
             shortcut_runtime_errors: Vec::new(),
-            shortcut_runtime_bindings: HashMap::new(),
+            shortcut_runtime_bindings: RapidHashMap::default(),
             is_refreshing: false,
             revision: 0,
             catalog_revision: 0,

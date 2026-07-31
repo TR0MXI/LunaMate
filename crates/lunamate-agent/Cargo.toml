@@ -18,6 +18,7 @@ genai.workspace = true
 image.workspace = true
 log.workspace = true
 parking_lot.workspace = true
+rapidhash.workspace = true
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "multipart", "stream", "gzip", "system-proxy"] }
 rust-i18n.workspace = true
 serde.workspace = true

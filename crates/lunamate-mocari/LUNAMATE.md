@@ -62,6 +62,8 @@ Local changes:
   index counts are bounded or rejected as well.
 - Expression JSON parameters are bounded and the manager caches its active ID
   set, so frame application does not repeatedly build a quadratic union.
+- Runtime model and physics indexes use rapidhash 4.5.1 with its `unsafe`
+  feature enabled to reduce hashing overhead in model loading and lookup paths.
 - The motion parser accepts VTube Studio recording exports marked as version 0;
   those files use the same curve and segment layout as Cubism motion version 3.
 - Upstream examples, integration tests, and development dependencies are not

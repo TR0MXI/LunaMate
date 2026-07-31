@@ -5,7 +5,7 @@
 //! meshes. After changing parameters or applying a player from [`crate::motion`]
 //! or [`crate::expression`], call [`ModelRuntime::update_meshes`] before drawing.
 
-use std::collections::HashMap;
+use rapidhash::RapidHashMap;
 
 #[cfg(feature = "benchmark-support")]
 use crate::moc3::update_moc3_drawable_meshes_unpruned;
@@ -126,12 +126,12 @@ pub struct ModelRuntime {
     glues: Moc3Glues,
     parts: Moc3Parts,
     draw_order_groups: Option<Moc3DrawOrderGroups>,
-    drawable_index: HashMap<String, usize>,
-    parameter_index: HashMap<String, usize>,
+    drawable_index: RapidHashMap<String, usize>,
+    parameter_index: RapidHashMap<String, usize>,
     parameter_values: Vec<f32>,
     parameter_overrides: Vec<Option<f32>>,
     physics: Option<PhysicsRuntime>,
-    part_index: HashMap<String, usize>,
+    part_index: RapidHashMap<String, usize>,
     part_opacity_overrides: Vec<Option<f32>>,
     part_opacities: Vec<f32>,
     pose_groups: Vec<PoseGroup>,
@@ -867,7 +867,7 @@ fn parameter_clamp_range(bindings: &Moc3KeyformBindings, index: usize) -> (f32, 
     (minimum, maximum)
 }
 
-fn build_index(ids: &[String]) -> HashMap<String, usize> {
+fn build_index(ids: &[String]) -> RapidHashMap<String, usize> {
     ids.iter()
         .enumerate()
         .map(|(index, id)| (id.clone(), index))
@@ -896,7 +896,7 @@ fn drawable_contains_point(mesh: &Moc3DrawableMesh, x: f32, y: f32) -> bool {
     (min_x..=max_x).contains(&x) && (min_y..=max_y).contains(&y)
 }
 
-fn build_pose_groups(pose: &Pose3, part_index: &HashMap<String, usize>) -> Vec<PoseGroup> {
+fn build_pose_groups(pose: &Pose3, part_index: &RapidHashMap<String, usize>) -> Vec<PoseGroup> {
     pose.groups()
         .iter()
         .filter_map(|group| {

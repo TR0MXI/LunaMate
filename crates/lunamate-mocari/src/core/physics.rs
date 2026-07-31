@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rapidhash::RapidHashMap;
 
 use crate::json::{Physics3, PhysicsValueKind};
 
@@ -426,7 +426,7 @@ impl PhysicsRuntime {
             .iter()
             .enumerate()
             .map(|(index, id)| (id.as_str(), index))
-            .collect::<HashMap<_, _>>();
+            .collect::<RapidHashMap<_, _>>();
         let settings = physics
             .settings()
             .iter()

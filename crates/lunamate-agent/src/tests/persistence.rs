@@ -1,8 +1,9 @@
 //! 提供不依赖具体数据库引擎的 Agent 持久化测试 fake。
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
+use rapidhash::RapidHashMap;
 
 use crate::persistence::{
     AgentPersistenceCallbacks, PersistenceError, PersistentMemoryTier, PersistentMemoryUsage,
@@ -13,8 +14,8 @@ const SESSION_KEY_PREFIX: &str = "chat-session/";
 
 #[derive(Default)]
 struct TestState {
-    sessions: HashMap<String, SessionDocument>,
-    memories: HashMap<(String, PersistentMemoryTier), u64>,
+    sessions: RapidHashMap<String, SessionDocument>,
+    memories: RapidHashMap<(String, PersistentMemoryTier), u64>,
 }
 
 #[derive(Clone, Default)]

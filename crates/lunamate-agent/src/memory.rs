@@ -1,7 +1,6 @@
 //! 提供人格上下文快照、持久化记忆用量和清理入口。
 
 use std::{
-    collections::HashMap,
     error::Error,
     fmt,
     sync::{
@@ -11,6 +10,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
+use rapidhash::RapidHashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -178,7 +178,7 @@ pub struct AgentMemory {
     persistence: Option<AgentPersistenceCallbacks>,
     live_context_usage: LiveContextUsage,
     session_document_lock: SessionDocumentLock,
-    deleted_persona_cleanup: Arc<Mutex<HashMap<String, DeletedPersonaCleanupState>>>,
+    deleted_persona_cleanup: Arc<Mutex<RapidHashMap<String, DeletedPersonaCleanupState>>>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
