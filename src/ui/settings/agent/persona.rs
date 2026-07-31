@@ -44,6 +44,9 @@ const BOUND_PROVIDER_INHERIT: &str = "\u{2014}";
 /// Live2D 绑定的第一项固定表示跟随全局模型设置。
 const BOUND_LIVE2D_INHERIT: &str = "\u{2014}";
 const CONTEXT_AUTO_REFRESH_INTERVAL: Duration = Duration::from_millis(750);
+const CONTEXT_SELECTION_AUTO_SCROLL_INTERVAL: Duration = Duration::from_millis(16);
+const CONTEXT_SELECTION_AUTO_SCROLL_EDGE: f32 = 40.0;
+const CONTEXT_SELECTION_AUTO_SCROLL_MAX_STEP: f32 = 24.0;
 
 /// 具体人格编辑页的五个固定分区。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -65,10 +68,28 @@ struct Live2dModelOption {
 struct ContextSelectionDrag {
     anchor_id: Option<u64>,
     base: HashSet<u64>,
+    /// 去除滚动偏移后的内容坐标，滚动时始终锚定原始消息位置。
     start: Point<Pixels>,
     current: Point<Pixels>,
+    /// 最新鼠标窗口坐标；滚动时用它推进内容坐标中的选择终点。
+    cursor: Point<Pixels>,
     moved: bool,
     additive: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct ContextMessageLayout {
+    bounds: Bounds<Pixels>,
+    scroll_offset: Point<Pixels>,
+}
+
+impl ContextMessageLayout {
+    pub(super) fn new(bounds: Bounds<Pixels>, scroll_offset: Point<Pixels>) -> Self {
+        Self {
+            bounds,
+            scroll_offset,
+        }
+    }
 }
 
 /// 会话持有者完成单条上下文修改后返回设置页的结果通道。
@@ -220,7 +241,7 @@ pub(super) struct ContextMessageEditor {
     pub(super) id: u64,
     pub(super) role: ChatRole,
     pub(super) input: Entity<InputState>,
-    pub(super) bounds: Rc<Cell<Bounds<Pixels>>>,
+    pub(super) layout: Rc<Cell<ContextMessageLayout>>,
     saved_content: String,
     tokens: usize,
     fixed_tokens: usize,
@@ -247,6 +268,8 @@ pub(in crate::ui) struct PersonaSettingsView {
     form_subscriptions: Vec<Subscription>,
     context_selected: HashSet<u64>,
     context_selection_drag: Option<ContextSelectionDrag>,
+    context_selection_auto_scroll_revision: u64,
+    context_selection_auto_scroll_task: Option<Task<()>>,
     context_view_bounds: Rc<Cell<Bounds<Pixels>>>,
     context_editing: Option<u64>,
     context_focus: FocusHandle,
@@ -457,6 +480,8 @@ impl PersonaSettingsView {
             form_subscriptions: Vec::new(),
             context_selected: HashSet::new(),
             context_selection_drag: None,
+            context_selection_auto_scroll_revision: 0,
+            context_selection_auto_scroll_task: None,
             context_view_bounds: Rc::new(Cell::new(Bounds::default())),
             context_editing: None,
             context_focus: cx.focus_handle(),
@@ -521,6 +546,7 @@ impl PersonaSettingsView {
         cx: &mut Context<Self>,
     ) -> (PersonaSettingsDraft, Vec<Task<()>>, bool) {
         self.stop_context_auto_refresh();
+        self.cancel_context_selection();
         self.save(cx);
         self.window_transferred = true;
         let retain_editor =
@@ -956,7 +982,7 @@ impl PersonaSettingsView {
                     this.context_editors.clear();
                     this.context_subscriptions.clear();
                     this.context_selected.clear();
-                    this.context_selection_drag = None;
+                    this.cancel_context_selection();
                     if let Some(usage) = &mut this.usage {
                         usage.context.messages = 0;
                         usage.context.tokens = 0;
@@ -1128,7 +1154,7 @@ impl PersonaSettingsView {
         self.capture_current_form(cx);
         self.save(cx);
         self.active_page = page;
-        self.context_selection_drag = None;
+        self.cancel_context_selection();
         self.context_editing = None;
         if page == PersonaPage::Context {
             self.refresh_usage(cx);
@@ -1196,6 +1222,7 @@ impl PersonaSettingsView {
     }
 
     fn refresh_context(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_context_selection();
         self.context_revision = self.context_revision.wrapping_add(1).max(1);
         let revision = self.context_revision;
         self.context_task = None;
@@ -1294,7 +1321,7 @@ impl PersonaSettingsView {
                 id: message.id,
                 role: message.role,
                 input,
-                bounds: Rc::new(Cell::new(Bounds::default())),
+                layout: Rc::new(Cell::new(ContextMessageLayout::default())),
                 saved_content: message.content,
                 tokens: message.tokens,
                 fixed_tokens: message.fixed_tokens,
@@ -1826,10 +1853,11 @@ impl PersonaSettingsView {
     }
 
     pub(super) fn context_selection_rect(&self) -> Option<(Point<Pixels>, Point<Pixels>)> {
+        let scroll_offset = self.context_scroll.offset();
         self.context_selection_drag
             .as_ref()
             .filter(|drag| drag.moved)
-            .map(|drag| (drag.start, drag.current))
+            .map(|drag| (drag.start + scroll_offset, drag.current + scroll_offset))
     }
 
     pub(super) fn begin_context_message_edit(
@@ -1883,9 +1911,10 @@ impl PersonaSettingsView {
                 self.loading_form = false;
                 return;
             }
-            if !self.context_selected.is_empty() {
+            if self.context_selection_drag.is_some() || !self.context_selected.is_empty() {
                 window.prevent_default();
                 cx.stop_propagation();
+                self.cancel_context_selection();
                 self.context_selected.clear();
                 cx.notify();
             }
@@ -1929,7 +1958,7 @@ impl PersonaSettingsView {
     }
 
     fn select_all_context_messages(&mut self, cx: &mut Context<Self>) {
-        self.context_selection_drag = None;
+        self.cancel_context_selection();
         self.context_selected = self
             .context_editors
             .iter()
@@ -1943,7 +1972,7 @@ impl PersonaSettingsView {
         message_id: u64,
         cx: &mut Context<Self>,
     ) {
-        self.context_selection_drag = None;
+        self.cancel_context_selection();
         if !self.context_selected.contains(&message_id) {
             self.context_selected.clear();
             self.context_selected.insert(message_id);
@@ -1976,16 +2005,22 @@ impl PersonaSettingsView {
             return;
         }
         self.context_focus.focus(window, cx);
+        let content_position = event.position - self.context_scroll.offset();
         let anchor_id = self
             .context_editors
             .iter()
-            .find(|message| message.bounds.get().contains(&event.position))
+            .find(|message| {
+                self.context_message_bounds(message)
+                    .contains(&content_position)
+            })
             .map(|message| message.id);
+        self.cancel_context_selection();
         self.context_selection_drag = Some(ContextSelectionDrag {
             anchor_id,
             base: self.context_selected.clone(),
-            start: event.position,
-            current: event.position,
+            start: content_position,
+            current: content_position,
+            cursor: event.position,
             moved: false,
             additive: selection_is_additive(event.modifiers),
         });
@@ -1995,44 +2030,157 @@ impl PersonaSettingsView {
     pub(super) fn update_context_selection_drag(
         &mut self,
         event: &MouseMoveEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(drag) = &mut self.context_selection_drag else {
             return;
         };
+        // 滚轮和触控板滚动后，部分平台会发送不携带按键状态的过渡移动事件；
+        // 忽略它但保留框选，手势只由明确的 MouseUp 结束。
         if !event.dragging() {
-            self.context_selection_drag = None;
-            cx.notify();
             return;
         }
-        drag.current = event.position;
-        let dx = f32::from(event.position.x - drag.start.x).abs();
-        let dy = f32::from(event.position.y - drag.start.y).abs();
+        let content_position = event.position - self.context_scroll.offset();
+        drag.current = content_position;
+        drag.cursor = event.position;
+        let dx = f32::from(content_position.x - drag.start.x).abs();
+        let dy = f32::from(content_position.y - drag.start.y).abs();
         drag.moved |= dx >= 3.0 || dy >= 3.0;
         if !drag.moved {
             cx.notify();
             return;
         }
-        let additive = drag.additive;
-        let base = drag.base.clone();
+        self.recompute_context_selection();
+        self.schedule_context_selection_auto_scroll(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn context_selection_scrolled(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = &mut self.context_selection_drag else {
+            return;
+        };
+        drag.current = drag.cursor - self.context_scroll.offset();
+        self.recompute_context_selection();
+        self.schedule_context_selection_auto_scroll(window, cx);
+        cx.notify();
+    }
+
+    fn schedule_context_selection_auto_scroll(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(drag) = &self.context_selection_drag else {
+            return;
+        };
+        if self.context_selection_auto_scroll_task.is_some()
+            || !drag.moved
+            || context_selection_auto_scroll_delta(drag.cursor, self.context_view_bounds.get())
+                == Pixels::ZERO
+        {
+            return;
+        }
+        let generation = self.context_selection_auto_scroll_revision;
+        let background = cx.background_executor().clone();
+        self.context_selection_auto_scroll_task =
+            Some(cx.spawn_in(window, async move |this, cx| {
+                background
+                    .timer(CONTEXT_SELECTION_AUTO_SCROLL_INTERVAL)
+                    .await;
+                let _ = cx.update(|window, app| {
+                    let _ = this.update(app, |this, cx| {
+                        if this.context_selection_auto_scroll_revision != generation {
+                            return;
+                        }
+                        this.context_selection_auto_scroll_task = None;
+                        if this.advance_context_selection_auto_scroll(cx) {
+                            this.schedule_context_selection_auto_scroll(window, cx);
+                        }
+                    });
+                });
+            }));
+    }
+
+    fn advance_context_selection_auto_scroll(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(drag) = &self.context_selection_drag else {
+            return false;
+        };
+        if !drag.moved {
+            return false;
+        }
+        let delta =
+            context_selection_auto_scroll_delta(drag.cursor, self.context_view_bounds.get());
+        if delta == Pixels::ZERO {
+            return false;
+        }
+        let offset = self.context_scroll.offset();
+        let max_offset = self.context_scroll.max_offset();
+        let next_y = (offset.y + delta).clamp(-max_offset.y, Pixels::ZERO);
+        if next_y == offset.y {
+            return false;
+        }
+        let next_offset = Point::new(offset.x, next_y);
+        self.context_scroll.set_offset(next_offset);
+        if let Some(drag) = &mut self.context_selection_drag {
+            drag.current = drag.cursor - next_offset;
+        }
+        self.recompute_context_selection();
+        cx.notify();
+        true
+    }
+
+    fn stop_context_selection_auto_scroll(&mut self) {
+        self.context_selection_auto_scroll_revision = self
+            .context_selection_auto_scroll_revision
+            .wrapping_add(1)
+            .max(1);
+        self.context_selection_auto_scroll_task = None;
+    }
+
+    fn cancel_context_selection(&mut self) {
+        self.context_selection_drag = None;
+        self.stop_context_selection_auto_scroll();
+    }
+
+    fn recompute_context_selection(&mut self) {
+        let Some(drag) = &self.context_selection_drag else {
+            return;
+        };
         let selection = selection_bounds(drag.start, drag.current);
-        let mut selected = if additive { base } else { HashSet::new() };
+        let mut selected = if drag.additive {
+            drag.base.clone()
+        } else {
+            HashSet::new()
+        };
         selected.extend(
             self.context_editors
                 .iter()
-                .filter(|message| message.bounds.get().intersects(&selection))
+                .filter(|message| self.context_message_bounds(message).intersects(&selection))
                 .map(|message| message.id),
         );
         self.context_selected = selected;
-        cx.notify();
+    }
+
+    fn context_message_bounds(&self, message: &ContextMessageEditor) -> Bounds<Pixels> {
+        let layout = message.layout.get();
+        Bounds::new(
+            layout.bounds.origin - layout.scroll_offset,
+            layout.bounds.size,
+        )
     }
 
     pub(super) fn update_context_selection_position(
         &mut self,
         event: &MouseMoveEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.update_context_selection_drag(event, cx);
+        self.update_context_selection_drag(event, window, cx);
     }
 
     pub(super) fn finish_context_selection_drag(
@@ -2040,6 +2188,7 @@ impl PersonaSettingsView {
         _event: &MouseUpEvent,
         cx: &mut Context<Self>,
     ) {
+        self.stop_context_selection_auto_scroll();
         let Some(drag) = self.context_selection_drag.take() else {
             return;
         };
@@ -2303,6 +2452,27 @@ impl PersonaSettingsView {
         self.context_selected.len()
     }
 
+    /// 返回框选手势是否仍在进行，供测试覆盖滚动后的生命周期。
+    #[cfg(test)]
+    pub(crate) fn context_selection_active_for_test(&self) -> bool {
+        self.context_selection_drag.is_some()
+    }
+
+    /// 返回边缘自动滚动定时任务是否已启动。
+    #[cfg(test)]
+    pub(crate) fn context_selection_auto_scroll_scheduled_for_test(&self) -> bool {
+        self.context_selection_auto_scroll_task.is_some()
+    }
+
+    /// 执行一次边缘滚动，测试定时任务所调用的状态转换。
+    #[cfg(test)]
+    pub(crate) fn advance_context_selection_auto_scroll_for_test(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.advance_context_selection_auto_scroll(cx)
+    }
+
     /// 进入指定消息的编辑态，供无头测试验证编辑布局与 Esc 回退。
     #[cfg(test)]
     pub(crate) fn begin_context_message_edit_for_test(
@@ -2538,6 +2708,25 @@ fn selection_bounds(start: Point<Pixels>, current: Point<Pixels>) -> Bounds<Pixe
     let width = (start.x - current.x).abs().max(Pixels::from(1.0));
     let height = (start.y - current.y).abs().max(Pixels::from(1.0));
     Bounds::new(Point::new(left, top), Size::new(width, height))
+}
+
+fn context_selection_auto_scroll_delta(cursor: Point<Pixels>, viewport: Bounds<Pixels>) -> Pixels {
+    let edge = Pixels::from(CONTEXT_SELECTION_AUTO_SCROLL_EDGE);
+    let top_edge = viewport.origin.y + edge;
+    if cursor.y < top_edge {
+        let proximity =
+            (f32::from(top_edge - cursor.y) / CONTEXT_SELECTION_AUTO_SCROLL_EDGE).clamp(0.0, 1.0);
+        return Pixels::from(CONTEXT_SELECTION_AUTO_SCROLL_MAX_STEP * proximity);
+    }
+
+    let bottom_edge = viewport.origin.y + viewport.size.height - edge;
+    if cursor.y > bottom_edge {
+        let proximity = (f32::from(cursor.y - bottom_edge) / CONTEXT_SELECTION_AUTO_SCROLL_EDGE)
+            .clamp(0.0, 1.0);
+        return Pixels::from(-CONTEXT_SELECTION_AUTO_SCROLL_MAX_STEP * proximity);
+    }
+
+    Pixels::ZERO
 }
 
 fn selection_is_additive(modifiers: Modifiers) -> bool {

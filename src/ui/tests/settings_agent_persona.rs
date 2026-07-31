@@ -4,7 +4,8 @@
 //! 供应商绑定映射与"删除必须先确认"的约束。真实删除路径在数据库层单独验证。
 
 use gpui::{
-    Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, prelude::*, px,
+    Entity, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase,
+    VisualTestContext, point, prelude::*, px,
 };
 use lunamate_agent::AgentMemory;
 use lunamate_agent::config::{
@@ -748,6 +749,10 @@ fn dragging_from_a_message_selects_a_contiguous_message_range(cx: &mut TestAppCo
         assert_eq!(view.selected_context_messages_for_test(), 3);
     });
     cx.simulate_mouse_up(cursor, MouseButton::Left, Modifiers::none());
+    view.update(cx, |view, _| {
+        assert!(!view.context_selection_active_for_test());
+        assert!(!view.context_selection_auto_scroll_scheduled_for_test());
+    });
 }
 
 #[gpui::test]
@@ -798,6 +803,162 @@ fn dragging_from_viewport_padding_selects_messages(cx: &mut TestAppContext) {
         assert_eq!(view.selected_context_messages_for_test(), 3);
     });
     cx.simulate_mouse_up(cursor, MouseButton::Left, Modifiers::none());
+}
+
+#[gpui::test]
+fn scrolling_during_marquee_selection_keeps_the_box_and_drag_alive(cx: &mut TestAppContext) {
+    let (view, cx) = mount(
+        cx,
+        LlmSettings::default(),
+        PersonaSettings {
+            personas: vec![persona("moon", None)],
+            selected: Some("moon".to_owned()),
+            pending_deletions: Vec::new(),
+        },
+    );
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.show_context_for_test(cx);
+        view.load_context_messages_for_test(
+            (1_u64..=40)
+                .map(|id| ContextMessage {
+                    id,
+                    role: ChatRole::User,
+                    content: format!("消息 {id}"),
+                    tokens: 6,
+                    fixed_tokens: 4,
+                    trace: None,
+                })
+                .collect(),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let viewport = cx
+        .debug_bounds("context-message-scroll")
+        .expect("上下文滚动视口应已渲染");
+    let last = cx
+        .debug_bounds("context-card-40")
+        .expect("最后一条消息应已渲染");
+    let start = point(
+        last.origin.x + last.size.width / 2.0,
+        last.origin.y + last.size.height / 2.0,
+    );
+    let cursor = point(start.x - px(120.0), viewport.origin.y + px(80.0));
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(cursor, MouseButton::Left, Modifiers::none());
+    let selection_before = cx
+        .debug_bounds("context-selection-box")
+        .expect("滚动前应显示框选区域");
+    let offset_before = view.update(cx, |view, _| {
+        assert!(view.context_selection_active_for_test());
+        assert!(view.selected_context_messages_for_test() > 0);
+        (
+            view.context_scroll_for_test().0,
+            view.selected_context_messages_for_test(),
+        )
+    });
+
+    cx.simulate_event(ScrollWheelEvent {
+        position: cursor,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(180.0))),
+        modifiers: Modifiers::none(),
+        touch_phase: TouchPhase::Moved,
+    });
+    let selection_after_scroll = cx
+        .debug_bounds("context-selection-box")
+        .expect("滚动后框选区域不应消失");
+    assert_eq!(selection_after_scroll.origin, selection_before.origin);
+    assert_eq!(
+        selection_after_scroll.size.width,
+        selection_before.size.width
+    );
+    assert!(selection_after_scroll.size.height > selection_before.size.height);
+    view.update(cx, |view, _| {
+        assert!(view.context_selection_active_for_test());
+        assert!(view.selected_context_messages_for_test() >= offset_before.1);
+        assert_ne!(view.context_scroll_for_test().0, offset_before.0);
+    });
+
+    // 模拟部分平台在滚动后发出的无按键状态过渡移动事件。
+    cx.simulate_mouse_move(
+        point(cursor.x + px(40.0), cursor.y + px(20.0)),
+        None,
+        Modifiers::none(),
+    );
+    assert_eq!(
+        cx.debug_bounds("context-selection-box"),
+        Some(selection_after_scroll)
+    );
+    view.update(cx, |view, _| {
+        assert!(view.context_selection_active_for_test());
+        assert!(view.selected_context_messages_for_test() > 0);
+    });
+
+    cx.simulate_mouse_up(cursor, MouseButton::Left, Modifiers::none());
+    view.update(cx, |view, _| {
+        assert!(!view.context_selection_active_for_test());
+        assert!(view.selected_context_messages_for_test() > 0);
+    });
+}
+
+#[gpui::test]
+fn marquee_selection_auto_scrolls_from_the_viewport_edge(cx: &mut TestAppContext) {
+    let (view, cx) = mount(
+        cx,
+        LlmSettings::default(),
+        PersonaSettings {
+            personas: vec![persona("moon", None)],
+            selected: Some("moon".to_owned()),
+            pending_deletions: Vec::new(),
+        },
+    );
+    cx.update_window_entity(&view, |view, window, cx| {
+        view.show_context_for_test(cx);
+        view.load_context_messages_for_test(
+            (1_u64..=40)
+                .map(|id| ContextMessage {
+                    id,
+                    role: ChatRole::User,
+                    content: format!("消息 {id}"),
+                    tokens: 6,
+                    fixed_tokens: 4,
+                    trace: None,
+                })
+                .collect(),
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let viewport = cx
+        .debug_bounds("context-message-scroll")
+        .expect("上下文滚动视口应已渲染");
+    let last = cx
+        .debug_bounds("context-card-40")
+        .expect("最后一条消息应已渲染");
+    let start = point(
+        last.origin.x + last.size.width / 2.0,
+        last.origin.y + last.size.height / 2.0,
+    );
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    let cursor = point(start.x, viewport.origin.y + px(8.0));
+    let offset_before = view.update(cx, |view, _| view.context_scroll_for_test().0);
+    cx.simulate_mouse_move(cursor, MouseButton::Left, Modifiers::none());
+    view.update(cx, |view, cx| {
+        assert!(view.context_selection_auto_scroll_scheduled_for_test());
+        assert!(view.advance_context_selection_auto_scroll_for_test(cx));
+        assert_ne!(view.context_scroll_for_test().0, offset_before);
+        assert!(view.context_selection_active_for_test());
+        assert!(view.selected_context_messages_for_test() > 0);
+    });
+    cx.simulate_mouse_up(cursor, MouseButton::Left, Modifiers::none());
+    view.update(cx, |view, _| {
+        assert!(!view.context_selection_active_for_test());
+        assert!(!view.context_selection_auto_scroll_scheduled_for_test());
+    });
 }
 
 #[gpui::test]
@@ -916,7 +1077,7 @@ fn context_message_list_fills_the_page_and_initially_scrolls_to_bottom(cx: &mut 
     cx.update_window_entity(&view, |view, window, cx| {
         view.show_context_for_test(cx);
         view.load_context_messages_for_test(
-            (1_u64..=12)
+            (1_u64..=30)
                 .map(|id| ContextMessage {
                     id,
                     role: if id % 2 == 0 {

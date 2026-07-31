@@ -19,7 +19,9 @@ use crate::ui::UiPalette;
 
 use super::{
     components::{confirm_overlay, form_field, section_label, status_toast},
-    persona::{ContextMessageEditor, MemoryScope, PersonaPage, PersonaSettingsView},
+    persona::{
+        ContextMessageEditor, ContextMessageLayout, MemoryScope, PersonaPage, PersonaSettingsView,
+    },
     provider_display_name, provider_icon,
 };
 
@@ -490,14 +492,12 @@ impl PersonaSettingsView {
             .w_full()
             .min_h_0()
             .flex_1()
-            .overflow_y_scroll()
-            .track_scroll(self.context_scroll())
+            .overflow_hidden()
             .rounded_md()
             .border_1()
             .border_color(palette.border)
             .bg(palette.sidebar.opacity(0.45))
             .mt_3()
-            .p_3()
             .track_focus(self.context_focus())
             .on_mouse_down(
                 MouseButton::Left,
@@ -506,8 +506,8 @@ impl PersonaSettingsView {
                     cx.stop_propagation();
                 }),
             )
-            .on_mouse_move(cx.listener(|this, event, _, cx| {
-                this.update_context_selection_position(event, cx);
+            .on_mouse_move(cx.listener(|this, event, window, cx| {
+                this.update_context_selection_position(event, window, cx);
             }))
             .on_mouse_up(
                 MouseButton::Left,
@@ -529,37 +529,49 @@ impl PersonaSettingsView {
                 .absolute()
                 .inset_0(),
             )
-            .when(loading, |this| {
-                this.child(
-                    div()
-                        .py_8()
-                        .text_center()
-                        .text_xs()
-                        .text_color(palette.muted_foreground)
-                        .child(t!("persona.context_loading").to_string()),
-                )
-            })
-            .when_some(error, |this, error| {
-                this.child(
-                    div()
-                        .py_6()
-                        .text_center()
-                        .text_xs()
-                        .text_color(palette.danger)
-                        .child(error),
-                )
-            })
-            .when(empty, |this| {
-                this.child(
-                    div()
-                        .py_8()
-                        .text_center()
-                        .text_xs()
-                        .text_color(palette.muted_foreground)
-                        .child(t!("persona.context_empty").to_string()),
-                )
-            })
-            .children(messages)
+            .child(
+                div()
+                    .id("context-message-content")
+                    .absolute()
+                    .inset_0()
+                    .overflow_y_scroll()
+                    .track_scroll(self.context_scroll())
+                    .p_3()
+                    .on_scroll_wheel(cx.listener(|this, _, window, cx| {
+                        this.context_selection_scrolled(window, cx);
+                    }))
+                    .when(loading, |this| {
+                        this.child(
+                            div()
+                                .py_8()
+                                .text_center()
+                                .text_xs()
+                                .text_color(palette.muted_foreground)
+                                .child(t!("persona.context_loading").to_string()),
+                        )
+                    })
+                    .when_some(error, |this, error| {
+                        this.child(
+                            div()
+                                .py_6()
+                                .text_center()
+                                .text_xs()
+                                .text_color(palette.danger)
+                                .child(error),
+                        )
+                    })
+                    .when(empty, |this| {
+                        this.child(
+                            div()
+                                .py_8()
+                                .text_center()
+                                .text_xs()
+                                .text_color(palette.muted_foreground)
+                                .child(t!("persona.context_empty").to_string()),
+                        )
+                    })
+                    .children(messages),
+            )
             .when_some(selection_rect, |this, (start, current)| {
                 let viewport = self.context_view_bounds().get();
                 let (origin, size) = selection_geometry(start, current, viewport.origin);
@@ -600,7 +612,8 @@ impl PersonaSettingsView {
         let view_for_edit = view.clone();
         let view_for_delete = view.clone();
         let view_for_copy = view.clone();
-        let message_bounds = message.bounds.clone();
+        let message_layout = message.layout.clone();
+        let context_scroll = self.context_scroll().clone();
 
         div()
             .id(("context-message", message_id))
@@ -701,7 +714,10 @@ impl PersonaSettingsView {
             })
             .child(
                 canvas(
-                    move |bounds, _, _| message_bounds.set(bounds),
+                    move |bounds, _, _| {
+                        message_layout
+                            .set(ContextMessageLayout::new(bounds, context_scroll.offset()));
+                    },
                     |_, _, _, _| {},
                 )
                 .absolute()
