@@ -120,6 +120,12 @@ _version = 2
 "en" = "Stopped"
 "ja" = "停止しました"
 
+[chat.stop_voice]
+"zh-CN" = "停止语音请求"
+"zh-TW" = "停止語音請求"
+"en" = "Stop voice request"
+"ja" = "音声リクエストを停止"
+
 [chat.interrupted]
 "zh-CN" = "回复已中断"
 "zh-TW" = "回覆已中斷"

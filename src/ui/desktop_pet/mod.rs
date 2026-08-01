@@ -43,9 +43,10 @@ use crate::{
 
 use super::{
     AgentOutfitAction, AgentView, AgentViewEvent, SettingsEvent, SettingsView, SettingsWindowView,
-    TrayMenuView, UiPalette, apply, apply_language, cache_window_position, desktop_pet_window_size,
-    gpu_underlay_size, gpu_underlay_size_for_window, raster_dimensions_for_window,
-    restored_window_bounds, settings_window_sizes, tray_menu_window_options,
+    ThinkingFeedback, TrayMenuView, UiPalette, apply, apply_language, cache_window_position,
+    desktop_pet_window_size, gpu_underlay_size, gpu_underlay_size_for_window,
+    raster_dimensions_for_window, restored_window_bounds, settings_window_sizes,
+    tray_menu_window_options,
 };
 
 const FPS_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
@@ -197,6 +198,7 @@ pub(crate) struct DesktopPetView {
     shortcut_event_task: Option<Task<()>>,
     chat_input_open: bool,
     chat_overlay_visible: bool,
+    chat_thinking_feedback: Option<ThinkingFeedback>,
     position_controller: WindowPositionController,
     pending_model_window_size: Option<ModelWindowSize>,
     pending_model_window_size_attempts: u32,
@@ -319,10 +321,15 @@ impl DesktopPetView {
         }
         let shortcut_events = shortcut_manager.as_ref().map(ShortcutManager::events);
         let chat_overlay_visible = chat.read(cx).reply_visible();
+        let chat_thinking_feedback = chat.read(cx).thinking_feedback();
         let chat_subscription = cx.observe(&chat, |this, chat, cx| {
             let visible = chat.read(cx).reply_visible();
-            if this.chat_overlay_visible != visible {
+            let thinking_feedback = chat.read(cx).thinking_feedback();
+            if this.chat_overlay_visible != visible
+                || this.chat_thinking_feedback != thinking_feedback
+            {
                 this.chat_overlay_visible = visible;
+                this.chat_thinking_feedback = thinking_feedback;
                 cx.notify();
             }
         });
@@ -519,6 +526,7 @@ impl DesktopPetView {
             shortcut_event_task: None,
             chat_input_open: false,
             chat_overlay_visible,
+            chat_thinking_feedback,
             position_controller: WindowPositionController::default(),
             pending_model_window_size: None,
             pending_model_window_size_attempts: 0,
@@ -757,7 +765,10 @@ impl DesktopPetView {
             VoiceEvent::ActivityChanged { revision } if revision == self.voice_revision => {
                 if let Some(voice) = &self.voice {
                     self.voice_activity = voice.activity();
-                    let recording = self.voice_activity.phase == VoicePhase::Recording;
+                    let recording = matches!(
+                        self.voice_activity.phase,
+                        VoicePhase::Recording | VoicePhase::Transcribing
+                    );
                     self.chat.update(cx, |chat, cx| {
                         chat.set_voice_indicator_visible(recording, cx);
                     });
@@ -854,6 +865,20 @@ impl DesktopPetView {
         {
             voice.set_push_to_talk(pressed);
         }
+    }
+
+    fn stop_voice_interaction(&mut self, cx: &mut Context<Self>) {
+        let utterance_id = self.chat.read(cx).pending_voice_utterance();
+        if let (Some(voice), Some(utterance_id)) = (&self.voice, utterance_id) {
+            voice.cancel_remote_transcription(self.voice_revision, utterance_id);
+        }
+        self.chat.update(cx, |chat, cx| {
+            chat.stop_voice_interaction(cx);
+        });
+        if let Some(playback) = &self.speech_playback {
+            playback.stop();
+        }
+        cx.notify();
     }
 
     fn release_voice_shortcut(&mut self) {

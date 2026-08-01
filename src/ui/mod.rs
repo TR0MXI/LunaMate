@@ -11,7 +11,7 @@ mod window;
 mod tests;
 
 pub(crate) use agent::AgentView;
-pub(in crate::ui) use agent::AgentViewEvent;
+pub(in crate::ui) use agent::{AgentViewEvent, ThinkingFeedback};
 pub(crate) use desktop_pet::DesktopPetView;
 pub(in crate::ui) use settings::AgentOutfitAction;
 pub(crate) use settings::{SettingsEvent, SettingsView, SettingsWindowView};

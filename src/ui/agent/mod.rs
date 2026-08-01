@@ -31,6 +31,13 @@ use crate::voice::VoiceController;
 pub(super) use reply::{AgentOverlayLayout, ReplyLifecycle};
 use screenshot::host_screenshot_capability;
 
+/// 当前请求在收到首个可见回复前使用的输入反馈样式。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::ui) enum ThinkingFeedback {
+    Text,
+    Voice,
+}
+
 /// Agent 视图向桌宠根视图发布的本地能力请求。
 #[derive(Clone)]
 pub(in crate::ui) enum AgentViewEvent {
@@ -71,6 +78,8 @@ pub struct AgentView {
     messages_scroll: ScrollHandle,
     input_visible: bool,
     voice_indicator_visible: bool,
+    thinking_feedback: Option<ThinkingFeedback>,
+    thinking_feedback_revision: u64,
     reply_lifecycle: ReplyLifecycle,
     reply_fade_task: Option<Task<()>>,
     _state_task: Task<()>,
@@ -164,6 +173,8 @@ impl AgentView {
             messages_scroll: ScrollHandle::new(),
             input_visible: false,
             voice_indicator_visible: false,
+            thinking_feedback: None,
+            thinking_feedback_revision: 0,
             reply_lifecycle: ReplyLifecycle::new(reply_visible),
             reply_fade_task: None,
             _state_task: state_task,
@@ -183,6 +194,9 @@ impl AgentView {
         let reply_changed = snapshot.reply_message_id() != previous.reply_message_id()
             || snapshot.status() != previous.status();
         self.snapshot = snapshot;
+        if self.snapshot.is_streaming() && !self.waiting_for_visible_reply() {
+            self.thinking_feedback = None;
+        }
         if has_reply && (reply_changed || previous.is_streaming()) {
             self.reveal_reply(cx);
         }
@@ -217,6 +231,10 @@ impl AgentView {
 
     #[cfg(test)]
     pub(super) fn pending_voice_for_test(&self) -> Option<u64> {
+        self.pending_voice_utterance()
+    }
+
+    pub(in crate::ui) fn pending_voice_utterance(&self) -> Option<u64> {
         self.agent.snapshot().pending_voice()
     }
 
@@ -330,6 +348,7 @@ impl AgentView {
             model_click_event_prompt(part_name, language),
             None,
             language,
+            None,
             cx,
         )
     }
@@ -368,7 +387,7 @@ impl AgentView {
         let Some(language) = self.agent.take_voice_transcript(utterance_id) else {
             return false;
         };
-        self.send_message(text, None, language, cx)
+        self.send_message(text, None, language, Some(ThinkingFeedback::Voice), cx)
     }
 
     pub fn voice_utterance_cancelled(&mut self, utterance_id: u64) {
@@ -508,7 +527,7 @@ impl AgentView {
             .map(|pending| pending.attachment.clone());
         let language = CONFIG.agent_config_snapshot().language();
         self.refresh_settings(CONFIG.agent_config_snapshot(), cx);
-        if self.send_message(text, image, language, cx) {
+        if self.send_message(text, image, language, Some(ThinkingFeedback::Text), cx) {
             self.image_picker_revision = self.image_picker_revision.wrapping_add(1).max(1);
             self.image_picker_task = None;
             self.pending_image = None;
@@ -526,6 +545,7 @@ impl AgentView {
         text: String,
         image: Option<ImageAttachment>,
         language: AppLanguage,
+        thinking_feedback: Option<ThinkingFeedback>,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.suspended
@@ -549,13 +569,25 @@ impl AgentView {
             request_revision: self.agent.request_revision(),
             language,
         };
+        self.thinking_feedback = thinking_feedback;
+        self.thinking_feedback_revision = self.thinking_feedback_revision.wrapping_add(1).max(1);
+        let thinking_feedback_revision = self.thinking_feedback_revision;
+        cx.notify();
         let agent = self.agent.clone();
-        Tokio::spawn(cx, async move {
-            if let Err(error) = agent.clone().send(request).await
+        let request_agent = agent.clone();
+        let request_task = Tokio::spawn(cx, async move { request_agent.send(request).await });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Err(error)) = request_task.await
                 && !matches!(error, AgentError::Suspended | AgentError::StaleInput)
             {
                 agent.set_status(Some(error.localized_message(language)));
             }
+            let _ = this.update(cx, |this, cx| {
+                if this.thinking_feedback_revision == thinking_feedback_revision {
+                    this.thinking_feedback = None;
+                    cx.notify();
+                }
+            });
         })
         .detach();
         true
@@ -567,6 +599,16 @@ impl AgentView {
             self.sync_agent_snapshot(cx);
             self.schedule_reply_fade(cx);
         }
+    }
+
+    pub(in crate::ui) fn stop_voice_interaction(&mut self, cx: &mut Context<Self>) {
+        self.thinking_feedback_revision = self.thinking_feedback_revision.wrapping_add(1).max(1);
+        self.thinking_feedback = None;
+        self.cancel_remote_transcription();
+        self.agent.cancel_pending_voice();
+        cx.emit(AgentViewEvent::StopSpeech);
+        self.stop(cx);
+        cx.notify();
     }
 
     fn cancel_remote_transcription(&mut self) {

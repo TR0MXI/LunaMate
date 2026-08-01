@@ -1,14 +1,20 @@
 //! 渲染桌宠根视图，并把 GPUI 输入转发给当前模型 generation。
 
+use std::time::Duration;
+
 use gpui::{
-    ClickEvent, Context, IntoElement, MouseButton, MouseMoveEvent, ObjectFit, Render,
-    StyleRefinement, StyledImage, Window, WindowControlArea, div, img, prelude::*, px, svg,
+    Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, IntoElement,
+    MouseButton, MouseMoveEvent, ObjectFit, Render, StyleRefinement, StyledImage, Window,
+    WindowControlArea, bounce, div, ease_in_out, ease_out_quint, img, prelude::*, px, svg,
 };
-use gpui_component::StyledExt as _;
+use gpui_component::{StyledExt as _, tooltip::Tooltip};
 use rust_i18n::t;
 
 use super::DesktopPetView;
-use crate::{ui::UiPalette, voice::VoicePhase};
+use crate::{
+    ui::{ThinkingFeedback, UiPalette},
+    voice::{VoiceActivitySnapshot, VoicePhase},
+};
 
 impl Render for DesktopPetView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -36,6 +42,12 @@ impl Render for DesktopPetView {
         let show_fps = self.show_fps;
         let actual_fps = self.actual_fps;
         let voice_activity = self.voice_activity;
+        let voice_waiting = self.chat_thinking_feedback == Some(ThinkingFeedback::Voice);
+        let voice_indicator = (matches!(
+            voice_activity.phase,
+            VoicePhase::Recording | VoicePhase::Transcribing
+        ) || voice_waiting)
+            .then(|| render_voice_indicator(palette, voice_activity, cx));
         let diagnostics_top = if show_fps { px(42.0) } else { px(12.0) };
 
         div()
@@ -170,41 +182,7 @@ impl Render for DesktopPetView {
                         gpui::AnyView::from(chat).cached(StyleRefinement::default().size_full()),
                     ),
             )
-            .when(voice_activity.phase == VoicePhase::Recording, |this| {
-                let level = voice_activity.level.max(0.08);
-                let factors = [0.42_f32, 0.68, 0.9, 1.0, 0.82, 0.58, 0.36];
-                this.child(
-                    div()
-                        .id("voice-recording-indicator")
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom_3()
-                        .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .w(px(76.0))
-                                .h(px(32.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .gap(px(3.0))
-                                .rounded_md()
-                                .border_1()
-                                .border_color(palette.primary.opacity(0.7))
-                                .bg(palette.popover.opacity(0.9))
-                                .shadow_md()
-                                .children(factors.map(|factor| {
-                                    div()
-                                        .w(px(4.0))
-                                        .h(px((4.0 + 18.0 * level * factor).clamp(4.0, 22.0)))
-                                        .rounded_full()
-                                        .bg(palette.primary)
-                                })),
-                        ),
-                )
-            })
+            .when_some(voice_indicator, |this, indicator| this.child(indicator))
             .child(
                 div()
                     .id("toggle-chat")
@@ -292,4 +270,110 @@ impl Render for DesktopPetView {
                     ),
             )
     }
+}
+
+fn render_voice_indicator(
+    palette: UiPalette,
+    activity: VoiceActivitySnapshot,
+    cx: &mut Context<DesktopPetView>,
+) -> AnyElement {
+    let factors = [0.42_f32, 0.68, 0.9, 1.0, 0.82, 0.58, 0.36];
+    let indicator: AnyElement = if activity.phase == VoicePhase::Recording {
+        let level = activity.level.max(0.08);
+        div()
+            .id("voice-recording-waveform")
+            .w(px(76.0))
+            .h(px(32.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(3.0))
+            .rounded_full()
+            .border_1()
+            .border_color(palette.primary.opacity(0.7))
+            .bg(palette.popover.opacity(0.9))
+            .shadow_md()
+            .children(factors.map(|factor| {
+                div()
+                    .w(px(4.0))
+                    .h(px((4.0 + 18.0 * level * factor).clamp(4.0, 22.0)))
+                    .rounded_full()
+                    .bg(palette.primary)
+            }))
+            .into_any_element()
+    } else {
+        let stop_tooltip = t!("chat.stop_voice").to_string();
+        div()
+            .id("voice-stop-button")
+            .w(px(76.0))
+            .h(px(32.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .border_1()
+            .border_color(palette.primary.opacity(0.5))
+            .bg(palette.popover.opacity(0.94))
+            .cursor_pointer()
+            .hover(move |style| {
+                style
+                    .bg(palette.accent.opacity(0.96))
+                    .border_color(palette.primary.opacity(0.78))
+            })
+            .on_mouse_move(|_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.stop_voice_interaction(cx);
+            }))
+            .tooltip(move |window, cx| Tooltip::new(stop_tooltip.clone()).build(window, cx))
+            .child(
+                svg()
+                    .path("icons/square.svg")
+                    .size_4()
+                    .text_color(palette.primary),
+            )
+            .with_animations(
+                "voice-stop-collapse-and-breathe",
+                vec![
+                    Animation::new(Duration::from_millis(420)).with_easing(ease_out_quint()),
+                    Animation::new(Duration::from_millis(2_400))
+                        .repeat()
+                        .with_easing(bounce(ease_in_out)),
+                ],
+                move |this, animation, delta| {
+                    if animation == 0 {
+                        let width = 76.0 + (36.0 - 76.0) * delta;
+                        this.w(px(width)).h(px(32.0 + delta * 4.0))
+                    } else {
+                        this.size_9()
+                            .border_color(palette.primary.opacity(0.42 + delta * 0.24))
+                            .shadow(vec![
+                                BoxShadow::new(
+                                    px(0.0),
+                                    px(0.0),
+                                    palette.primary.opacity(0.07 + delta * 0.11),
+                                )
+                                .blur_radius(px(8.0 + delta * 5.0))
+                                .spread_radius(px(delta * 0.5)),
+                            ])
+                    }
+                },
+            )
+            .into_any_element()
+    };
+
+    div()
+        .id("voice-recording-indicator")
+        .absolute()
+        .left_0()
+        .right_0()
+        .bottom_3()
+        .flex()
+        .justify_center()
+        .child(indicator)
+        .into_any_element()
 }

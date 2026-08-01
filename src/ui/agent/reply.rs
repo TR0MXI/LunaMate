@@ -6,7 +6,7 @@ use gpui::Context;
 use lunamate_agent::{ChatMessageState, ChatRole};
 use rust_i18n::t;
 
-use super::AgentView;
+use super::{AgentView, ThinkingFeedback};
 
 const REPLY_LINGER_DURATION: Duration = Duration::from_secs(4);
 pub(super) const REPLY_FADE_DURATION: Duration = Duration::from_millis(800);
@@ -121,7 +121,6 @@ impl ReplyLifecycle {
 pub(super) struct ReplyDisplay {
     pub(super) text: String,
     pub(super) detail: Option<String>,
-    pub(super) waiting: bool,
     pub(super) error: bool,
 }
 
@@ -135,6 +134,11 @@ impl AgentView {
     /// 返回回复层当前是否占用桌宠状态提示区域。
     pub fn reply_visible(&self) -> bool {
         self.reply_lifecycle.visible()
+    }
+
+    /// 返回本轮首个可见回复到达前应展示的无文字反馈。
+    pub(in crate::ui) fn thinking_feedback(&self) -> Option<ThinkingFeedback> {
+        self.thinking_feedback
     }
 
     /// 为主窗口底部录音提示预留回复区域，避免波形遮住流式文本。
@@ -227,11 +231,13 @@ impl AgentView {
                 })
         {
             let visible_content = message.visible_content();
-            let waiting = visible_content.is_empty()
-                && matches!(message.state(), ChatMessageState::Streaming);
+            if visible_content.is_empty() && matches!(message.state(), ChatMessageState::Streaming)
+            {
+                return None;
+            }
             let text = if visible_content.is_empty() {
                 match message.state() {
-                    ChatMessageState::Streaming => t!("chat.thinking").to_string(),
+                    ChatMessageState::Streaming => String::new(),
                     ChatMessageState::Failed(error) => error.clone(),
                     ChatMessageState::Cancelled => t!("chat.stopped").to_string(),
                     ChatMessageState::Interrupted => t!("chat.interrupted").to_string(),
@@ -261,7 +267,6 @@ impl AgentView {
             return Some(ReplyDisplay {
                 text,
                 detail,
-                waiting,
                 error: matches!(message.state(), ChatMessageState::Failed(_)),
             });
         }
@@ -269,8 +274,19 @@ impl AgentView {
         self.snapshot.status().map(|status| ReplyDisplay {
             text: status.to_owned(),
             detail: None,
-            waiting: false,
             error: false,
+        })
+    }
+
+    pub(super) fn waiting_for_visible_reply(&self) -> bool {
+        let Some(message_id) = self.snapshot.reply_message_id() else {
+            return false;
+        };
+        self.snapshot.messages().iter().any(|message| {
+            message.id() == message_id
+                && message.role() == ChatRole::Assistant
+                && message.visible_content().is_empty()
+                && matches!(message.state(), ChatMessageState::Streaming)
         })
     }
 }

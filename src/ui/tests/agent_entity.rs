@@ -88,3 +88,16 @@ fn cancelled_voice_utterance_does_not_clear_a_newer_one(cx: &mut TestAppContext)
         assert_eq!(view.pending_voice_for_test(), None);
     });
 }
+
+#[gpui::test]
+fn stopping_voice_interaction_clears_the_pending_utterance(cx: &mut TestAppContext) {
+    let (view, cx) = mount(cx, None);
+    view.update(cx, |view, cx| {
+        view.voice_speech_started(9, AppLanguage::SimplifiedChinese, cx);
+        assert_eq!(view.pending_voice_for_test(), Some(9));
+
+        view.stop_voice_interaction(cx);
+
+        assert_eq!(view.pending_voice_for_test(), None);
+    });
+}
