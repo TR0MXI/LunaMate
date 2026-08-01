@@ -1,7 +1,8 @@
 //! 提供供应商无关的语音合成结果，并隔离 OpenAI 与豆包协议。
 
-use std::{error::Error, fmt, time::Duration};
+use std::{error::Error, fmt, io::Read, time::Duration};
 
+use flate2::read::GzDecoder;
 use futures::{SinkExt as _, StreamExt as _};
 use serde::Serialize;
 use tokio_tungstenite::{
@@ -138,15 +139,13 @@ async fn synthesize_doubao(
     model: &LlmModelConfig,
     text: &str,
 ) -> Result<Vec<u8>, SpeechSynthesisError> {
-    let app_id = required(model.app_id.as_deref())?;
-    let access_key = required(model.api_key.as_deref())?;
-    let voice = required(model.voice.as_deref())?;
+    let api_key = required(model.api_key.as_deref())?;
+    let voice_type = required(model.voice_type.as_deref())?;
     let endpoint = model.endpoint.as_deref().unwrap_or(DOUBAO_ENDPOINT);
     let mut request = endpoint
         .into_client_request()
         .map_err(|_| SpeechSynthesisError::InvalidConfiguration)?;
-    insert_header(&mut request, "X-Api-App-Key", app_id)?;
-    insert_header(&mut request, "X-Api-Access-Key", access_key)?;
+    insert_header(&mut request, "X-Api-Key", api_key)?;
     insert_header(&mut request, "X-Api-Resource-Id", &model.model)?;
     insert_header(
         &mut request,
@@ -166,7 +165,7 @@ async fn synthesize_doubao(
         let base_payload = serde_json::json!({
             "user": { "uid": Uuid::new_v4().to_string() },
             "req_params": {
-                "speaker": voice,
+                "speaker": voice_type,
                 "audio_params": {
                     "format": "pcm",
                     "sample_rate": SAMPLE_RATE,
@@ -174,7 +173,6 @@ async fn synthesize_doubao(
                 },
                 "additions": "{\"disable_markdown_filter\":true}"
             },
-            "event": 100
         });
         let payload = serde_json::to_vec(&base_payload)
             .map_err(|_| SpeechSynthesisError::InvalidConfiguration)?;
@@ -183,17 +181,7 @@ async fn synthesize_doubao(
 
         let task_payload = serde_json::json!({
             "user": { "uid": Uuid::new_v4().to_string() },
-            "req_params": {
-                "speaker": voice,
-                "audio_params": {
-                    "format": "pcm",
-                    "sample_rate": SAMPLE_RATE,
-                    "enable_timestamp": false,
-                },
-                "additions": "{\"disable_markdown_filter\":true}",
-                "text": text,
-            },
-            "event": 200
+            "req_params": { "text": text }
         });
         let payload = serde_json::to_vec(&task_payload)
             .map_err(|_| SpeechSynthesisError::InvalidConfiguration)?;
@@ -304,14 +292,19 @@ where
 }
 
 fn parse_volc_response(data: &[u8]) -> Result<VolcResponse, SpeechSynthesisError> {
-    if data.len() < 8 || data[0] >> 4 != 1 || data[0] & 0x0f != 1 || data[2] & 0x0f != 0 {
+    if data.len() < 8 || data[0] >> 4 != 1 || data[0] & 0x0f != 1 {
         return Err(SpeechSynthesisError::InvalidResponse);
     }
     let message_type = data[1] >> 4;
     let flags = data[1] & 0x0f;
+    let serialization = data[2] >> 4;
+    let compression = data[2] & 0x0f;
+    if !matches!(serialization, 0 | 1) || !matches!(compression, 0 | 1) {
+        return Err(SpeechSynthesisError::InvalidResponse);
+    }
     let mut offset = 4_usize;
     let has_sequence_or_error_code = (matches!(message_type, 0x01 | 0x02 | 0x09 | 0x0b | 0x0c)
-        && matches!(flags, 1 | 3))
+        && matches!(flags, 1..=3))
         || message_type == 0x0f;
     if has_sequence_or_error_code {
         offset = checked_advance(data, offset, 4)?;
@@ -332,11 +325,29 @@ fn parse_volc_response(data: &[u8]) -> Result<VolcResponse, SpeechSynthesisError
         None
     };
     let (payload, _) = read_bytes(data, offset, MAX_FRAME_BYTES)?;
+    let payload = match compression {
+        0 => payload.to_vec(),
+        1 => gunzip_bounded(payload, MAX_FRAME_BYTES)?,
+        _ => return Err(SpeechSynthesisError::InvalidResponse),
+    };
     Ok(VolcResponse {
         message_type,
         event,
-        payload: payload.to_vec(),
+        payload,
     })
+}
+
+fn gunzip_bounded(data: &[u8], max: usize) -> Result<Vec<u8>, SpeechSynthesisError> {
+    let decoder = GzDecoder::new(data);
+    let mut output = Vec::new();
+    decoder
+        .take((max + 1) as u64)
+        .read_to_end(&mut output)
+        .map_err(|_| SpeechSynthesisError::InvalidResponse)?;
+    if output.len() > max {
+        return Err(SpeechSynthesisError::ResponseTooLarge);
+    }
+    Ok(output)
 }
 
 fn read_bytes(
@@ -454,4 +465,12 @@ pub(crate) fn parse_volc_response_for_test(
 #[cfg(test)]
 pub(crate) fn decode_pcm_for_test(bytes: Vec<u8>) -> Result<Vec<i16>, SpeechSynthesisError> {
     decode_pcm(bytes)
+}
+
+#[cfg(test)]
+pub(crate) fn parse_gzip_response_for_test(
+    data: &[u8],
+) -> Result<(u8, Option<u32>, Vec<u8>), SpeechSynthesisError> {
+    parse_volc_response(data)
+        .map(|response| (response.message_type, response.event, response.payload))
 }

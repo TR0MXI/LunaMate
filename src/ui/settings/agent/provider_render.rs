@@ -323,7 +323,6 @@ impl ProviderSettingsView {
         let provider = has_model.then(|| self.selected_provider(cx));
         let kind = self.active_kind();
         let local = provider == Some(ModelProvider::LocalWhisper);
-        let doubao = provider == Some(ModelProvider::Doubao);
         div()
             .id("llm-editor-scroll")
             .flex_1()
@@ -491,16 +490,13 @@ impl ProviderSettingsView {
                         palette,
                     ))
                 })
-                .when(doubao, |this| {
-                    this.child(form_field(
-                        t!("llm.app_id").to_string(),
-                        Input::new(inputs.app_id).disabled(disabled),
-                        palette,
-                    ))
-                })
                 .when(kind == ModelKind::SpeechSynthesis, |this| {
                     this.child(form_field(
-                        t!("llm.voice_id").to_string(),
+                        if provider == Some(ModelProvider::Doubao) {
+                            t!("llm.voice_type").to_string()
+                        } else {
+                            t!("llm.voice").to_string()
+                        },
                         Input::new(inputs.voice).disabled(disabled),
                         palette,
                     ))

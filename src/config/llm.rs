@@ -239,8 +239,8 @@ fn parse_llm_model(
         model: optional("model").unwrap_or_default(),
         endpoint: optional("endpoint"),
         api_key: optional("api_key"),
-        app_id: optional("app_id"),
         voice: optional("voice"),
+        voice_type: optional("voice_type"),
         local_path: optional("local_path").map(PathBuf::from),
         use_gpu,
         whisper_language: optional("whisper_language"),
@@ -372,8 +372,13 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
             "api_key",
             model.api_key.clone().map(Value::from),
         );
-        write_optional(&mut table, "app_id", model.app_id.clone().map(Value::from));
+        table.remove("app_id");
         write_optional(&mut table, "voice", model.voice.clone().map(Value::from));
+        write_optional(
+            &mut table,
+            "voice_type",
+            model.voice_type.clone().map(Value::from),
+        );
         write_optional(
             &mut table,
             "local_path",

@@ -175,20 +175,19 @@ async fn transcribe_doubao(
     input: TranscriptionInput,
     language: AppLanguage,
 ) -> Result<String, TranscriptionError> {
-    let app_id = required(model.app_id.as_deref())?;
-    let access_key = required(model.api_key.as_deref())?;
+    let api_key = required(model.api_key.as_deref())?;
     let endpoint = model.endpoint.as_deref().unwrap_or(DOUBAO_ENDPOINT);
     let mut request = endpoint
         .into_client_request()
         .map_err(|_| TranscriptionError::InvalidConfiguration)?;
-    insert_header(&mut request, "X-Api-App-Key", app_id)?;
-    insert_header(&mut request, "X-Api-Access-Key", access_key)?;
+    insert_header(&mut request, "X-Api-Key", api_key)?;
     insert_header(&mut request, "X-Api-Resource-Id", &model.model)?;
     insert_header(
         &mut request,
-        "X-Api-Connect-Id",
+        "X-Api-Request-Id",
         &Uuid::new_v4().to_string(),
     )?;
+    insert_header(&mut request, "X-Api-Sequence", "-1")?;
     let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
         .await
         .map_err(|_| TranscriptionError::Timeout)?
@@ -250,7 +249,7 @@ async fn transcribe_doubao(
     for chunk in pcm.chunks(PCM_CHUNK_BYTES) {
         socket
             .send(Message::Binary(
-                encode_sauc_frame(0x2, 0x1, 0x0, 0x1, sequence, chunk)?.into(),
+                encode_sauc_frame(0x2, 0x1, 0x1, 0x1, sequence, chunk)?.into(),
             ))
             .await
             .map_err(|_| TranscriptionError::Network)?;
@@ -260,7 +259,7 @@ async fn transcribe_doubao(
     }
     socket
         .send(Message::Binary(
-            encode_sauc_frame(0x2, 0x3, 0x0, 0x1, -sequence, &[])?.into(),
+            encode_sauc_frame(0x2, 0x3, 0x1, 0x1, -sequence, &[])?.into(),
         ))
         .await
         .map_err(|_| TranscriptionError::Network)?;
@@ -344,7 +343,11 @@ fn encode_sauc_frame(
     sequence: i32,
     payload: &[u8],
 ) -> Result<Vec<u8>, TranscriptionError> {
-    let payload = gzip(payload)?;
+    let payload = match compression {
+        0 => payload.to_vec(),
+        1 => gzip(payload)?,
+        _ => return Err(TranscriptionError::InvalidInput),
+    };
     let payload_len = u32::try_from(payload.len()).map_err(|_| TranscriptionError::InvalidInput)?;
     let mut frame = Vec::with_capacity(payload.len() + 12);
     frame.extend_from_slice(&[

@@ -18,8 +18,8 @@ fn snapshot_constructor_normalizes_both_settings_domains() {
             model: " qwen3:8b ".to_owned(),
             endpoint: Some(" http://localhost:11434/v1 ".to_owned()),
             api_key: Some(" local-key ".to_owned()),
-            app_id: None,
             voice: None,
+            voice_type: None,
             local_path: None,
             use_gpu: false,
             whisper_language: None,
@@ -74,8 +74,8 @@ fn snapshot_constructor_rejects_invalid_provider_settings() {
             model: "model".to_owned(),
             endpoint: None,
             api_key: None,
-            app_id: None,
             voice: None,
+            voice_type: None,
             local_path: None,
             use_gpu: false,
             whisper_language: None,
@@ -146,8 +146,8 @@ fn snapshot_validation_uses_its_explicit_language() {
                 model: "model".to_owned(),
                 endpoint: None,
                 api_key: None,
-                app_id: None,
                 voice: None,
+                voice_type: None,
                 local_path: None,
                 use_gpu: false,
                 whisper_language: None,
@@ -198,8 +198,8 @@ fn model_capabilities_reject_cross_kind_defaults_and_normalize_local_whisper() {
         model: String::new(),
         endpoint: Some("https://should-be-cleared.example".to_owned()),
         api_key: Some("should-be-cleared".to_owned()),
-        app_id: Some("should-be-cleared".to_owned()),
         voice: Some("should-be-cleared".to_owned()),
+        voice_type: Some("should-also-be-cleared".to_owned()),
         local_path: Some(" /models/ggml-small.bin ".into()),
         use_gpu: true,
         whisper_language: Some(" zh ".to_owned()),
@@ -268,8 +268,8 @@ fn persona_tts_binding_must_reference_a_speech_synthesis_model() {
         model: "gpt-5-mini".to_owned(),
         endpoint: None,
         api_key: None,
-        app_id: None,
         voice: None,
+        voice_type: None,
         local_path: None,
         use_gpu: false,
         whisper_language: None,
@@ -307,9 +307,9 @@ fn doubao_speech_models_accept_only_websocket_endpoints() {
         provider: ModelProvider::Doubao,
         model: "volc.bigasr.sauc.duration".to_owned(),
         endpoint: Some(" wss://example.com/api/v3/sauc/bigmodel ".to_owned()),
-        api_key: Some("access-key".to_owned()),
-        app_id: Some("app-key".to_owned()),
+        api_key: Some("api-key".to_owned()),
         voice: None,
+        voice_type: None,
         local_path: None,
         use_gpu: false,
         whisper_language: None,
@@ -331,5 +331,34 @@ fn doubao_speech_models_accept_only_websocket_endpoints() {
         }
         .normalized(AppLanguage::English)
         .is_err()
+    );
+
+    let tts = LlmModelConfig {
+        id: "doubao-tts".to_owned(),
+        label: "Doubao TTS".to_owned(),
+        kind: ModelKind::SpeechSynthesis,
+        provider: ModelProvider::Doubao,
+        model: "seed-tts-2.0".to_owned(),
+        endpoint: None,
+        api_key: Some("api-key".to_owned()),
+        voice: Some("legacy-voice-value".to_owned()),
+        voice_type: None,
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
+        advanced: LlmAdvancedOptions::default(),
+    };
+    assert!(tts.clone().normalized(AppLanguage::English).is_err());
+    let normalized = LlmModelConfig {
+        voice: None,
+        voice_type: Some("zh_female_vv_uranus_bigtts".to_owned()),
+        ..tts
+    }
+    .normalized(AppLanguage::English)
+    .expect("豆包 TTS 应只接受当前 voice_type 字段");
+    assert_eq!(normalized.voice, None);
+    assert_eq!(
+        normalized.voice_type.as_deref(),
+        Some("zh_female_vv_uranus_bigtts")
     );
 }

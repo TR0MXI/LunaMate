@@ -294,17 +294,17 @@ _version = 2
 "en" = "Persona %{persona} references a missing %{capability} model"
 "ja" = "ペルソナ %{persona} が参照する %{capability} モデルがありません"
 
-[llm.app_id]
-"zh-CN" = "App ID"
-"zh-TW" = "App ID"
-"en" = "App ID"
-"ja" = "App ID"
+[llm.voice]
+"zh-CN" = "Voice"
+"zh-TW" = "Voice"
+"en" = "Voice"
+"ja" = "Voice"
 
-[llm.voice_id]
-"zh-CN" = "Voice ID"
-"zh-TW" = "Voice ID"
-"en" = "Voice ID"
-"ja" = "Voice ID"
+[llm.voice_type]
+"zh-CN" = "Voice Type"
+"zh-TW" = "Voice Type"
+"en" = "Voice Type"
+"ja" = "Voice Type"
 
 [llm.local_model_path]
 "zh-CN" = "本地模型路径"

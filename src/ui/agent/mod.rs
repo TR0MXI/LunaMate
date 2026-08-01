@@ -6,6 +6,7 @@ mod screenshot;
 
 use std::sync::Arc;
 
+use futures::future::{AbortHandle, Abortable};
 use gpui::{
     AppContext, Context, Entity, EventEmitter, Image, ImageFormat, PathPromptOptions, ScrollHandle,
     Subscription, Task, Window,
@@ -61,10 +62,10 @@ pub struct AgentView {
     image_picker_revision: u64,
     image_picker_task: Option<Task<()>>,
     voice_transcription_task: Option<Task<()>>,
-    voice_transcription_abort: Option<tokio::task::AbortHandle>,
+    voice_transcription_abort: Option<AbortHandle>,
     voice_transcription_request: Option<RemoteTranscriptionRequest>,
     speech_task: Option<Task<()>>,
-    speech_abort: Option<tokio::task::AbortHandle>,
+    speech_abort: Option<AbortHandle>,
     speech_revision: u64,
     suspended: bool,
     messages_scroll: ScrollHandle,
@@ -425,24 +426,34 @@ impl AgentView {
             );
             return;
         };
-        let task = tokio::spawn(async move {
-            let input = TranscriptionInput::new(samples)
-                .map_err(|error| error.localized_message(language))?;
-            transcribe(&model, input, language)
-                .await
-                .map_err(|error| error.localized_message(language))
-        });
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        let task = Tokio::spawn(
+            cx,
+            Abortable::new(
+                async move {
+                    let input = TranscriptionInput::new(samples)
+                        .map_err(|error| error.localized_message(language))?;
+                    transcribe(&model, input, language)
+                        .await
+                        .map_err(|error| error.localized_message(language))
+                },
+                abort_registration,
+            ),
+        );
         let request = RemoteTranscriptionRequest {
             revision,
             utterance_id,
             voice: voice.clone(),
         };
-        self.voice_transcription_abort = Some(task.abort_handle());
+        self.voice_transcription_abort = Some(abort_handle);
         self.voice_transcription_request = Some(request.clone());
         self.voice_transcription_task = Some(cx.spawn(async move |this, cx| {
-            let result = task.await.unwrap_or_else(|_| {
-                Err(t!("voice.transcription_cancelled", locale = language.id()).to_string())
-            });
+            let result = match task.await {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) | Err(_) => {
+                    Err(t!("voice.transcription_cancelled", locale = language.id()).to_string())
+                }
+            };
             let current = this
                 .update(cx, |this, _| {
                     this.voice_transcription_request
@@ -606,11 +617,18 @@ impl AgentView {
             return;
         };
         let text = message.visible_content().to_owned();
-        let task = tokio::spawn(async move { synthesize(&model, &text).await });
-        self.speech_abort = Some(task.abort_handle());
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        let task = Tokio::spawn(
+            cx,
+            Abortable::new(
+                async move { synthesize(&model, &text).await },
+                abort_registration,
+            ),
+        );
+        self.speech_abort = Some(abort_handle);
         self.speech_task = Some(cx.spawn(async move |this, cx| {
             match task.await {
-                Ok(Ok(audio)) => {
+                Ok(Ok(Ok(audio))) => {
                     let _ = this.update(cx, |this, cx| {
                         if this.suspended || this.speech_revision != revision {
                             return;
@@ -622,7 +640,8 @@ impl AgentView {
                         });
                     });
                 }
-                Ok(Err(error)) => log::warn!("助手回复语音合成失败：{error}"),
+                Ok(Ok(Err(error))) => log::warn!("助手回复语音合成失败：{error}"),
+                Ok(Err(_)) => {}
                 Err(error) if !error.is_cancelled() => {
                     log::warn!("助手回复语音合成任务异常结束：{error}");
                 }

@@ -70,7 +70,6 @@ pub(in crate::ui) struct ProviderSettingsView {
     model_input: Entity<InputState>,
     endpoint_input: Entity<InputState>,
     api_key_input: Entity<InputState>,
-    app_id_input: Entity<InputState>,
     voice_input: Entity<InputState>,
     local_path_input: Entity<InputState>,
     whisper_language_select: Entity<SelectState<Vec<SharedString>>>,
@@ -210,21 +209,18 @@ impl ProviderSettingsView {
                         .unwrap_or_default(),
                 )
         });
-        let app_id_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("豆包 App ID")
-                .default_value(
-                    editing_model
-                        .and_then(|model| model.app_id.as_deref())
-                        .unwrap_or_default(),
-                )
-        });
         let voice_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Voice ID")
+                .placeholder("Voice / Voice Type")
                 .default_value(
                     editing_model
-                        .and_then(|model| model.voice.as_deref())
+                        .and_then(|model| {
+                            if model.provider == ModelProvider::Doubao {
+                                model.voice_type.as_deref()
+                            } else {
+                                model.voice.as_deref()
+                            }
+                        })
                         .unwrap_or_default(),
                 )
         });
@@ -312,7 +308,6 @@ impl ProviderSettingsView {
             model_input,
             endpoint_input,
             api_key_input,
-            app_id_input,
             voice_input,
             local_path_input,
             whisper_language_select,
@@ -347,7 +342,6 @@ impl ProviderSettingsView {
             subscribe_form_input(&view.model_input, window, cx),
             subscribe_form_input(&view.endpoint_input, window, cx),
             subscribe_form_input(&view.api_key_input, window, cx),
-            subscribe_form_input(&view.app_id_input, window, cx),
             subscribe_form_input(&view.voice_input, window, cx),
             subscribe_form_input(&view.local_path_input, window, cx),
             subscribe_form_input(&view.reasoning_budget_input, window, cx),
@@ -578,8 +572,7 @@ impl ProviderSettingsView {
         model.model = self.model_input.read(cx).value().to_string();
         model.endpoint = non_empty(self.endpoint_input.read(cx).value().as_ref());
         model.api_key = non_empty(self.api_key_input.read(cx).value().as_ref());
-        model.app_id = non_empty(self.app_id_input.read(cx).value().as_ref());
-        model.voice = non_empty(self.voice_input.read(cx).value().as_ref());
+        let speech_voice = non_empty(self.voice_input.read(cx).value().as_ref());
         model.local_path = non_empty(self.local_path_input.read(cx).value().as_ref())
             .map(std::path::PathBuf::from);
         model.use_gpu = self.use_gpu;
@@ -590,6 +583,13 @@ impl ProviderSettingsView {
             .selected_value()
             .and_then(|value| model_provider_from_display_name(model.kind, value.as_ref()))
             .unwrap_or_else(|| default_provider(model.kind));
+        if model.provider == ModelProvider::Doubao {
+            model.voice = None;
+            model.voice_type = speech_voice;
+        } else {
+            model.voice = speech_voice;
+            model.voice_type = None;
+        }
         model.advanced = advanced;
     }
 
@@ -679,17 +679,15 @@ impl ProviderSettingsView {
             cx,
         );
         set_input(
-            &self.app_id_input,
-            model
-                .and_then(|model| model.app_id.as_deref())
-                .unwrap_or_default(),
-            window,
-            cx,
-        );
-        set_input(
             &self.voice_input,
             model
-                .and_then(|model| model.voice.as_deref())
+                .and_then(|model| {
+                    if model.provider == ModelProvider::Doubao {
+                        model.voice_type.as_deref()
+                    } else {
+                        model.voice.as_deref()
+                    }
+                })
                 .unwrap_or_default(),
             window,
             cx,
@@ -820,8 +818,8 @@ impl ProviderSettingsView {
             endpoint: (self.active_kind == ModelKind::ChatCompletions)
                 .then(|| "http://localhost:11434/".to_owned()),
             api_key: None,
-            app_id: None,
             voice: (self.active_kind == ModelKind::SpeechSynthesis).then(|| "alloy".to_owned()),
+            voice_type: None,
             local_path: None,
             use_gpu: false,
             whisper_language: None,
@@ -1039,7 +1037,6 @@ impl ProviderSettingsView {
             model: &self.model_input,
             endpoint: &self.endpoint_input,
             api_key: &self.api_key_input,
-            app_id: &self.app_id_input,
             voice: &self.voice_input,
             local_path: &self.local_path_input,
             whisper_language: &self.whisper_language_select,
@@ -1132,7 +1129,6 @@ pub(super) struct ProviderFormInputs<'a> {
     pub(super) model: &'a Entity<InputState>,
     pub(super) endpoint: &'a Entity<InputState>,
     pub(super) api_key: &'a Entity<InputState>,
-    pub(super) app_id: &'a Entity<InputState>,
     pub(super) voice: &'a Entity<InputState>,
     pub(super) local_path: &'a Entity<InputState>,
     pub(super) whisper_language: &'a Entity<SelectState<Vec<SharedString>>>,

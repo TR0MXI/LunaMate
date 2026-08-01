@@ -36,8 +36,8 @@ fn settings_reject_missing_selection_and_duplicate_ids() {
         model: "qwen3:8b".to_owned(),
         endpoint: Some("http://localhost:11434".to_owned()),
         api_key: None,
-        app_id: None,
         voice: None,
+        voice_type: None,
         local_path: None,
         use_gpu: false,
         whisper_language: None,
@@ -75,8 +75,8 @@ fn direct_api_key_is_normalized_and_redacted_in_debug() {
             model: "gpt-5-mini".to_owned(),
             endpoint: None,
             api_key: Some(" 1/key+=value ".to_owned()),
-            app_id: None,
             voice: None,
+            voice_type: None,
             local_path: None,
             use_gpu: false,
             whisper_language: None,
@@ -251,8 +251,8 @@ fn selected_returns_only_a_model_that_still_exists() {
             model: "qwen3:8b".to_owned(),
             endpoint: None,
             api_key: None,
-            app_id: None,
             voice: None,
+            voice_type: None,
             local_path: None,
             use_gpu: false,
             whisper_language: None,
@@ -285,8 +285,8 @@ fn required_model_fields_are_trimmed_and_bounded() {
         model: " qwen3:8b ".to_owned(),
         endpoint: None,
         api_key: Some("   ".to_owned()),
-        app_id: None,
         voice: None,
+        voice_type: None,
         local_path: None,
         use_gpu: false,
         whisper_language: None,
@@ -368,8 +368,8 @@ fn model_count_has_a_hard_limit() {
         model: "qwen3:8b".to_owned(),
         endpoint: None,
         api_key: None,
-        app_id: None,
         voice: None,
+        voice_type: None,
         local_path: None,
         use_gpu: false,
         whisper_language: None,
@@ -407,8 +407,8 @@ fn advanced_options_outside_their_range_are_rejected() {
             model: "qwen3:8b".to_owned(),
             endpoint: None,
             api_key: None,
-            app_id: None,
             voice: None,
+            voice_type: None,
             local_path: None,
             use_gpu: false,
             whisper_language: None,
@@ -634,6 +634,7 @@ kind = "speech-synthesis"
 provider = "openai"
 model = "gpt-4o-mini-tts"
 api_key = "test-key"
+app_id = "obsolete-app-id"
 voice = "alloy"
 
 [[llm.models]]
@@ -644,6 +645,15 @@ provider = "local-whisper"
 local_path = "/models/ggml-small.bin"
 use_gpu = true
 whisper_language = "zh"
+
+[[llm.models]]
+id = "doubao-voice"
+label = "Doubao Voice"
+kind = "speech-synthesis"
+provider = "doubao"
+model = "seed-tts-2.0"
+api_key = "test-key"
+voice_type = "zh_female_vv_uranus_bigtts"
 "#
     .parse::<DocumentMut>()
     .expect("语音模型配置应当可以解析");
@@ -655,6 +665,12 @@ whisper_language = "zh"
     let voice = settings.model("voice").expect("TTS 模型应保留");
     assert_eq!(voice.kind, ModelKind::SpeechSynthesis);
     assert_eq!(voice.voice.as_deref(), Some("alloy"));
+    let doubao = settings.model("doubao-voice").expect("豆包 TTS 模型应保留");
+    assert_eq!(doubao.voice, None);
+    assert_eq!(
+        doubao.voice_type.as_deref(),
+        Some("zh_female_vv_uranus_bigtts")
+    );
     let stt = settings.model("local-stt").expect("本地 STT 模型应保留");
     assert_eq!(stt.provider, ModelProvider::LocalWhisper);
     assert_eq!(
@@ -671,6 +687,7 @@ whisper_language = "zh"
     assert_eq!(stt.whisper_language.as_deref(), Some("zh"));
 
     write_llm_settings(&mut document, &settings);
+    assert!(!document.to_string().contains("app_id"));
     let mut rewritten_warnings = Vec::new();
     assert_eq!(
         parse_llm_settings(&document, &mut rewritten_warnings, LANGUAGE),

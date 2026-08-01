@@ -498,8 +498,8 @@ pub struct LlmModelConfig {
     pub model: String,
     pub endpoint: Option<String>,
     pub api_key: Option<String>,
-    pub app_id: Option<String>,
     pub voice: Option<String>,
+    pub voice_type: Option<String>,
     pub local_path: Option<PathBuf>,
     pub use_gpu: bool,
     pub whisper_language: Option<String>,
@@ -554,24 +554,24 @@ impl LlmModelConfig {
             t!("llm.api_key", locale = language.id()).as_ref(),
             language,
         )?;
-        self.app_id = normalize_optional(
-            &self.app_id,
-            MAX_API_KEY_BYTES,
-            t!("llm.app_id", locale = language.id()).as_ref(),
-            language,
-        )?;
         self.voice = normalize_optional(
             &self.voice,
             MAX_MODEL_NAME_BYTES,
-            t!("llm.voice_id", locale = language.id()).as_ref(),
+            t!("llm.voice", locale = language.id()).as_ref(),
+            language,
+        )?;
+        self.voice_type = normalize_optional(
+            &self.voice_type,
+            MAX_MODEL_NAME_BYTES,
+            t!("llm.voice_type", locale = language.id()).as_ref(),
             language,
         )?;
         match (self.kind, self.provider) {
             (ModelKind::ChatCompletions, ModelProvider::Genai(provider)) => {
                 self.endpoint = normalize_endpoint(provider, self.endpoint.as_deref(), language)?;
                 self.advanced.normalize(language)?;
-                self.app_id = None;
                 self.voice = None;
+                self.voice_type = None;
             }
             (ModelKind::ChatCompletions, _) => {
                 return Err(invalid(
@@ -582,11 +582,11 @@ impl LlmModelConfig {
                 self.normalize_openai_speech(language)?;
                 self.voice = Some(normalized_required(
                     self.voice.as_deref().unwrap_or_default(),
-                    t!("llm.voice_id", locale = language.id()).as_ref(),
+                    t!("llm.voice", locale = language.id()).as_ref(),
                     MAX_MODEL_NAME_BYTES,
                     language,
                 )?);
-                self.app_id = None;
+                self.voice_type = None;
                 self.advanced = LlmAdvancedOptions::default();
             }
             (ModelKind::SpeechSynthesis, ModelProvider::Doubao) => {
@@ -594,8 +594,8 @@ impl LlmModelConfig {
             }
             (ModelKind::Transcription, ModelProvider::Genai(LlmProvider::OpenAI)) => {
                 self.normalize_openai_speech(language)?;
-                self.app_id = None;
                 self.voice = None;
+                self.voice_type = None;
                 self.advanced = LlmAdvancedOptions::default();
             }
             (ModelKind::Transcription, ModelProvider::Doubao) => {
@@ -604,8 +604,8 @@ impl LlmModelConfig {
             (ModelKind::Transcription, ModelProvider::LocalWhisper) => {
                 self.endpoint = None;
                 self.api_key = None;
-                self.app_id = None;
                 self.voice = None;
+                self.voice_type = None;
                 self.advanced = LlmAdvancedOptions::default();
             }
             (ModelKind::SpeechSynthesis | ModelKind::Transcription, ModelProvider::Genai(_)) => {
@@ -639,22 +639,17 @@ impl LlmModelConfig {
         requires_voice: bool,
     ) -> Result<(), AgentConfigError> {
         self.endpoint = normalize_doubao_endpoint(self.endpoint.as_deref(), language)?;
-        self.app_id = Some(normalized_required(
-            self.app_id.as_deref().unwrap_or_default(),
-            t!("llm.app_id", locale = language.id()).as_ref(),
-            MAX_API_KEY_BYTES,
-            language,
-        )?);
         self.api_key = Some(normalized_required(
             self.api_key.as_deref().unwrap_or_default(),
             t!("llm.api_key", locale = language.id()).as_ref(),
             MAX_API_KEY_BYTES,
             language,
         )?);
-        self.voice = if requires_voice {
+        self.voice = None;
+        self.voice_type = if requires_voice {
             Some(normalized_required(
-                self.voice.as_deref().unwrap_or_default(),
-                t!("llm.voice_id", locale = language.id()).as_ref(),
+                self.voice_type.as_deref().unwrap_or_default(),
+                t!("llm.voice_type", locale = language.id()).as_ref(),
                 MAX_MODEL_NAME_BYTES,
                 language,
             )?)
@@ -677,8 +672,8 @@ impl fmt::Debug for LlmModelConfig {
             .field("model", &self.model)
             .field("endpoint", &self.endpoint)
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
-            .field("app_id", &self.app_id.as_ref().map(|_| "[REDACTED]"))
             .field("voice", &self.voice)
+            .field("voice_type", &self.voice_type)
             .field("local_path", &self.local_path)
             .field("use_gpu", &self.use_gpu)
             .field("whisper_language", &self.whisper_language)

@@ -19,12 +19,25 @@ fn wav_encoder_writes_bounded_mono_pcm_header() {
 }
 
 #[test]
-fn sauc_audio_frames_use_sequence_and_gzip_payload() {
-    let frame = encode_sauc_frame_for_test(2, 1, 0, 1, 7, &[1, 2, 3]).expect("短音频帧应可编码");
+fn sauc_audio_frames_use_current_flags_and_gzip_payload() {
+    let frame = encode_sauc_frame_for_test(2, 1, 1, 1, 7, &[1, 2, 3]).expect("短音频帧应可编码");
 
-    assert_eq!(&frame[..4], &[0x11, 0x21, 0x01, 0]);
+    assert_eq!(&frame[..4], &[0x11, 0x21, 0x11, 0]);
     assert_eq!(&frame[4..8], &7_i32.to_be_bytes());
+    let payload_len = u32::from_be_bytes(frame[8..12].try_into().expect("帧长度字段完整"));
+    assert_eq!(payload_len as usize, frame.len() - 12);
     assert!(frame.len() > 12);
+}
+
+#[test]
+fn sauc_final_audio_frame_has_negative_sequence() {
+    let frame = encode_sauc_frame_for_test(2, 3, 1, 1, -8, &[]).expect("结束帧应可编码");
+
+    assert_eq!(&frame[..4], &[0x11, 0x23, 0x11, 0]);
+    assert_eq!(&frame[4..8], &(-8_i32).to_be_bytes());
+    let payload_len = u32::from_be_bytes(frame[8..12].try_into().expect("帧长度字段完整"));
+    assert!(payload_len > 0);
+    assert_eq!(payload_len as usize, frame.len() - 12);
 }
 
 #[test]
