@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::{
-    Agent, AgentError, AgentInput, AgentMemory, ChatLimits, ChatOptions, Client, ModelIden,
+    Agent, AgentError, AgentInput, AgentMemory, ChatLimits, Client, ModelIden,
     config::AppLanguage,
     memory::ContextUsage,
     persistence::{
@@ -242,117 +242,6 @@ async fn concurrent_loads_keep_their_languages() {
 fn genai_client_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Client>();
-}
-
-#[test]
-fn direct_runtime_setters_advance_the_request_snapshot() {
-    let agent = Agent::new(
-        Client::default(),
-        None,
-        None,
-        "",
-        AgentMemory::unavailable(),
-        "default",
-        ChatLimits::default(),
-        AppLanguage::English,
-        None,
-    );
-    let initial = agent.snapshot().runtime_revision();
-
-    agent.set_client(Client::default());
-    agent.set_model(Some(ModelIden::new(
-        crate::config::LlmProvider::Ollama,
-        "qwen3:8b",
-    )));
-    agent.set_chat_options(Some(ChatOptions::default().with_temperature(0.4)));
-    agent.set_system_prompt("updated");
-
-    assert_eq!(agent.snapshot().runtime_revision(), initial + 4);
-}
-
-#[tokio::test]
-async fn newer_configuration_wins_over_a_late_persona_restore() {
-    use tokio::sync::Notify;
-
-    let agent = Agent::new(
-        Client::default(),
-        None,
-        None,
-        "",
-        AgentMemory::unavailable(),
-        "default",
-        ChatLimits::default(),
-        AppLanguage::English,
-        None,
-    );
-    let slow_started = Arc::new(Notify::new());
-    let release_slow = Arc::new(Notify::new());
-    let started = slow_started.clone();
-    let release = release_slow.clone();
-    let slow_memory = AgentMemory::new(Some(AgentPersistenceCallbacks::new(
-        move |_| {
-            let started = started.clone();
-            let release = release.clone();
-            async move {
-                started.notify_one();
-                release.notified().await;
-                Ok(None)
-            }
-        },
-        |_, _| async { Ok(()) },
-        |_| async { Ok(()) },
-        |_| async { Ok(PersistentMemoryUsage::default()) },
-        |_, _| async { Ok(()) },
-    )));
-    let fast_memory = AgentMemory::new(Some(AgentPersistenceCallbacks::new(
-        |_| async { Ok(None) },
-        |_, _| async { Ok(()) },
-        |_| async { Ok(()) },
-        |_| async { Ok(PersistentMemoryUsage::default()) },
-        |_, _| async { Ok(()) },
-    )));
-
-    let slow_agent = agent.clone();
-    let slow = tokio::spawn(async move {
-        slow_agent
-            .apply_configuration(
-                2,
-                Client::default(),
-                None,
-                None,
-                "slow",
-                slow_memory,
-                "slow",
-                ChatLimits::default(),
-                AppLanguage::English,
-            )
-            .await
-    });
-    slow_started.notified().await;
-    assert!(
-        agent
-            .apply_configuration(
-                3,
-                Client::default(),
-                None,
-                None,
-                "fast",
-                fast_memory,
-                "fast",
-                ChatLimits::default(),
-                AppLanguage::English,
-            )
-            .await
-            .expect("较新的配置应当可以安装")
-    );
-    release_slow.notify_waiters();
-    assert!(
-        !slow
-            .await
-            .expect("迟到配置任务不应 panic")
-            .expect("迟到配置任务应被正常丢弃")
-    );
-    assert_eq!(agent.snapshot().active_persona(), "fast");
 }
 
 #[test]

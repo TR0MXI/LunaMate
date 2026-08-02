@@ -11,13 +11,13 @@ use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use futures::{SinkExt as _, StreamExt as _};
 use reqwest::multipart::{Form, Part};
 use serde::Deserialize;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message, client::IntoClientRequest as _},
-};
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest as _};
 use uuid::Uuid;
 
-use crate::config::{AppLanguage, LlmModelConfig, LlmProvider, ModelKind, ModelProvider};
+use crate::{
+    config::{AppLanguage, LlmModelConfig, LlmProvider, ModelKind, ModelProvider},
+    transport::{connect_websocket_once, provider_http_client},
+};
 
 const SAMPLE_RATE: u32 = 16_000;
 const MAX_SAMPLES: usize = SAMPLE_RATE as usize * 30;
@@ -141,11 +141,13 @@ async fn transcribe_openai(
         .text("model", model.model.clone())
         .part("file", part);
     form = form.text("language", openai_language(language));
-    let client = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(|_| TranscriptionError::Network)?;
+    let client = provider_http_client(
+        Some(endpoint),
+        CONNECT_TIMEOUT,
+        REQUEST_TIMEOUT,
+        REQUEST_TIMEOUT,
+    )
+    .map_err(|_| TranscriptionError::Network)?;
     let response = client
         .post(format!(
             "{}audio/transcriptions",
@@ -188,7 +190,7 @@ async fn transcribe_doubao(
         &Uuid::new_v4().to_string(),
     )?;
     insert_header(&mut request, "X-Api-Sequence", "-1")?;
-    let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
+    let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_websocket_once(request))
         .await
         .map_err(|_| TranscriptionError::Timeout)?
         .map_err(|_| TranscriptionError::Network)?;

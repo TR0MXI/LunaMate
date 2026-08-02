@@ -126,13 +126,13 @@ fn load_and_remove_portal_capture(path: &Path) -> Result<ImageAttachment, ImageI
     let cleaned = truncated || removed;
     if !cleaned {
         log::error!(
-            "截图门户临时文件清理失败：truncated={truncated}, removed={removed}, source_read={}",
+            "event=portal_capture_cleanup_failed truncated={truncated} removed={removed} source_read={}",
             source.is_ok()
         );
         return Err(ImageInputError::ScreenCapture);
     }
     log::debug!(
-        "截图门户临时文件已清理：truncated={truncated}, removed={removed}, source_read={}",
+        "event=portal_capture_cleaned truncated={truncated} removed={removed} source_read={}",
         source.is_ok()
     );
     let bytes = source?;

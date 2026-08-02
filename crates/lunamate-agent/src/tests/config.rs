@@ -362,3 +362,151 @@ fn doubao_speech_models_accept_only_websocket_endpoints() {
         Some("zh_female_vv_uranus_bigtts")
     );
 }
+
+#[test]
+fn network_models_accept_remote_plaintext_endpoints() {
+    let cases = [
+        (
+            ModelKind::ChatCompletions,
+            ModelProvider::Genai(LlmProvider::Ollama),
+            "http://api.example.com/v1",
+        ),
+        (
+            ModelKind::Transcription,
+            ModelProvider::Genai(LlmProvider::OpenAI),
+            "http://api.example.com/v1",
+        ),
+        (
+            ModelKind::SpeechSynthesis,
+            ModelProvider::Genai(LlmProvider::OpenAI),
+            "http://api.example.com/v1",
+        ),
+        (
+            ModelKind::Transcription,
+            ModelProvider::Doubao,
+            "ws://api.example.com/speech",
+        ),
+        (
+            ModelKind::SpeechSynthesis,
+            ModelProvider::Doubao,
+            "ws://api.example.com/speech",
+        ),
+        (
+            ModelKind::ChatCompletions,
+            ModelProvider::Genai(LlmProvider::Ollama),
+            "http://localhost.evil/v1",
+        ),
+        (
+            ModelKind::Transcription,
+            ModelProvider::Doubao,
+            "ws://localhost.evil/speech",
+        ),
+    ];
+
+    for (kind, provider, endpoint) in cases {
+        network_model(kind, provider, endpoint)
+            .normalized(AppLanguage::English)
+            .expect("远端 HTTP/WS endpoint 应被接受");
+    }
+}
+
+#[test]
+fn network_models_accept_plaintext_loopback_endpoints() {
+    let http_endpoints = [
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://[::1]:11434/v1",
+    ];
+    let http_models = [
+        (
+            ModelKind::ChatCompletions,
+            ModelProvider::Genai(LlmProvider::Ollama),
+        ),
+        (
+            ModelKind::Transcription,
+            ModelProvider::Genai(LlmProvider::OpenAI),
+        ),
+        (
+            ModelKind::SpeechSynthesis,
+            ModelProvider::Genai(LlmProvider::OpenAI),
+        ),
+    ];
+    for (kind, provider) in http_models {
+        for endpoint in http_endpoints {
+            network_model(kind, provider, endpoint)
+                .normalized(AppLanguage::English)
+                .expect("Chat、STT 与 TTS 应接受回环 HTTP endpoint");
+        }
+    }
+
+    let websocket_endpoints = [
+        "ws://localhost:8080/speech",
+        "ws://127.0.0.1:8080/speech",
+        "ws://[::1]:8080/speech",
+    ];
+    for kind in [ModelKind::Transcription, ModelKind::SpeechSynthesis] {
+        for endpoint in websocket_endpoints {
+            network_model(kind, ModelProvider::Doubao, endpoint)
+                .normalized(AppLanguage::English)
+                .expect("豆包 STT 与 TTS 应接受回环 WS endpoint");
+        }
+    }
+}
+
+#[test]
+fn network_models_accept_remote_tls_endpoints() {
+    let cases = [
+        (
+            ModelKind::ChatCompletions,
+            ModelProvider::Genai(LlmProvider::Ollama),
+            "https://api.example.com/v1",
+        ),
+        (
+            ModelKind::Transcription,
+            ModelProvider::Genai(LlmProvider::OpenAI),
+            "https://api.example.com/v1",
+        ),
+        (
+            ModelKind::SpeechSynthesis,
+            ModelProvider::Genai(LlmProvider::OpenAI),
+            "https://api.example.com/v1",
+        ),
+        (
+            ModelKind::Transcription,
+            ModelProvider::Doubao,
+            "wss://api.example.com/speech",
+        ),
+        (
+            ModelKind::SpeechSynthesis,
+            ModelProvider::Doubao,
+            "wss://api.example.com/speech",
+        ),
+    ];
+
+    for (kind, provider, endpoint) in cases {
+        network_model(kind, provider, endpoint)
+            .normalized(AppLanguage::English)
+            .expect("远端 HTTPS/WSS endpoint 应被接受");
+    }
+}
+
+fn network_model(kind: ModelKind, provider: ModelProvider, endpoint: &str) -> LlmModelConfig {
+    LlmModelConfig {
+        id: "network-model".to_owned(),
+        label: "Network model".to_owned(),
+        kind,
+        provider,
+        model: "model".to_owned(),
+        endpoint: Some(endpoint.to_owned()),
+        api_key: Some("api-key".to_owned()),
+        voice: (kind == ModelKind::SpeechSynthesis
+            && provider == ModelProvider::Genai(LlmProvider::OpenAI))
+        .then(|| "alloy".to_owned()),
+        voice_type: (kind == ModelKind::SpeechSynthesis && provider == ModelProvider::Doubao)
+            .then(|| "zh_female_vv_uranus_bigtts".to_owned()),
+        local_path: None,
+        use_gpu: false,
+        whisper_language: None,
+        advanced: LlmAdvancedOptions::default(),
+    }
+}

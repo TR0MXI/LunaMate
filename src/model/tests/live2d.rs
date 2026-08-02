@@ -8,7 +8,7 @@ use crate::model::{AnimatedModel, ModelLoadError, RenderCancellation, live2d::re
 
 #[test]
 fn invalid_raster_dimensions_have_a_distinct_fatal_error() {
-    let result = AnimatedModel::load(
+    let result = AnimatedModel::load_path_for_test(
         Path::new("unused.model3.json"),
         0,
         128,
@@ -39,7 +39,7 @@ fn missing_manifest_is_a_required_resource_fatal_error() {
         std::process::id()
     ));
 
-    let result = AnimatedModel::load(&path, 1, 1, RenderCancellation::default());
+    let result = AnimatedModel::load_path_for_test(&path, 1, 1, RenderCancellation::default());
     let Err(error) = result else {
         panic!("缺失清单必须阻止主体加载");
     };
@@ -53,7 +53,8 @@ fn cancelled_generation_stops_before_reading_model_resources() {
     let cancellation = RenderCancellation::default();
     cancellation.cancel();
 
-    let result = AnimatedModel::load(Path::new("unused.model3.json"), 128, 128, cancellation);
+    let result =
+        AnimatedModel::load_path_for_test(Path::new("unused.model3.json"), 128, 128, cancellation);
     let Err(error) = result else {
         panic!("已取消 generation 不得继续读取模型");
     };
@@ -87,8 +88,9 @@ fn idle_motion_changes_rendered_frame_when_local_model_is_available() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("models/hiyori_free/runtime/hiyori_free_t08.model3.json");
 
-    let mut model = AnimatedModel::load(&path, 128, 128, RenderCancellation::default())
-        .expect("local test model should load");
+    let mut model =
+        AnimatedModel::load_path_for_test(&path, 128, 128, RenderCancellation::default())
+            .expect("local test model should load");
     let first = model
         .render_frame(Duration::ZERO, [0.0, 0.0])
         .expect("first frame should render");
@@ -107,8 +109,9 @@ fn renders_to_a_rectangular_target_when_local_model_is_available() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("models/hiyori_free/runtime/hiyori_free_t08.model3.json");
 
-    let mut model = AnimatedModel::load(&path, 72, 128, RenderCancellation::default())
-        .expect("rectangular render target should load");
+    let mut model =
+        AnimatedModel::load_path_for_test(&path, 72, 128, RenderCancellation::default())
+            .expect("rectangular render target should load");
     let image = model
         .render_frame(Duration::ZERO, [0.0, 0.0])
         .expect("rectangular frame should render");

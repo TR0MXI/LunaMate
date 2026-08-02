@@ -54,7 +54,7 @@ impl Database {
         let started = Instant::now();
         let database = Self::open_surreal_kv(PathBuf::from(DATABASE_PATH)).await?;
         log::info!(
-            "嵌入式数据库已就绪：backend=surrealkv, elapsed_ms={}",
+            "event=database_ready backend=surrealkv elapsed_ms={}",
             started.elapsed().as_millis()
         );
         Ok(database)
@@ -106,23 +106,22 @@ impl Database {
         key: &str,
     ) -> Result<Option<StoredDocument>, DatabaseError> {
         let record = document_record(scope, key)?;
+        // 超限记录只投影长度，Rust 侧仍会在复制合规内容前复核实际字节数。
         let mut response = self
             .client
-            .query("SELECT payload, format_version FROM ONLY $record;")
+            .query(
+                "SELECT format_version, bytes::len(payload) AS payload_bytes, \
+                 (IF bytes::len(payload) <= $maximum { payload } ELSE { NONE }) AS payload \
+                 FROM ONLY $record;",
+            )
             .bind(("record", record))
+            .bind(("maximum", MAX_DOCUMENT_BYTES as i64))
             .await
             .and_then(|response| response.check())
             .map_err(|source| DatabaseError::Engine {
                 operation: "读取存储文档",
                 source: Box::new(source),
             })?;
-        let payload: Option<Bytes> =
-            response
-                .take((0, "payload"))
-                .map_err(|source| DatabaseError::Engine {
-                    operation: "解析存储文档内容",
-                    source: Box::new(source),
-                })?;
         let format_version: Option<u32> =
             response
                 .take((0, "format_version"))
@@ -130,13 +129,48 @@ impl Database {
                     operation: "解析存储文档版本",
                     source: Box::new(source),
                 })?;
+        let payload_bytes: Option<usize> =
+            response
+                .take((0, "payload_bytes"))
+                .map_err(|source| DatabaseError::Engine {
+                    operation: "解析存储文档大小",
+                    source: Box::new(source),
+                })?;
 
-        match (payload, format_version) {
+        match (payload_bytes, format_version) {
             (None, None) => Ok(None),
-            (Some(payload), Some(format_version)) => Ok(Some(StoredDocument {
-                format_version,
-                contents: payload.into_inner().to_vec(),
-            })),
+            (Some(actual), Some(_)) if actual > MAX_DOCUMENT_BYTES => {
+                Err(DatabaseError::DocumentTooLarge {
+                    actual,
+                    maximum: MAX_DOCUMENT_BYTES,
+                })
+            }
+            (Some(projected_bytes), Some(format_version)) => {
+                let payload: Option<Bytes> =
+                    response
+                        .take((0, "payload"))
+                        .map_err(|source| DatabaseError::Engine {
+                            operation: "解析存储文档内容",
+                            source: Box::new(source),
+                        })?;
+                let Some(payload) = payload else {
+                    return Err(DatabaseError::InvalidStoredDocument);
+                };
+                let payload = payload.into_inner();
+                if payload.len() > MAX_DOCUMENT_BYTES {
+                    return Err(DatabaseError::DocumentTooLarge {
+                        actual: payload.len(),
+                        maximum: MAX_DOCUMENT_BYTES,
+                    });
+                }
+                if payload.len() != projected_bytes {
+                    return Err(DatabaseError::InvalidStoredDocument);
+                }
+                Ok(Some(StoredDocument {
+                    format_version,
+                    contents: payload.to_vec(),
+                }))
+            }
             _ => Err(DatabaseError::InvalidStoredDocument),
         }
     }

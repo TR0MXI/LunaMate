@@ -5,11 +5,17 @@ use std::{
     error::Error,
     ffi::OsStr,
     fmt, fs, io,
+    ops::Deref,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 const MODEL_FILE_SUFFIX: &str = ".model3.json";
 pub(in crate::model) const MAX_DISCOVERY_DEPTH: usize = 16;
+pub(in crate::model) const MAX_DISCOVERY_ENTRIES: usize = 4_096;
+pub(in crate::model) const MAX_PENDING_DIRECTORIES: usize = 256;
+pub(in crate::model) const MAX_DISCOVERED_MANIFESTS: usize = 1_024;
+const DISCOVERY_BUDGET_WARNING: &str = "模型目录扫描达到资源预算，部分目录或模型清单未处理";
 
 /// 确保模型根目录存在。
 pub(crate) fn ensure_model_directory(root: &Path) -> io::Result<()> {
@@ -42,6 +48,234 @@ pub(crate) struct ModelFamily {
     variants: Vec<ModelVariant>,
 }
 
+/// 把可加载清单绑定到发现它的模型根目录快照。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ModelManifest {
+    path: PathBuf,
+    relative_path: PathBuf,
+    root: Arc<ScannedModelRoot>,
+}
+
+impl ModelManifest {
+    fn new(root: Arc<ScannedModelRoot>, relative_path: &Path) -> Self {
+        Self {
+            path: root.configured_path.join(relative_path),
+            relative_path: relative_path.to_path_buf(),
+            root,
+        }
+    }
+
+    /// 返回用于诊断和模型名称展示的清单路径。
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[cfg(test)]
+    pub(in crate::model) fn for_path_for_test(path: &Path) -> io::Result<Self> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let relative_path = path
+            .file_name()
+            .map(PathBuf::from)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "模型清单路径缺少文件名"))?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            relative_path,
+            root: Arc::new(ScannedModelRoot::capture(parent)?),
+        })
+    }
+
+    /// 返回扫描根目录内经过发现流程验证的相对清单路径。
+    pub(in crate::model) fn relative_path(&self) -> &Path {
+        &self.relative_path
+    }
+
+    pub(in crate::model) fn scanned_root(&self) -> &ScannedModelRoot {
+        &self.root
+    }
+}
+
+impl AsRef<Path> for ModelManifest {
+    fn as_ref(&self) -> &Path {
+        self.path()
+    }
+}
+
+impl Deref for ModelManifest {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        self.path()
+    }
+}
+
+impl PartialEq<PathBuf> for ModelManifest {
+    fn eq(&self, other: &PathBuf) -> bool {
+        self.path == *other
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::model) struct ScannedModelRoot {
+    configured_path: PathBuf,
+    canonical_path: PathBuf,
+    identity: DirectoryIdentity,
+}
+
+impl ScannedModelRoot {
+    pub(in crate::model) fn capture(configured_path: &Path) -> io::Result<Self> {
+        let canonical_path = fs::canonicalize(configured_path)?;
+        let metadata = fs::metadata(&canonical_path)?;
+        if !metadata.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "模型根路径不是目录",
+            ));
+        }
+        let identity = DirectoryIdentity::capture(&canonical_path, &metadata)?;
+        Ok(Self {
+            configured_path: configured_path.to_path_buf(),
+            canonical_path,
+            identity,
+        })
+    }
+
+    pub(in crate::model) fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+
+    pub(in crate::model) fn is_current(&self) -> bool {
+        let Ok(canonical_path) = fs::canonicalize(&self.configured_path) else {
+            return false;
+        };
+        if canonical_path != self.canonical_path {
+            return false;
+        }
+        fs::metadata(&canonical_path).is_ok_and(|metadata| {
+            metadata.is_dir()
+                && DirectoryIdentity::capture(&canonical_path, &metadata)
+                    .is_ok_and(|identity| identity == self.identity)
+        })
+    }
+
+    /// 比较已打开目录句柄的元数据与扫描时保存的稳定身份。
+    pub(in crate::model) fn matches_open_directory(
+        &self,
+        directory: &fs::File,
+        metadata: &fs::Metadata,
+    ) -> bool {
+        metadata.is_dir()
+            && DirectoryIdentity::from_open_directory(directory, metadata)
+                .is_ok_and(|identity| identity == self.identity)
+    }
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl DirectoryIdentity {
+    fn capture(_path: &Path, metadata: &fs::Metadata) -> io::Result<Self> {
+        Self::from_metadata(metadata)
+    }
+
+    fn from_open_directory(_directory: &fs::File, metadata: &fs::Metadata) -> io::Result<Self> {
+        Self::from_metadata(metadata)
+    }
+
+    fn from_metadata(metadata: &fs::Metadata) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectoryIdentity {
+    volume: u32,
+    file_index: u64,
+}
+
+#[cfg(target_os = "windows")]
+impl DirectoryIdentity {
+    fn capture(path: &Path, _metadata: &fs::Metadata) -> io::Result<Self> {
+        use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+        let mut options = fs::OpenOptions::new();
+        options
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS);
+        let directory = options.open(path)?;
+        let metadata = directory.metadata()?;
+        if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(io::Error::other(
+                "Windows 模型根目录句柄不是普通目录，已拒绝扫描",
+            ));
+        }
+        Self::from_open_directory(&directory, &metadata)
+    }
+
+    fn from_open_directory(directory: &fs::File, _metadata: &fs::Metadata) -> io::Result<Self> {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows::Win32::{
+            Foundation::HANDLE,
+            Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle},
+        };
+
+        let mut information = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: `File` 保证原始句柄在调用期间有效，输出地址独占且指向完整可写结构。
+        unsafe { GetFileInformationByHandle(HANDLE(directory.as_raw_handle()), &mut information) }
+            .map_err(|_| {
+                io::Error::other("无法取得 Windows 模型根目录卷号与文件索引，已拒绝读取")
+            })?;
+        let file_index =
+            (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
+        Ok(Self {
+            volume: information.dwVolumeSerialNumber,
+            file_index,
+        })
+    }
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DirectoryIdentity;
+
+#[cfg(not(any(unix, target_os = "windows")))]
+impl DirectoryIdentity {
+    fn capture(_path: &Path, _metadata: &fs::Metadata) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "当前平台无法验证模型根目录身份，已拒绝扫描",
+        ))
+    }
+
+    fn from_open_directory(_directory: &fs::File, _metadata: &fs::Metadata) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "当前平台无法验证模型根目录身份，已拒绝扫描",
+        ))
+    }
+}
+
 impl ModelFamily {
     /// 返回模型列表中展示的稳定名称。
     pub(crate) fn display_name(&self) -> &str {
@@ -70,6 +304,7 @@ impl ModelFamily {
 #[derive(Clone, Debug)]
 pub(crate) struct ModelCatalog {
     root: PathBuf,
+    scanned_root: Option<Arc<ScannedModelRoot>>,
     families: Vec<ModelFamily>,
     selected: Option<PathBuf>,
     warning: Option<String>,
@@ -88,13 +323,14 @@ impl ModelCatalog {
         root: PathBuf,
         configured_selection: Option<&Path>,
     ) -> Result<Self, ModelCatalogError> {
-        let (families, warning) = discover_models(&root)?;
-        let selected = choose_selection(&families, configured_selection);
+        let discovery = discover_models(&root)?;
+        let selected = choose_selection(&discovery.families, configured_selection);
         Ok(Self {
             root,
-            families,
+            scanned_root: discovery.scanned_root,
+            families: discovery.families,
             selected,
-            warning,
+            warning: discovery.warning,
         })
     }
 
@@ -102,6 +338,7 @@ impl ModelCatalog {
     pub(crate) fn empty(root: PathBuf) -> Self {
         Self {
             root,
+            scanned_root: None,
             families: Vec::new(),
             selected: None,
             warning: None,
@@ -145,18 +382,23 @@ impl ModelCatalog {
     }
 
     /// 只解析本次扫描确认存在的模型清单，避免调用方自行拼接不可信路径。
-    pub(crate) fn model_path(&self, relative_path: &Path) -> Option<PathBuf> {
+    pub(crate) fn model_path(&self, relative_path: &Path) -> Option<ModelManifest> {
         self.families
             .iter()
             .any(|family| family.contains(relative_path))
-            .then(|| self.root.join(relative_path))
+            .then(|| {
+                self.scanned_root
+                    .as_ref()
+                    .map(|root| ModelManifest::new(Arc::clone(root), relative_path))
+            })
+            .flatten()
     }
 
     /// 更新当前运行时模型但不持久化全局选择，供人格绑定切换复用目录校验。
     pub(crate) fn set_runtime_selection(
         &mut self,
         relative_path: Option<&Path>,
-    ) -> Result<Option<PathBuf>, ModelCatalogError> {
+    ) -> Result<Option<ModelManifest>, ModelCatalogError> {
         let Some(relative_path) = relative_path else {
             self.selected = None;
             return Ok(None);
@@ -173,7 +415,7 @@ impl ModelCatalog {
     pub(crate) fn select_variant(
         &mut self,
         relative_path: &Path,
-    ) -> Result<PathBuf, ModelCatalogError> {
+    ) -> Result<ModelManifest, ModelCatalogError> {
         if !self
             .families
             .iter()
@@ -186,28 +428,61 @@ impl ModelCatalog {
         }
 
         self.selected = Some(relative_path.to_path_buf());
-        Ok(self.root.join(relative_path))
+        let Some(root) = &self.scanned_root else {
+            return Err(ModelCatalogError::message("模型目录没有有效的扫描根快照"));
+        };
+        Ok(ModelManifest::new(Arc::clone(root), relative_path))
     }
 }
 
-fn discover_models(root: &Path) -> Result<(Vec<ModelFamily>, Option<String>), ModelCatalogError> {
+struct ModelDiscovery {
+    families: Vec<ModelFamily>,
+    warning: Option<String>,
+    scanned_root: Option<Arc<ScannedModelRoot>>,
+}
+
+fn discover_models(root: &Path) -> Result<ModelDiscovery, ModelCatalogError> {
+    let scanned_root = match ScannedModelRoot::capture(root) {
+        Ok(root) => Arc::new(root),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(ModelDiscovery {
+                families: Vec::new(),
+                warning: None,
+                scanned_root: None,
+            });
+        }
+        Err(source) => {
+            return Err(ModelCatalogError::io(
+                format!("无法扫描模型目录 {}", root.display()),
+                source,
+            ));
+        }
+    };
     let mut grouped = BTreeMap::<String, Vec<ModelVariant>>::new();
     let mut warning = None;
-    let mut directories = vec![(root.to_path_buf(), 0_usize)];
+    let mut directories = vec![(scanned_root.canonical_path.clone(), 0_usize)];
+    let mut scanned_entries = 0_usize;
+    let mut discovered_manifests = 0_usize;
+    let mut directory_expansion_stopped = false;
+    let mut scan_truncated = false;
 
-    while let Some((directory, depth)) = directories.pop() {
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound && directory == root => {
-                return Ok((Vec::new(), None));
-            }
-            Err(source) if directory == root => {
-                return Err(ModelCatalogError::io(
-                    format!("无法扫描模型目录 {}", directory.display()),
-                    source,
-                ));
+    'discovery: while let Some((directory, depth)) = directories.pop() {
+        let canonical_directory = match fs::canonicalize(&directory) {
+            Ok(path) if path.starts_with(scanned_root.canonical_path()) => path,
+            Ok(_) => {
+                append_warning(
+                    &mut warning,
+                    format!("跳过模型根目录外的子目录 {}", directory.display()),
+                );
+                continue;
             }
             Err(source) => {
+                if directory == scanned_root.canonical_path {
+                    return Err(ModelCatalogError::io(
+                        format!("无法扫描模型目录 {}", root.display()),
+                        source,
+                    ));
+                }
                 append_warning(
                     &mut warning,
                     format!("跳过无法扫描的模型子目录 {}：{source}", directory.display()),
@@ -215,8 +490,33 @@ fn discover_models(root: &Path) -> Result<(Vec<ModelFamily>, Option<String>), Mo
                 continue;
             }
         };
+        let entries = match fs::read_dir(&canonical_directory) {
+            Ok(entries) => entries,
+            Err(source) => {
+                if canonical_directory == scanned_root.canonical_path {
+                    return Err(ModelCatalogError::io(
+                        format!("无法扫描模型目录 {}", root.display()),
+                        source,
+                    ));
+                }
+                append_warning(
+                    &mut warning,
+                    format!(
+                        "跳过无法扫描的模型子目录 {}：{source}",
+                        canonical_directory.display()
+                    ),
+                );
+                continue;
+            }
+        };
 
         for entry in entries {
+            if scanned_entries >= MAX_DISCOVERY_ENTRIES {
+                scan_truncated = true;
+                break 'discovery;
+            }
+            scanned_entries += 1;
+
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(source) => {
@@ -241,7 +541,13 @@ fn discover_models(root: &Path) -> Result<(Vec<ModelFamily>, Option<String>), Mo
 
             if file_type.is_dir() {
                 if depth < MAX_DISCOVERY_DEPTH {
-                    directories.push((path, depth + 1));
+                    // 队列一旦触顶便永久停止扩张，避免后续出队后又恢复累积扫描工作。
+                    if directory_expansion_stopped || directories.len() >= MAX_PENDING_DIRECTORIES {
+                        directory_expansion_stopped = true;
+                        scan_truncated = true;
+                    } else {
+                        directories.push((path, depth + 1));
+                    }
                 } else {
                     append_warning(
                         &mut warning,
@@ -256,8 +562,31 @@ fn discover_models(root: &Path) -> Result<(Vec<ModelFamily>, Option<String>), Mo
             if !file_type.is_file() || !is_model_manifest(&path) {
                 continue;
             }
+            if discovered_manifests >= MAX_DISCOVERED_MANIFESTS {
+                scan_truncated = true;
+                break 'discovery;
+            }
+            discovered_manifests += 1;
 
-            let relative_path = match path.strip_prefix(root) {
+            let canonical_manifest = match fs::canonicalize(&path) {
+                Ok(path) if path.starts_with(scanned_root.canonical_path()) => path,
+                Ok(_) => {
+                    append_warning(
+                        &mut warning,
+                        format!("跳过模型根目录外清单 {}", path.display()),
+                    );
+                    continue;
+                }
+                Err(source) => {
+                    append_warning(
+                        &mut warning,
+                        format!("跳过无法验证的模型清单 {}：{source}", path.display()),
+                    );
+                    continue;
+                }
+            };
+            let relative_path = match canonical_manifest.strip_prefix(scanned_root.canonical_path())
+            {
                 Ok(relative_path) => relative_path,
                 Err(error) => {
                     append_warning(
@@ -287,6 +616,16 @@ fn discover_models(root: &Path) -> Result<(Vec<ModelFamily>, Option<String>), Mo
         }
     }
 
+    if scan_truncated {
+        append_warning(&mut warning, DISCOVERY_BUDGET_WARNING.to_owned());
+    }
+
+    if !scanned_root.is_current() {
+        return Err(ModelCatalogError::message(
+            "模型根目录在扫描期间发生变化，请重新扫描",
+        ));
+    }
+
     let families = grouped
         .into_iter()
         .map(|(display_name, mut variants)| {
@@ -297,7 +636,11 @@ fn discover_models(root: &Path) -> Result<(Vec<ModelFamily>, Option<String>), Mo
             }
         })
         .collect();
-    Ok((families, warning))
+    Ok(ModelDiscovery {
+        families,
+        warning,
+        scanned_root: Some(scanned_root),
+    })
 }
 
 fn is_model_manifest(path: &Path) -> bool {

@@ -4,6 +4,17 @@ use crate::{Error, Result};
 
 const FORMAT: &str = "physics3.json";
 const SUPPORTED_VERSION: u32 = 3;
+const MAX_PHYSICS_SETTINGS: usize = 256;
+const MAX_INPUTS_PER_SETTING: usize = 256;
+const MAX_OUTPUTS_PER_SETTING: usize = 256;
+const MAX_VERTICES_PER_SETTING: usize = 256;
+const MAX_TOTAL_INPUTS: usize = 4_096;
+const MAX_TOTAL_OUTPUTS: usize = 4_096;
+const MAX_TOTAL_VERTICES: usize = 4_096;
+const MAX_WEIGHT: f32 = 100.0;
+const MIN_NON_ZERO_DELAY: f32 = 0.0001;
+const MAX_DYNAMICS_VALUE: f32 = 1_000.0;
+const MAX_CALCULATION_MAGNITUDE: f32 = 1_000_000.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Physics3 {
@@ -26,6 +37,8 @@ impl Physics3 {
                 version: raw.version,
             });
         }
+
+        validate_physics(&raw)?;
 
         Ok(Self {
             version: raw.version,
@@ -370,5 +383,283 @@ impl Vector2 {
 
     pub fn y(&self) -> f32 {
         self.y
+    }
+}
+
+fn validate_physics(raw: &RawPhysics3) -> Result<()> {
+    let actual_setting_count = raw.settings.len();
+    validate_count(
+        "physics setting count",
+        actual_setting_count,
+        MAX_PHYSICS_SETTINGS,
+    )?;
+
+    let mut actual_input_count = 0_usize;
+    let mut actual_output_count = 0_usize;
+    let mut actual_vertex_count = 0_usize;
+    for (setting_index, setting) in raw.settings.iter().enumerate() {
+        validate_setting_count(
+            setting_index,
+            "input",
+            setting.inputs.len(),
+            MAX_INPUTS_PER_SETTING,
+        )?;
+        validate_setting_count(
+            setting_index,
+            "output",
+            setting.outputs.len(),
+            MAX_OUTPUTS_PER_SETTING,
+        )?;
+        validate_setting_count(
+            setting_index,
+            "vertex",
+            setting.vertices.len(),
+            MAX_VERTICES_PER_SETTING,
+        )?;
+
+        actual_input_count = add_to_total_count(
+            actual_input_count,
+            setting.inputs.len(),
+            "input",
+            MAX_TOTAL_INPUTS,
+        )?;
+        actual_output_count = add_to_total_count(
+            actual_output_count,
+            setting.outputs.len(),
+            "output",
+            MAX_TOTAL_OUTPUTS,
+        )?;
+        actual_vertex_count = add_to_total_count(
+            actual_vertex_count,
+            setting.vertices.len(),
+            "vertex",
+            MAX_TOTAL_VERTICES,
+        )?;
+    }
+
+    validate_reported_counts(
+        &raw.meta,
+        actual_setting_count,
+        actual_input_count,
+        actual_output_count,
+        actual_vertex_count,
+    )?;
+    validate_meta_values(&raw.meta)?;
+    for (setting_index, setting) in raw.settings.iter().enumerate() {
+        validate_setting(setting, setting_index)?;
+    }
+
+    Ok(())
+}
+
+fn validate_count(name: &str, actual: usize, limit: usize) -> Result<()> {
+    if actual > limit {
+        return Err(invalid_physics(format!(
+            "{name} {actual} exceeds limit {limit}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_setting_count(
+    setting_index: usize,
+    name: &str,
+    actual: usize,
+    limit: usize,
+) -> Result<()> {
+    if actual > limit {
+        return Err(invalid_physics(format!(
+            "setting {setting_index} {name} count {actual} exceeds per-setting limit {limit}"
+        )));
+    }
+    Ok(())
+}
+
+fn add_to_total_count(total: usize, count: usize, name: &str, limit: usize) -> Result<usize> {
+    let total = total
+        .checked_add(count)
+        .ok_or_else(|| invalid_physics(format!("total {name} count overflows")))?;
+    validate_count(&format!("total {name} count"), total, limit)?;
+    Ok(total)
+}
+
+fn validate_reported_counts(
+    meta: &PhysicsMeta,
+    actual_setting_count: usize,
+    actual_input_count: usize,
+    actual_output_count: usize,
+    actual_vertex_count: usize,
+) -> Result<()> {
+    for (name, reported, actual) in [
+        (
+            "physics setting count",
+            meta.physics_setting_count,
+            actual_setting_count,
+        ),
+        (
+            "total input count",
+            meta.total_input_count,
+            actual_input_count,
+        ),
+        (
+            "total output count",
+            meta.total_output_count,
+            actual_output_count,
+        ),
+        ("vertex count", meta.vertex_count, actual_vertex_count),
+    ] {
+        if u64::from(reported) != actual as u64 {
+            return Err(invalid_physics(format!(
+                "reported {name} {reported} does not match actual count {actual}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_meta_values(meta: &PhysicsMeta) -> Result<()> {
+    validate_finite(meta.fps, "physics FPS")?;
+    if meta.fps < 0.0 {
+        return Err(invalid_physics("physics FPS must be non-negative"));
+    }
+    validate_vector(meta.effective_forces.gravity(), "gravity")?;
+    validate_vector(meta.effective_forces.wind(), "wind")
+}
+
+fn validate_setting(setting: &PhysicsSetting, setting_index: usize) -> Result<()> {
+    validate_normalization(
+        setting.normalization.position(),
+        &format!("setting {setting_index} position normalization"),
+    )?;
+    validate_normalization(
+        setting.normalization.angle(),
+        &format!("setting {setting_index} angle normalization"),
+    )?;
+
+    for (input_index, input) in setting.inputs.iter().enumerate() {
+        validate_weight(
+            input.weight,
+            &format!("setting {setting_index} input {input_index} weight"),
+        )?;
+    }
+
+    for (output_index, output) in setting.outputs.iter().enumerate() {
+        let output_name = format!("setting {setting_index} output {output_index}");
+        validate_signed_magnitude(output.scale, &format!("{output_name} scale"))?;
+        validate_weight(output.weight, &format!("{output_name} weight"))?;
+
+        let vertex_index = usize::try_from(output.vertex_index).map_err(|_| {
+            invalid_physics(format!(
+                "{output_name} vertex index {} cannot be represented on this platform",
+                output.vertex_index
+            ))
+        })?;
+        if vertex_index == 0 || vertex_index >= setting.vertices.len() {
+            return Err(invalid_physics(format!(
+                "{output_name} vertex index {} is out of range for {} vertices; an output requires its vertex and the preceding vertex",
+                output.vertex_index,
+                setting.vertices.len()
+            )));
+        }
+    }
+
+    for (vertex_index, vertex) in setting.vertices.iter().enumerate() {
+        let vertex_name = format!("setting {setting_index} vertex {vertex_index}");
+        validate_non_negative_bounded(
+            vertex.mobility,
+            MAX_DYNAMICS_VALUE,
+            &format!("{vertex_name} mobility"),
+        )?;
+        validate_delay(vertex.delay, &format!("{vertex_name} delay"))?;
+        validate_non_negative_bounded(
+            vertex.acceleration,
+            MAX_DYNAMICS_VALUE,
+            &format!("{vertex_name} acceleration"),
+        )?;
+        validate_non_negative_bounded(
+            vertex.radius,
+            MAX_CALCULATION_MAGNITUDE,
+            &format!("{vertex_name} radius"),
+        )?;
+        validate_vector(&vertex.position, &format!("{vertex_name} position"))?;
+    }
+
+    Ok(())
+}
+
+fn validate_normalization(value: &PhysicsNormalizationValue, name: &str) -> Result<()> {
+    validate_signed_magnitude(value.minimum, &format!("{name} minimum"))?;
+    validate_signed_magnitude(value.default, &format!("{name} default"))?;
+    validate_signed_magnitude(value.maximum, &format!("{name} maximum"))?;
+
+    if value.minimum >= value.maximum {
+        return Err(invalid_physics(format!(
+            "{name} minimum must be less than maximum"
+        )));
+    }
+    if !(value.minimum..=value.maximum).contains(&value.default) {
+        return Err(invalid_physics(format!(
+            "{name} default must be between minimum and maximum"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_weight(value: f32, name: &str) -> Result<()> {
+    validate_finite(value, name)?;
+    if !(0.0..=MAX_WEIGHT).contains(&value) {
+        return Err(invalid_physics(format!(
+            "{name} must be between 0 and {MAX_WEIGHT}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_non_negative_bounded(value: f32, maximum: f32, name: &str) -> Result<()> {
+    validate_finite(value, name)?;
+    if !(0.0..=maximum).contains(&value) {
+        return Err(invalid_physics(format!(
+            "{name} must be between 0 and {maximum}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_delay(value: f32, name: &str) -> Result<()> {
+    validate_non_negative_bounded(value, MAX_DYNAMICS_VALUE, name)?;
+    if value != 0.0 && value < MIN_NON_ZERO_DELAY {
+        return Err(invalid_physics(format!(
+            "{name} must be zero or at least {MIN_NON_ZERO_DELAY}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_signed_magnitude(value: f32, name: &str) -> Result<()> {
+    validate_finite(value, name)?;
+    if value.abs() > MAX_CALCULATION_MAGNITUDE {
+        return Err(invalid_physics(format!(
+            "{name} magnitude must not exceed {MAX_CALCULATION_MAGNITUDE}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_vector(value: &Vector2, name: &str) -> Result<()> {
+    validate_signed_magnitude(value.x, &format!("{name} X"))?;
+    validate_signed_magnitude(value.y, &format!("{name} Y"))
+}
+
+fn validate_finite(value: f32, name: &str) -> Result<()> {
+    if !value.is_finite() {
+        return Err(invalid_physics(format!("{name} must be finite")));
+    }
+    Ok(())
+}
+
+fn invalid_physics(message: impl Into<String>) -> Error {
+    Error::InvalidJson {
+        format: FORMAT,
+        message: message.into(),
     }
 }

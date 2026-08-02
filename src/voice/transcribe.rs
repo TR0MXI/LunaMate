@@ -174,7 +174,7 @@ pub(super) fn run(queue: Arc<TranscriptionQueue>, voice_commands: Sender<VoiceCo
         let result = transcriber.transcribe(&job, &queue);
         if queue.is_cancelled(job.revision, job.utterance_id) {
             log::debug!(
-                "丢弃已过期的 Whisper 结果：revision={}, utterance_id={}",
+                "event=whisper_result_discarded revision={} utterance_id={} reason=stale",
                 job.revision,
                 job.utterance_id
             );
@@ -182,14 +182,14 @@ pub(super) fn run(queue: Arc<TranscriptionQueue>, voice_commands: Sender<VoiceCo
         }
         match &result {
             Ok(text) => log::debug!(
-                "Whisper 推理完成：revision={}, utterance_id={}, samples={sample_count}, transcript_bytes={}, elapsed_ms={}",
+                "event=whisper_inference_completed revision={} utterance_id={} result=ok samples={sample_count} transcript_bytes={} elapsed_ms={}",
                 job.revision,
                 job.utterance_id,
                 text.len(),
                 started.elapsed().as_millis()
             ),
             Err(_) => log::debug!(
-                "Whisper 推理失败：revision={}, utterance_id={}, samples={sample_count}, elapsed_ms={}",
+                "event=whisper_inference_completed revision={} utterance_id={} result=failed samples={sample_count} elapsed_ms={}",
                 job.revision,
                 job.utterance_id,
                 started.elapsed().as_millis()
@@ -247,7 +247,7 @@ impl Transcriber {
                     return Err("Whisper 转写已取消".to_owned());
                 }
                 log::warn!(
-                    "Whisper GPU 推理失败，正在回退 CPU：revision={}, utterance_id={}, stage=inference",
+                    "event=whisper_gpu_fallback revision={} utterance_id={} stage=inference",
                     job.revision,
                     job.utterance_id
                 );
@@ -281,7 +281,7 @@ impl Transcriber {
         let (context, loaded_with_gpu) = match WhisperContext::new_with_params(path, parameters) {
             Ok(context) => (context, use_gpu),
             Err(_) if use_gpu => {
-                log::warn!("Whisper GPU 初始化失败，正在回退 CPU：stage=model_init");
+                log::warn!("event=whisper_gpu_fallback stage=model_init");
                 let mut cpu_parameters = WhisperContextParameters::default();
                 cpu_parameters.use_gpu(false);
                 (

@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::database::{AtomicReplaceOperation, atomic_replace};
+use crate::database::{AtomicReplaceOperation, atomic_replace, prepare_atomic_replace};
 
 struct TestDirectory(PathBuf);
 
@@ -75,6 +75,69 @@ fn replace_overwrites_existing_contents_atomically() {
 }
 
 #[test]
+fn prepared_replace_keeps_target_unchanged_until_replace() {
+    let directory = TestDirectory::new();
+    let target = directory.path().join("config.toml");
+    fs::write(&target, b"published = true\n").expect("旧文件应当可以创建");
+
+    let prepared =
+        prepare_atomic_replace(&target, b"draft = true\n", 17).expect("待提交临时文件应当可以准备");
+
+    assert_eq!(
+        fs::read(&target).expect("prepare 后目标仍应可读"),
+        b"published = true\n"
+    );
+    assert_eq!(visible_entries(directory.path()).len(), 2);
+    let temporary_path = fs::read_dir(directory.path())
+        .expect("测试目录应当可以枚举")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path != &target)
+        .expect("prepare 应当留下一个待提交临时文件");
+    assert_eq!(
+        fs::read(&temporary_path).expect("待提交临时文件应当可以读取"),
+        b"draft = true\n"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mode = fs::metadata(&temporary_path)
+            .expect("待提交临时文件元数据应当可读")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    let visible = prepared.replace().expect("准备完成的替换应当可以变为可见");
+
+    assert_eq!(
+        fs::read(&target).expect("可见提交后目标应当可读"),
+        b"draft = true\n"
+    );
+    assert_eq!(visible_entries(directory.path()), vec!["config.toml"]);
+
+    visible.sync_parent().expect("父目录耐久性同步应当成功");
+}
+
+#[test]
+fn dropping_prepared_replace_removes_temporary_file_without_changing_target() {
+    let directory = TestDirectory::new();
+    let target = directory.path().join("config.toml");
+    fs::write(&target, b"published = true\n").expect("旧文件应当可以创建");
+
+    let prepared = prepare_atomic_replace(&target, b"abandoned = true\n", 19)
+        .expect("待丢弃临时文件应当可以准备");
+    drop(prepared);
+
+    assert_eq!(
+        fs::read(&target).expect("丢弃 prepare 后目标仍应可读"),
+        b"published = true\n"
+    );
+    assert_eq!(visible_entries(directory.path()), vec!["config.toml"]);
+}
+
+#[test]
 fn empty_contents_truncate_the_previous_document() {
     let directory = TestDirectory::new();
     let target = directory.path().join("config.toml");
@@ -109,6 +172,31 @@ fn failed_replace_does_not_leave_a_temporary_file_behind() {
     let (operation, _, _) = error.into_parts();
 
     assert!(matches!(operation, AtomicReplaceOperation::Replace));
+    assert_eq!(visible_entries(directory.path()), vec!["config.toml"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn parent_sync_failure_is_reported_after_replacement_becomes_visible() {
+    let directory = TestDirectory::new();
+    let target = directory.path().join("config.toml");
+    let mut prepared = prepare_atomic_replace(&target, b"visible = true\n", 23)
+        .expect("待提交临时文件应当可以准备");
+    prepared.fail_parent_sync_for_test();
+
+    let visible = prepared.replace().expect("rename 可见提交应当成功");
+    assert_eq!(
+        fs::read(&target).expect("父目录同步前新目标应当已经可见"),
+        b"visible = true\n"
+    );
+
+    let error = visible
+        .sync_parent()
+        .expect_err("测试注入应当使父目录同步失败");
+    let (operation, path, source) = error.into_parts();
+    assert!(matches!(operation, AtomicReplaceOperation::SyncParent));
+    assert_eq!(path, directory.path());
+    assert_eq!(source.kind(), std::io::ErrorKind::Other);
     assert_eq!(visible_entries(directory.path()), vec!["config.toml"]);
 }
 

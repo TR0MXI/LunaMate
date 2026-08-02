@@ -79,8 +79,8 @@ impl WaylandActivationController {
             .spawn(move || run_activation_thread(target, receiver, thread_shutdown));
         let thread = match thread {
             Ok(thread) => Some(thread),
-            Err(error) => {
-                log::warn!("创建 Wayland 快捷键激活线程失败：{error}");
+            Err(_) => {
+                log::warn!("event=wayland_activation_thread_start_failed");
                 None
             }
         };
@@ -110,7 +110,7 @@ impl Drop for WaylandActivationController {
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
-            log::warn!("Wayland 快捷键激活线程异常退出");
+            log::warn!("event=wayland_activation_thread_exit_failed reason=panic");
         }
     }
 }
@@ -123,9 +123,9 @@ fn run_activation_thread(
     let mut pending = None;
     let mut activator = match WaylandActivator::new(target, &receiver, &shutdown, &mut pending) {
         Ok(activator) => activator,
-        Err(error) => {
+        Err(_) => {
             if !shutdown.load(Ordering::Acquire) {
-                log::warn!("Wayland 快捷键窗口激活适配不可用：{error}");
+                log::warn!("event=wayland_activation_unavailable stage=initialize");
             }
             return;
         }
@@ -134,15 +134,15 @@ fn run_activation_thread(
         return;
     }
     if let Some(token) = pending
-        && let Err(error) = activator.activate(&token)
+        && activator.activate(&token).is_err()
     {
-        log::warn!("使用 Wayland 快捷键激活窗口失败：{error}");
+        log::warn!("event=wayland_activation_failed stage=pending_request");
     }
     while !shutdown.load(Ordering::Acquire) {
         match receiver.recv_timeout(POLL_INTERVAL) {
             Ok(ActivationCommand::Activate(token)) => {
-                if let Err(error) = activator.activate(&token) {
-                    log::warn!("使用 Wayland 快捷键激活窗口失败：{error}");
+                if activator.activate(&token).is_err() {
+                    log::warn!("event=wayland_activation_failed stage=request");
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}

@@ -4,6 +4,10 @@ use crate::{Error, Result};
 
 const FORMAT: &str = "motion3.json";
 const SUPPORTED_VERSIONS: [u32; 2] = [0, 3];
+const MAX_MOTION_CURVES: usize = 4_096;
+const MAX_SEGMENTS_PER_CURVE: usize = 16_384;
+const MAX_TOTAL_SEGMENTS: usize = 65_536;
+const MAX_TOTAL_POINTS: usize = 131_072;
 
 #[derive(Debug, Clone, PartialEq)]
 /// Parsed Cubism `motion3.json` data.
@@ -29,12 +33,54 @@ impl Motion3 {
             });
         }
 
+        validate_finite(raw.meta.duration, "motion duration")?;
+        validate_finite(raw.meta.fps, "motion FPS")?;
+
+        let actual_curve_count = raw.curves.len();
+        if actual_curve_count > MAX_MOTION_CURVES {
+            return Err(invalid_motion(format!(
+                "curve count {actual_curve_count} exceeds limit {MAX_MOTION_CURVES}"
+            )));
+        }
+
         let are_beziers_restricted = raw.meta.are_beziers_restricted;
-        let curves = raw
-            .curves
-            .into_iter()
-            .map(|curve| MotionCurve::from_raw(curve, are_beziers_restricted))
-            .collect::<Result<Vec<_>>>()?;
+        let mut curves = Vec::new();
+        curves
+            .try_reserve_exact(actual_curve_count)
+            .map_err(|error| invalid_motion(format!("failed to reserve motion curves: {error}")))?;
+        let mut actual_segment_count = 0_usize;
+        let mut actual_point_count = 0_usize;
+
+        for (curve_index, raw_curve) in raw.curves.into_iter().enumerate() {
+            let (curve, point_count) =
+                MotionCurve::from_raw(raw_curve, are_beziers_restricted, curve_index)?;
+            actual_segment_count = actual_segment_count
+                .checked_add(curve.segments.len())
+                .ok_or_else(|| invalid_motion("total segment count overflows"))?;
+            if actual_segment_count > MAX_TOTAL_SEGMENTS {
+                return Err(invalid_motion(format!(
+                    "total segment count {actual_segment_count} exceeds limit {MAX_TOTAL_SEGMENTS}"
+                )));
+            }
+
+            actual_point_count = actual_point_count
+                .checked_add(point_count)
+                .ok_or_else(|| invalid_motion("total point count overflows"))?;
+            if actual_point_count > MAX_TOTAL_POINTS {
+                return Err(invalid_motion(format!(
+                    "total point count {actual_point_count} exceeds limit {MAX_TOTAL_POINTS}"
+                )));
+            }
+            curves.push(curve);
+        }
+
+        validate_reported_counts(
+            raw.version,
+            &raw.meta,
+            actual_curve_count,
+            actual_segment_count,
+            actual_point_count,
+        )?;
 
         Ok(Self {
             version: raw.version,
@@ -178,10 +224,19 @@ impl MotionCurve {
             return Some(self.first_point.value);
         }
 
-        for segment in &self.segments {
-            if time < segment.end().time {
-                return segment.sample(time, self.are_beziers_restricted);
-            }
+        if time.is_nan() {
+            return self
+                .segments
+                .last()
+                .map(|segment| segment.end().value)
+                .or(Some(self.first_point.value));
+        }
+
+        let segment_index = self
+            .segments
+            .partition_point(|segment| segment.end().time <= time);
+        if let Some(segment) = self.segments.get(segment_index) {
+            return segment.sample(time, self.are_beziers_restricted);
         }
 
         self.segments
@@ -192,18 +247,33 @@ impl MotionCurve {
 }
 
 impl MotionCurve {
-    fn from_raw(raw: RawMotionCurve, are_beziers_restricted: bool) -> Result<Self> {
-        let (first_point, segments) = parse_segments(&raw.segments)?;
+    fn from_raw(
+        raw: RawMotionCurve,
+        are_beziers_restricted: bool,
+        curve_index: usize,
+    ) -> Result<(Self, usize)> {
+        validate_optional_finite(
+            raw.fade_in_time,
+            &format!("curve {curve_index} fade-in time"),
+        )?;
+        validate_optional_finite(
+            raw.fade_out_time,
+            &format!("curve {curve_index} fade-out time"),
+        )?;
+        let (first_point, segments, point_count) = parse_segments(&raw.segments, curve_index)?;
 
-        Ok(Self {
-            target: raw.target,
-            id: raw.id,
-            first_point,
-            segments,
-            fade_in_time: raw.fade_in_time,
-            fade_out_time: raw.fade_out_time,
-            are_beziers_restricted,
-        })
+        Ok((
+            Self {
+                target: raw.target,
+                id: raw.id,
+                first_point,
+                segments,
+                fade_in_time: raw.fade_in_time,
+                fade_out_time: raw.fade_out_time,
+                are_beziers_restricted,
+            },
+            point_count,
+        ))
     }
 }
 
@@ -391,7 +461,10 @@ struct RawMotionCurve {
     fade_out_time: Option<f32>,
 }
 
-fn parse_segments(values: &[f32]) -> Result<(MotionPoint, Vec<MotionSegment>)> {
+fn parse_segments(
+    values: &[f32],
+    curve_index: usize,
+) -> Result<(MotionPoint, Vec<MotionSegment>, usize)> {
     if values.len() < 2 {
         return Err(invalid_segments(
             "segments must start with a time/value point",
@@ -402,46 +475,102 @@ fn parse_segments(values: &[f32]) -> Result<(MotionPoint, Vec<MotionSegment>)> {
         time: values[0],
         value: values[1],
     };
+    validate_point(first_point, curve_index, None, "first point")?;
     let mut cursor = 2;
     let mut start = first_point;
     let mut segments = Vec::new();
+    let estimated_segment_count = values
+        .len()
+        .saturating_sub(2)
+        .div_ceil(3)
+        .min(MAX_SEGMENTS_PER_CURVE);
+    segments
+        .try_reserve_exact(estimated_segment_count)
+        .map_err(|error| {
+            invalid_segments(format!(
+                "curve {curve_index} failed to reserve segments: {error}"
+            ))
+        })?;
+    let mut point_count = 1_usize;
 
     while cursor < values.len() {
+        let segment_index = segments.len();
+        if segment_index >= MAX_SEGMENTS_PER_CURVE {
+            return Err(invalid_segments(format!(
+                "curve {curve_index} segment count exceeds per-curve limit {MAX_SEGMENTS_PER_CURVE}"
+            )));
+        }
+
         let segment_type = segment_type(values[cursor])?;
         cursor += 1;
 
-        let segment = match segment_type {
+        let (segment, added_point_count) = match segment_type {
             0 => {
                 let end = read_point(values, &mut cursor)?;
-                MotionSegment::Linear { start, end }
+                validate_point(end, curve_index, Some(segment_index), "end point")?;
+                (MotionSegment::Linear { start, end }, 1)
             }
             1 => {
                 let control1 = read_point(values, &mut cursor)?;
                 let control2 = read_point(values, &mut cursor)?;
                 let end = read_point(values, &mut cursor)?;
-                MotionSegment::Bezier {
-                    start,
+                validate_point(
                     control1,
+                    curve_index,
+                    Some(segment_index),
+                    "Bezier control point 1",
+                )?;
+                validate_point(
                     control2,
-                    end,
+                    curve_index,
+                    Some(segment_index),
+                    "Bezier control point 2",
+                )?;
+                validate_point(end, curve_index, Some(segment_index), "end point")?;
+                if control1.time < start.time
+                    || control2.time < control1.time
+                    || control2.time > end.time
+                {
+                    return Err(invalid_segments(format!(
+                        "curve {curve_index} segment {segment_index} Bezier control point times must satisfy start <= control1 <= control2 <= end"
+                    )));
                 }
+                (
+                    MotionSegment::Bezier {
+                        start,
+                        control1,
+                        control2,
+                        end,
+                    },
+                    3,
+                )
             }
             2 => {
                 let end = read_point(values, &mut cursor)?;
-                MotionSegment::Stepped { start, end }
+                validate_point(end, curve_index, Some(segment_index), "end point")?;
+                (MotionSegment::Stepped { start, end }, 1)
             }
             3 => {
                 let end = read_point(values, &mut cursor)?;
-                MotionSegment::InverseStepped { start, end }
+                validate_point(end, curve_index, Some(segment_index), "end point")?;
+                (MotionSegment::InverseStepped { start, end }, 1)
             }
             _ => return Err(invalid_segments("unsupported segment type")),
         };
 
+        if segment.end().time <= start.time {
+            return Err(invalid_segments(format!(
+                "curve {curve_index} segment {segment_index} end time must be greater than its start time"
+            )));
+        }
+        point_count = point_count
+            .checked_add(added_point_count)
+            .ok_or_else(|| invalid_segments("curve point count overflows"))?;
         start = segment.end();
         segments.push(segment);
     }
 
-    Ok((first_point, segments))
+    Ok((first_point, segments, point_count))
 }
 
 fn read_point(values: &[f32], cursor: &mut usize) -> Result<MotionPoint> {
@@ -458,7 +587,7 @@ fn read_point(values: &[f32], cursor: &mut usize) -> Result<MotionPoint> {
 }
 
 fn segment_type(value: f32) -> Result<u32> {
-    if value.fract() != 0.0 || !(0.0..=3.0).contains(&value) {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=3.0).contains(&value) {
         return Err(invalid_segments("segment type must be 0, 1, 2, or 3"));
     }
 
@@ -604,8 +733,94 @@ fn quadratic_equation(a: f32, b: f32, c: f32) -> f32 {
 }
 
 fn invalid_segments(message: impl Into<String>) -> Error {
+    invalid_motion(message)
+}
+
+fn invalid_motion(message: impl Into<String>) -> Error {
     Error::InvalidJson {
         format: FORMAT,
         message: message.into(),
     }
+}
+
+fn validate_finite(value: f32, name: &str) -> Result<()> {
+    if !value.is_finite() {
+        return Err(invalid_motion(format!("{name} must be finite")));
+    }
+    Ok(())
+}
+
+fn validate_optional_finite(value: Option<f32>, name: &str) -> Result<()> {
+    if let Some(value) = value {
+        validate_finite(value, name)?;
+    }
+    Ok(())
+}
+
+fn validate_point(
+    point: MotionPoint,
+    curve_index: usize,
+    segment_index: Option<usize>,
+    role: &str,
+) -> Result<()> {
+    if !point.time.is_finite() {
+        return Err(invalid_point(curve_index, segment_index, role, "time"));
+    }
+    if !point.value.is_finite() {
+        return Err(invalid_point(curve_index, segment_index, role, "value"));
+    }
+    Ok(())
+}
+
+fn invalid_point(
+    curve_index: usize,
+    segment_index: Option<usize>,
+    role: &str,
+    component: &str,
+) -> Error {
+    match segment_index {
+        Some(segment_index) => invalid_segments(format!(
+            "curve {curve_index} segment {segment_index} {role} {component} must be finite"
+        )),
+        None => invalid_segments(format!(
+            "curve {curve_index} {role} {component} must be finite"
+        )),
+    }
+}
+
+fn validate_reported_counts(
+    version: u32,
+    meta: &MotionMeta,
+    actual_curve_count: usize,
+    actual_segment_count: usize,
+    actual_point_count: usize,
+) -> Result<()> {
+    for (name, reported, actual) in [
+        ("curve count", meta.curve_count, actual_curve_count),
+        (
+            "total segment count",
+            meta.total_segment_count,
+            actual_segment_count,
+        ),
+    ] {
+        if u64::from(reported) != actual as u64 {
+            return Err(invalid_motion(format!(
+                "reported {name} {reported} does not match actual count {actual}"
+            )));
+        }
+    }
+
+    let reported_point_count = u64::from(meta.total_point_count);
+    let actual_point_count = actual_point_count as u64;
+    // VTube Studio Version 0 recordings report three extra points per curve.
+    let vts_version_zero_point_count = actual_point_count + actual_curve_count as u64 * 3;
+    if reported_point_count != actual_point_count
+        && !(version == 0 && reported_point_count == vts_version_zero_point_count)
+    {
+        return Err(invalid_motion(format!(
+            "reported total point count {} does not match actual count {actual_point_count}",
+            meta.total_point_count
+        )));
+    }
+    Ok(())
 }

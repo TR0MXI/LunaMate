@@ -4,7 +4,7 @@
 //! [`MotionPlayer`], and call [`MotionPlayer::tick`] plus [`MotionPlayer::apply`]
 //! each frame before updating runtime meshes.
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::Arc};
 
 use crate::{
     json::{
@@ -24,7 +24,7 @@ const PART_OPACITY_TARGET: &str = "PartOpacity";
 /// itself; call [`ModelRuntime::update_meshes`] after applying one or more
 /// players.
 pub struct MotionPlayer {
-    motion: Motion3,
+    motion: Arc<Motion3>,
     time: f32,
     weight: f32,
     looping: bool,
@@ -35,20 +35,24 @@ impl MotionPlayer {
     /// Creates a player at time `0.0` with full weight.
     ///
     /// The player follows the motion's own `Loop` metadata.
-    pub fn new(motion: Motion3) -> Self {
+    pub fn new(motion: impl Into<Arc<Motion3>>) -> Self {
+        let motion = motion.into();
         let looping = motion.meta().is_looping();
         Self::with_looping(motion, looping)
     }
 
     /// Creates a player that stops at the end, ignoring the motion's `Loop` metadata.
-    pub fn new_once(motion: Motion3) -> Self {
+    pub fn new_once(motion: impl Into<Arc<Motion3>>) -> Self {
         Self::with_looping(motion, false)
     }
 
     /// Creates a player with an explicit loop mode.
-    pub fn with_looping(motion: Motion3, looping: bool) -> Self {
+    ///
+    /// Passing an [`Arc<Motion3>`] shares immutable curves while playback state
+    /// remains local to this player.
+    pub fn with_looping(motion: impl Into<Arc<Motion3>>, looping: bool) -> Self {
         Self {
-            motion,
+            motion: motion.into(),
             time: 0.0,
             weight: 1.0,
             looping,
@@ -56,9 +60,14 @@ impl MotionPlayer {
         }
     }
 
-    /// Returns the motion data owned by this player.
+    /// Returns the immutable motion data referenced by this player.
     pub fn motion(&self) -> &Motion3 {
         &self.motion
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parsed_identity_for_test(&self) -> *const Motion3 {
+        Arc::as_ptr(&self.motion)
     }
 
     /// Returns the current playback time in seconds.

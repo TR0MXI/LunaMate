@@ -2,7 +2,10 @@
 //!
 //! 表情参数只在模型逐帧更新阶段写入，UI 与聊天模块无需了解 Mocari 类型。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use mocari::{
     ModelRuntime,
@@ -35,10 +38,30 @@ pub(crate) fn load(
 
 /// 保存模型声明的表情，并负责表情切换和混合。
 pub(crate) struct ExpressionController {
-    expressions: BTreeMap<String, Expression3>,
+    expressions: BTreeMap<String, Arc<Expression3>>,
     resources: BTreeMap<String, ModelPreviewExpression>,
     default_expression: Option<String>,
     pub(in crate::model) manager: ExpressionManager,
+}
+
+#[derive(Clone)]
+struct CachedExpression {
+    canonical_path: Option<std::path::PathBuf>,
+    result: Result<Arc<Expression3>, CachedExpressionError>,
+}
+
+#[derive(Clone)]
+struct CachedExpressionError {
+    category: ModelDiagnosticCategory,
+    message: String,
+}
+
+#[derive(Clone, Copy)]
+struct ExpressionDeclaration<'a> {
+    name: &'a str,
+    index: usize,
+    reference: &'a str,
+    declared: bool,
 }
 
 impl ExpressionController {
@@ -53,7 +76,7 @@ impl ExpressionController {
             return Self::empty_load_result();
         }
         let external = if model.runtime().model().expressions().len() < MAX_EXPRESSION_COUNT {
-            resolver.discover_external_expressions()
+            resolver.discover_external_expressions_with_checkpoint(|| cancellation.is_cancelled())
         } else {
             Vec::new()
         };
@@ -71,7 +94,11 @@ impl ExpressionController {
         model: &Model3,
         resolver: &ModelResourceResolver,
     ) -> (ExpressionController, ModelLoadDiagnostics) {
-        let external = resolver.discover_external_expressions();
+        let external = if model.expressions().len() < MAX_EXPRESSION_COUNT {
+            resolver.discover_external_expressions()
+        } else {
+            Vec::new()
+        };
         Self::load_manifest_with_external(model, resolver, &external)
     }
 
@@ -114,18 +141,25 @@ impl ExpressionController {
         let mut expressions = BTreeMap::new();
         let mut resources = BTreeMap::new();
         let mut diagnostics = ModelLoadDiagnostics::default();
+        let mut declared_files = BTreeSet::new();
+        let mut expression_cache = BTreeMap::<String, CachedExpression>::new();
 
         for (index, reference) in references.iter().take(MAX_EXPRESSION_COUNT).enumerate() {
             if cancellation.is_cancelled() {
                 break;
             }
             let Some(expression) = load_expression(
-                reference.name(),
-                index,
-                reference.file(),
+                ExpressionDeclaration {
+                    name: reference.name(),
+                    index,
+                    reference: reference.file(),
+                    declared: true,
+                },
                 resolver,
                 budget,
                 cancellation,
+                &mut expression_cache,
+                &mut declared_files,
                 &mut diagnostics,
             ) else {
                 if cancellation.is_cancelled()
@@ -155,7 +189,9 @@ impl ExpressionController {
             );
         }
 
-        if let Some(reference) = references.get(MAX_EXPRESSION_COUNT) {
+        if !cancellation.is_cancelled()
+            && let Some(reference) = references.get(MAX_EXPRESSION_COUNT)
+        {
             diagnostics.push(
                 ModelLoadDiagnostic::expression(
                     reference.name(),
@@ -176,24 +212,17 @@ impl ExpressionController {
             .find(|name| expressions.contains_key(*name))
             .map(str::to_owned);
 
-        let declared_files = references
-            .iter()
-            .filter_map(|reference| {
-                resolver
-                    .resolve_file(reference.file(), MAX_AUXILIARY_RESOURCE_BYTES)
-                    .ok()
-            })
-            .collect::<BTreeSet<_>>();
         let remaining_capacity = MAX_EXPRESSION_COUNT.saturating_sub(references.len());
-        let external = external
-            .iter()
-            .filter(|reference| {
-                resolver
-                    .resolve_file(reference.reference(), MAX_AUXILIARY_RESOURCE_BYTES)
-                    .ok()
-                    .is_some_and(|path| !declared_files.contains(&path))
-            })
-            .collect::<Vec<_>>();
+        let mut filtered_external = Vec::new();
+        for reference in external {
+            if cancellation.is_cancelled() {
+                break;
+            }
+            if !declared_files.contains(reference.canonical_path()) {
+                filtered_external.push(reference);
+            }
+        }
+        let external = filtered_external;
         for (offset, reference) in external.iter().take(remaining_capacity).enumerate() {
             if cancellation.is_cancelled() {
                 break;
@@ -201,12 +230,17 @@ impl ExpressionController {
             let index = references.len().saturating_add(offset);
             let runtime_id = unique_external_runtime_id(reference.runtime_id(), &expressions);
             let Some(expression) = load_expression(
-                reference.name(),
-                index,
-                reference.reference(),
+                ExpressionDeclaration {
+                    name: reference.name(),
+                    index,
+                    reference: reference.reference(),
+                    declared: false,
+                },
                 resolver,
                 budget,
                 cancellation,
+                &mut expression_cache,
+                &mut declared_files,
                 &mut diagnostics,
             ) else {
                 if cancellation.is_cancelled()
@@ -325,9 +359,19 @@ impl ExpressionController {
             .and_then(|expression| expression.parameters().first())
             .map(|parameter| parameter.value())
     }
+
+    #[cfg(test)]
+    pub(in crate::model) fn parsed_expression_identities_for_test(
+        &self,
+    ) -> Vec<*const Expression3> {
+        self.expressions.values().map(Arc::as_ptr).collect()
+    }
 }
 
-fn unique_external_runtime_id(base: String, occupied: &BTreeMap<String, Expression3>) -> String {
+fn unique_external_runtime_id(
+    base: String,
+    occupied: &BTreeMap<String, Arc<Expression3>>,
+) -> String {
     if !occupied.contains_key(&base) {
         return base;
     }
@@ -341,69 +385,99 @@ fn unique_external_runtime_id(base: String, occupied: &BTreeMap<String, Expressi
 }
 
 fn load_expression(
-    name: &str,
-    index: usize,
+    declaration: ExpressionDeclaration<'_>,
+    resolver: &ModelResourceResolver,
+    budget: &mut AuxiliaryResourceBudget,
+    cancellation: &RenderCancellation,
+    cache: &mut BTreeMap<String, CachedExpression>,
+    declared_files: &mut BTreeSet<std::path::PathBuf>,
+    diagnostics: &mut ModelLoadDiagnostics,
+) -> Option<Arc<Expression3>> {
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    let cached = match cache.get(declaration.reference).cloned() {
+        Some(cached) => cached,
+        None => {
+            let cached =
+                load_cached_expression(declaration.reference, resolver, budget, cancellation)?;
+            cache.insert(declaration.reference.to_owned(), cached.clone());
+            cached
+        }
+    };
+    if declaration.declared
+        && let Some(path) = cached.canonical_path
+    {
+        declared_files.insert(path);
+    }
+    match cached.result {
+        Ok(expression) => Some(expression),
+        Err(error) => {
+            diagnostics.push(ModelLoadDiagnostic::expression(
+                declaration.name,
+                declaration.index,
+                declaration.reference,
+                error.category,
+                error.message,
+            ));
+            None
+        }
+    }
+}
+
+fn load_cached_expression(
     reference: &str,
     resolver: &ModelResourceResolver,
     budget: &mut AuxiliaryResourceBudget,
     cancellation: &RenderCancellation,
-    diagnostics: &mut ModelLoadDiagnostics,
-) -> Option<Expression3> {
-    if cancellation.is_cancelled() {
-        return None;
-    }
-    let source = match resolver.read_text_with_budget_and_checkpoint(
+) -> Option<CachedExpression> {
+    let (canonical_path, source) = match resolver.read_text_with_path_and_budget_and_checkpoint(
         reference,
         MAX_AUXILIARY_RESOURCE_BYTES,
         budget,
         || cancellation.is_cancelled(),
     ) {
-        Ok(source) => source,
+        Ok(resource) => resource,
+        Err(_) if cancellation.is_cancelled() => return None,
         Err(error) => {
-            if cancellation.is_cancelled() {
-                return None;
-            }
-            diagnostics.push(ModelLoadDiagnostic::expression(
-                name,
-                index,
-                reference,
-                error.category(),
-                error.message(),
-            ));
-            return None;
+            return Some(CachedExpression {
+                canonical_path: None,
+                result: Err(CachedExpressionError {
+                    category: error.category(),
+                    message: error.message().to_owned(),
+                }),
+            });
         }
     };
     if cancellation.is_cancelled() {
         return None;
     }
-    match Expression3::from_json_str(&source) {
-        Ok(expression)
+    let result = Expression3::from_json_str(&source)
+        .map_err(|error| CachedExpressionError {
+            category: ModelDiagnosticCategory::Parse,
+            message: format!("表情 JSON 内容无效：{error}"),
+        })
+        .and_then(|expression| {
             if expression.resolved_fade_in_time().is_finite()
                 && expression.resolved_fade_in_time() <= MAX_EXPRESSION_FADE_SECONDS
                 && expression.resolved_fade_out_time().is_finite()
-                && expression.resolved_fade_out_time() <= MAX_EXPRESSION_FADE_SECONDS =>
-        {
-            Some(expression)
-        }
-        Ok(_) => {
-            diagnostics.push(ModelLoadDiagnostic::expression(
-                name,
-                index,
-                reference,
-                ModelDiagnosticCategory::InvalidDuration,
-                format!("表情淡入淡出时长必须是有限数且不超过 {MAX_EXPRESSION_FADE_SECONDS} 秒"),
-            ));
-            None
-        }
-        Err(error) => {
-            diagnostics.push(ModelLoadDiagnostic::expression(
-                name,
-                index,
-                reference,
-                ModelDiagnosticCategory::Parse,
-                format!("表情 JSON 内容无效：{error}"),
-            ));
-            None
-        }
+                && expression.resolved_fade_out_time() <= MAX_EXPRESSION_FADE_SECONDS
+            {
+                Ok(Arc::new(expression))
+            } else {
+                Err(CachedExpressionError {
+                    category: ModelDiagnosticCategory::InvalidDuration,
+                    message: format!(
+                        "表情淡入淡出时长必须是有限数且不超过 {MAX_EXPRESSION_FADE_SECONDS} 秒"
+                    ),
+                })
+            }
+        });
+    if cancellation.is_cancelled() {
+        return None;
     }
+    Some(CachedExpression {
+        canonical_path: Some(canonical_path),
+        result,
+    })
 }

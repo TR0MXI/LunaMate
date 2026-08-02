@@ -200,6 +200,10 @@ fn core_settings_text_exists_in_every_supported_language() {
             "debug.use_native_tray_menu"
         );
         assert_ne!(
+            rust_i18n::t!("status.logging_file_policy_saved_restart", locale = locale),
+            "status.logging_file_policy_saved_restart"
+        );
+        assert_ne!(
             rust_i18n::t!("system.eye_tracking", locale = locale),
             "system.eye_tracking"
         );

@@ -181,7 +181,7 @@ impl VoiceController {
             completion.0,
         )?;
         log::info!(
-            "语音控制端已创建：revision=1, mode={initial_mode}, transcription_configured={transcription_configured}, vad_embedded=true, gpu_requested={gpu_requested}"
+            "event=voice_controller_started revision=1 mode={initial_mode} transcription_configured={transcription_configured} vad_embedded=true gpu_requested={gpu_requested}"
         );
         Ok((
             Self {
@@ -281,7 +281,7 @@ impl VoiceShutdown {
             Ok(()) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 log::warn!(
-                    "等待语音工作线程退出超时：timeout_ms={}",
+                    "event=voice_shutdown_timeout timeout_ms={}",
                     timeout.as_millis()
                 );
                 return false;
@@ -292,9 +292,9 @@ impl VoiceShutdown {
                     .take()
                     .is_some_and(|worker| worker.join().is_err())
                 {
-                    log::error!("语音工作线程在退出时发生 panic");
+                    log::error!("event=voice_worker_exit_failed reason=panic");
                 } else {
-                    log::error!("语音工作线程未报告完成便关闭了完成通道");
+                    log::error!("event=voice_worker_exit_failed reason=completion_channel_closed");
                 }
                 return false;
             }
@@ -302,10 +302,10 @@ impl VoiceShutdown {
         if let Some(worker) = self.worker.take()
             && worker.join().is_err()
         {
-            log::error!("语音工作线程在退出时发生 panic");
+            log::error!("event=voice_worker_exit_failed reason=panic");
             return false;
         }
-        log::info!("语音服务已停止");
+        log::info!("event=voice_service_stopped");
         true
     }
 }

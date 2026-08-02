@@ -273,14 +273,14 @@ fn create_system_tray(
     match SystemTray::install(runtime, CONFIG.use_native_tray_menu()) {
         Ok((tray, actions)) => {
             log::info!(
-                "系统托盘控制端已创建：native_menu={}, style_choice_supported={}",
+                "event=tray_controller_created native_menu={} style_choice_supported={}",
                 tray.uses_native_menu(),
                 SystemTray::supports_menu_style_choice()
             );
             Some((Rc::new(tray), actions))
         }
-        Err(error) => {
-            log::warn!("{}", t!("log.tray_init_failed", error = error));
+        Err(_) => {
+            log::warn!("event=tray_init_failed stage=controller");
             None
         }
     }
@@ -302,21 +302,23 @@ fn listen_for_system_tray_actions(
                     }) {
                         Ok(Ok(visible)) => {
                             log::info!(
-                                "托盘操作已完成：action=toggle_desktop_pet, visible={}",
+                                "event=tray_action_completed action=toggle_desktop_pet visible={}",
                                 visible
                             );
                         }
-                        Ok(Err(error)) => {
+                        Ok(Err(_)) => {
                             let _ = model_for_tray.update(cx, |model, _| {
                                 model.sync_desktop_pet_visibility_to_tray();
                             });
-                            log::warn!("{}", t!("log.tray_visibility_failed", error = error));
+                            log::warn!(
+                                "event=tray_action_failed action=toggle_desktop_pet stage=visibility"
+                            );
                         }
                         Err(_) => break,
                     }
                 }
                 SystemTrayAction::OpenSettings => {
-                    log::info!("收到托盘操作：action=open_settings");
+                    log::info!("event=tray_action_received action=open_settings");
                     if model_for_tray
                         .update(cx, |model, cx| model.open_config_window(cx))
                         .is_err()
@@ -325,7 +327,7 @@ fn listen_for_system_tray_actions(
                     }
                 }
                 SystemTrayAction::OpenMenu(anchor) => {
-                    log::debug!("收到托盘操作：action=open_menu");
+                    log::debug!("event=tray_action_received action=open_menu");
                     if model_for_tray
                         .update(cx, |model, cx| model.toggle_tray_menu(anchor, cx))
                         .is_err()
@@ -334,7 +336,7 @@ fn listen_for_system_tray_actions(
                     }
                 }
                 SystemTrayAction::Quit => {
-                    log::info!("收到托盘操作：action=quit");
+                    log::info!("event=tray_action_received action=quit");
                     cx.update(|cx| cx.quit());
                     break;
                 }
@@ -364,15 +366,12 @@ pub(super) fn run() {
         .build()
     {
         Ok(runtime) => runtime,
-        Err(error) => {
-            log::error!(
-                "{}",
-                t!("log.async_runtime_init_failed", error = error.to_string())
-            );
+        Err(_) => {
+            log::error!("event=async_runtime_init_failed");
             return;
         }
     };
-    log::info!("异步运行时已就绪：worker_threads={ASYNC_WORKER_THREADS}");
+    log::info!("event=async_runtime_ready worker_threads={ASYNC_WORKER_THREADS}");
     let database = async_runtime.block_on(Database::open_default());
     let persistence = agent_persistence_callbacks(database);
     let snapshot = CONFIG.agent_config_snapshot();
@@ -398,12 +397,8 @@ pub(super) fn run() {
         Ok(persistence) => (AgentMemory::new(Some(persistence)), None),
         Err(error) => {
             log::error!(
-                "{}",
-                t!(
-                    "log.database_init_failed",
-                    locale = snapshot.language().id(),
-                    error = error.diagnostic_kind()
-                )
+                "event=database_init_failed error_kind={}",
+                error.diagnostic_kind()
             );
             (
                 AgentMemory::unavailable(),
@@ -441,8 +436,8 @@ pub(super) fn run() {
                 .runtime(CONFIG.llm_settings().as_ref()),
         )) {
             Ok((controller, shutdown)) => (Some(controller), Some(shutdown)),
-            Err(error) => {
-                log::error!("无法启动语音服务：{error}");
+            Err(_) => {
+                log::error!("event=voice_service_start_failed");
                 (None, None)
             }
         };
@@ -452,8 +447,8 @@ pub(super) fn run() {
         Option<SpeechPlaybackShutdown>,
     ) = match SpeechPlayback::start() {
         Ok((playback, shutdown)) => (Some(playback), Some(shutdown)),
-        Err(error) => {
-            log::warn!("TTS 播放服务不可用：{error}");
+        Err(_) => {
+            log::warn!("event=speech_playback_unavailable stage=start");
             (None, None)
         }
     };
@@ -501,8 +496,8 @@ pub(super) fn run() {
                     ..Default::default()
                 },
                 move |window, cx| {
-                    if let Err(error) = configure_desktop_pet_window(window) {
-                        log::warn!("{}", t!("log.pet_window_config_failed", error = error));
+                    if configure_desktop_pet_window(window).is_err() {
+                        log::warn!("event=desktop_pet_window_config_failed");
                     }
                     let raster_dimensions = raster_dimensions_for_window(
                         window_width,
@@ -522,7 +517,7 @@ pub(super) fn run() {
                     let final_agent_save_for_quit = final_agent_save.clone();
                     let async_handle_for_quit = async_handle.clone();
                     cx.on_app_quit(move |cx| {
-                        log::info!("应用开始退出，正在提交配置与会话状态");
+                        log::info!("event=app_shutdown_started");
                         let config_tasks = config_for_quit
                             .update(cx, |config, cx| config.take_pending_write_tasks(cx))
                             .unwrap_or_default();
@@ -547,11 +542,8 @@ pub(super) fn run() {
                             let window_result = persistence_task
                                 .await
                                 .unwrap_or_else(|error| Err(error.to_string()));
-                            if let Err(error) = window_result {
-                                log::error!(
-                                    "{}",
-                                    t!("log.exit_position_save_failed", error = error)
-                                );
+                            if window_result.is_err() {
+                                log::error!("event=window_position_save_failed phase=shutdown");
                             }
                         }
                     })
@@ -606,9 +598,9 @@ pub(super) fn run() {
                 },
             );
             match result {
-                Ok(_) => log::info!("桌宠主窗口已创建"),
-                Err(error) => {
-                    log::error!("{}", t!("log.main_window_create_failed", error = error));
+                Ok(_) => log::info!("event=desktop_pet_window_created"),
+                Err(_) => {
+                    log::error!("event=desktop_pet_window_create_failed");
                     cx.quit();
                 }
             }
@@ -634,15 +626,15 @@ pub(super) fn run() {
                 }
             }
         });
-        if let Err(error) = result {
-            log::error!("{}", t!("log.exit_chat_save_failed", error = error));
+        if result.is_err() {
+            log::error!("event=chat_session_save_failed phase=shutdown");
         } else {
-            log::debug!("应用退出前的最终会话保存已完成");
+            log::debug!("event=chat_session_saved phase=shutdown");
         }
     }
     if voice_shutdown_completed && playback_shutdown_completed {
-        log::info!("应用运行时资源已完成回收");
+        log::info!("event=runtime_resources_released");
     } else {
-        log::warn!("应用收尾结束，但语音工作线程或播放线程未确认退出");
+        log::warn!("event=runtime_resource_shutdown_incomplete subsystem=audio");
     }
 }

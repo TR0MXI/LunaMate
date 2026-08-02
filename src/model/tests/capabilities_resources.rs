@@ -1,9 +1,10 @@
-use std::{fs, path::PathBuf};
+use std::{fs, io::Read as _, path::PathBuf};
 
 use crate::model::capabilities::{
     AuxiliaryResourceBudget, ExternalExpressionReference, MAX_AUXILIARY_RESOURCE_BYTES,
     ModelDiagnosticCategory, ModelResourceResolver,
 };
+use crate::model::catalog::ModelCatalog;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -333,7 +334,7 @@ fn discovery_returns_an_empty_list_when_the_model_directory_disappears() {
             .try_discover_external_expressions()
             .expect_err("目录消失后应当保留诊断")
             .category(),
-        ModelDiagnosticCategory::Missing
+        ModelDiagnosticCategory::InvalidReference
     );
 }
 
@@ -360,6 +361,118 @@ fn rejects_symbolic_link_to_file_outside_model_directory() {
 
 #[cfg(unix)]
 #[test]
+fn optional_resource_replaced_by_external_symlink_before_open_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let directory = TestDirectory::new();
+    let model_dir = directory.path().join("runtime");
+    fs::create_dir(&model_dir).expect("测试模型目录应当可以创建");
+    let resource = model_dir.join("idle.exp3.json");
+    let outside = directory.path().join("outside.exp3.json");
+    fs::write(&resource, "{\"inside\":true}").expect("模型内可选资源应当可以创建");
+    fs::write(&outside, "{\"outside\":true}").expect("目录外替代资源应当可以创建");
+    let canonical_resource = fs::canonicalize(&resource).expect("可选资源规范路径应当可以取得");
+    let resolver = ModelResourceResolver::for_manifest(&model_dir.join("model.model3.json"))
+        .expect("测试模型目录应当可以解析");
+    let mut hook_called = false;
+
+    let error = resolver
+        .read_text_with_open_hook_for_test(
+            "idle.exp3.json",
+            MAX_AUXILIARY_RESOURCE_BYTES,
+            |canonical_path| {
+                assert_eq!(canonical_path, canonical_resource);
+                fs::remove_file(canonical_path).expect("已校验可选资源应当可以移除");
+                symlink(&outside, canonical_path).expect("目录外替代符号链接应当可以创建");
+                hook_called = true;
+            },
+        )
+        .expect_err("父目录句柄锚定后、final 打开前换入的符号链接必须被拒绝");
+
+    assert!(hook_called, "测试替换必须发生在最终打开之前");
+    assert_eq!(error.category(), ModelDiagnosticCategory::InvalidReference);
+    assert!(error.message().contains("打开期间发生变化"));
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_symbolic_link_in_an_intermediate_directory_component() {
+    use std::os::unix::fs::symlink;
+
+    let directory = TestDirectory::new();
+    let model_dir = directory.path().join("runtime");
+    let outside = directory.path().join("outside-motions");
+    fs::create_dir(&model_dir).expect("测试模型目录应当可以创建");
+    fs::create_dir(&outside).expect("模型外动作目录应当可以创建");
+    fs::write(outside.join("idle.motion3.json"), "{}").expect("模型外动作应当可以创建");
+    symlink(&outside, model_dir.join("motions")).expect("测试目录符号链接应当可以创建");
+    let resolver = ModelResourceResolver::for_manifest(&model_dir.join("model.model3.json"))
+        .expect("测试模型目录应当可以解析");
+
+    let error = resolver
+        .read_text("motions/idle.motion3.json", MAX_AUXILIARY_RESOURCE_BYTES)
+        .expect_err("中间目录符号链接必须被逐分量 NOFOLLOW 拒绝");
+
+    assert_eq!(error.category(), ModelDiagnosticCategory::InvalidReference);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn rejects_reparse_point_in_an_intermediate_directory_component() {
+    let directory = TestDirectory::new();
+    let model_dir = directory.path().join("runtime");
+    let outside = directory.path().join("outside-motions");
+    let junction = model_dir.join("motions");
+    fs::create_dir(&model_dir).expect("测试模型目录应当可以创建");
+    fs::create_dir(&outside).expect("模型外动作目录应当可以创建");
+    fs::write(outside.join("idle.motion3.json"), "{}").expect("模型外动作应当可以创建");
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&outside)
+        .status()
+        .expect("Windows 测试环境应当可以启动 cmd");
+    assert!(status.success(), "测试目录 junction 应当可以创建");
+    let resolver = ModelResourceResolver::for_manifest(&model_dir.join("model.model3.json"))
+        .expect("测试模型目录应当可以解析");
+
+    let error = resolver
+        .read_text("motions/idle.motion3.json", MAX_AUXILIARY_RESOURCE_BYTES)
+        .expect_err("中间目录重解析点必须被逐分量句柄校验拒绝");
+
+    assert_eq!(error.category(), ModelDiagnosticCategory::InvalidReference);
+    fs::remove_dir(&junction).expect("测试 junction 应当可以移除");
+}
+
+#[cfg(unix)]
+#[test]
+fn optional_resource_replaced_by_fifo_before_open_is_rejected_without_blocking() {
+    let directory = TestDirectory::new();
+    let resource = directory.path().join("idle.exp3.json");
+    fs::write(&resource, "{}").expect("模型内可选资源应当可以创建");
+    let resolver = ModelResourceResolver::for_manifest(&directory.path().join("model.model3.json"))
+        .expect("测试模型目录应当可以解析");
+
+    let error = resolver
+        .read_text_with_open_hook_for_test(
+            "idle.exp3.json",
+            MAX_AUXILIARY_RESOURCE_BYTES,
+            |canonical_path| {
+                fs::remove_file(canonical_path).expect("已校验可选资源应当可以移除");
+                let status = std::process::Command::new("mkfifo")
+                    .arg(canonical_path)
+                    .status()
+                    .expect("测试环境应当提供 mkfifo");
+                assert!(status.success(), "测试 FIFO 应当可以创建");
+            },
+        )
+        .expect_err("final 打开前替换的 FIFO 必须无阻塞地被拒绝");
+
+    assert_eq!(error.category(), ModelDiagnosticCategory::NotFile);
+}
+
+#[cfg(unix)]
+#[test]
 fn discovery_skips_dedicated_directory_symlinks_outside_model_root() {
     use std::os::unix::fs::symlink;
 
@@ -374,4 +487,84 @@ fn discovery_skips_dedicated_directory_symlinks_outside_model_root() {
         .expect("测试模型目录应当可以解析");
 
     assert!(resolver.discover_external_motions().is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn scanned_manifest_root_swap_and_restore_cannot_return_malicious_handle() {
+    let directory = TestDirectory::new();
+    let models_root = directory.path().join("models");
+    let family = models_root.join("luna");
+    let malicious_root = directory.path().join("malicious-models");
+    let malicious_family = malicious_root.join("luna");
+    let saved_root = directory.path().join("models-original");
+    fs::create_dir_all(&family).expect("扫描内模型目录应当可以创建");
+    fs::create_dir_all(&malicious_family).expect("恶意替代模型目录应当可以创建");
+    fs::write(family.join("luna.model3.json"), "{\"trusted\":true}")
+        .expect("扫描内清单应当可以创建");
+    fs::write(
+        malicious_family.join("luna.model3.json"),
+        "{\"malicious\":true}",
+    )
+    .expect("恶意替代清单应当可以创建");
+    let catalog = ModelCatalog::load(models_root.clone(), None).expect("模型目录应当可以扫描");
+    let manifest = catalog
+        .model_path(std::path::Path::new("luna/luna.model3.json"))
+        .expect("扫描结果应当携带清单根快照");
+
+    let mut swapped = false;
+    let mut restored = false;
+    let (_, mut opened_manifest) = ModelResourceResolver::open_manifest_with_open_hooks_for_test(
+        &manifest,
+        MAX_AUXILIARY_RESOURCE_BYTES,
+        &mut |path| {
+            assert_eq!(path, manifest.path());
+            fs::rename(&models_root, &saved_root).expect("原扫描根目录应当可以移走");
+            fs::rename(&malicious_root, &models_root).expect("恶意普通目录应当可以换入");
+            swapped = true;
+        },
+        &mut |path| {
+            let malicious_source =
+                fs::read_to_string(path).expect("换入后的路径必须能打开恶意普通 manifest");
+            assert_eq!(malicious_source, "{\"malicious\":true}");
+            fs::rename(&models_root, &malicious_root).expect("恶意普通目录应当可以移回");
+            fs::rename(&saved_root, &models_root).expect("原扫描根目录应当可以恢复");
+            restored = true;
+        },
+    )
+    .expect("路径替换不能改变已打开的 root 与父目录句柄锚点");
+    let mut source = String::new();
+    opened_manifest
+        .read_to_string(&mut source)
+        .expect("锚定的清单句柄应当可以读取");
+
+    assert!(swapped, "恶意 root 必须在 final 打开前换入");
+    assert!(restored, "原 root 必须在 final 打开后恢复");
+    assert_eq!(source, "{\"trusted\":true}");
+}
+
+#[cfg(any(unix, target_os = "windows"))]
+#[test]
+fn scanned_manifest_rejects_models_root_replacement() {
+    let directory = TestDirectory::new();
+    let models_root = directory.path().join("models");
+    let family = models_root.join("luna");
+    let outside = directory.path().join("outside-root");
+    let original = directory.path().join("models-original");
+    fs::create_dir_all(&family).expect("扫描内模型目录应当可以创建");
+    fs::create_dir_all(outside.join("luna")).expect("扫描外模型目录应当可以创建");
+    fs::write(family.join("luna.model3.json"), "{}").expect("扫描内清单应当可以创建");
+    fs::write(outside.join("luna/luna.model3.json"), "{}").expect("扫描外清单应当可以创建");
+    let catalog = ModelCatalog::load(models_root.clone(), None).expect("模型目录应当可以扫描");
+    let manifest = catalog
+        .model_path(std::path::Path::new("luna/luna.model3.json"))
+        .expect("扫描结果应当携带清单根快照");
+
+    fs::rename(&models_root, &original).expect("扫描根目录应当可以移走");
+    fs::rename(&outside, &models_root).expect("普通替代根目录应当可以换入");
+
+    let error = ModelResourceResolver::open_manifest(&manifest, MAX_AUXILIARY_RESOURCE_BYTES)
+        .expect_err("扫描后替换的模型根目录必须被拒绝");
+    assert_eq!(error.category(), ModelDiagnosticCategory::InvalidReference);
+    assert!(error.message().contains("目录扫描后发生变化"));
 }

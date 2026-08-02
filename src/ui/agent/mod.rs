@@ -1,12 +1,14 @@
 //! 渲染桌宠窗口内的单行输入栏与回复浮层，并桥接纯逻辑 Agent。
 
+mod configuration;
 mod render;
 mod reply;
 mod screenshot;
+mod voice;
 
 use std::sync::Arc;
 
-use futures::future::{AbortHandle, Abortable};
+use futures::future::AbortHandle;
 use gpui::{
     AppContext, Context, Entity, EventEmitter, Image, ImageFormat, PathPromptOptions, ScrollHandle,
     Subscription, Task, Window,
@@ -14,14 +16,10 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 use gpui_tokio::Tokio;
 use lunamate_agent::{
-    Agent, AgentEffect, AgentError, AgentInput, AgentSnapshot, Client, chat_limits,
-    client_from_model,
-    config::{AgentConfigSnapshot, AppLanguage},
+    Agent, AgentEffect, AgentError, AgentInput, AgentSnapshot,
+    config::AppLanguage,
     media::ImageAttachment,
-    model_and_options_from_config,
-    stt::{TranscriptionInput, transcribe},
     tools::{AgentOutfitRequest, OutfitOption},
-    tts::synthesize,
 };
 use rust_i18n::t;
 
@@ -60,6 +58,7 @@ pub struct AgentView {
     agent: Arc<Agent>,
     snapshot: AgentSnapshot,
     agent_config_generation: u64,
+    agent_config_pending_generation: Option<u64>,
     refresh_revision: u64,
     refresh_task: Option<Task<()>>,
     available_outfits: Vec<OutfitOption>,
@@ -155,6 +154,7 @@ impl AgentView {
             agent,
             snapshot,
             agent_config_generation: generation,
+            agent_config_pending_generation: None,
             refresh_revision: 0,
             refresh_task: None,
             available_outfits: Vec::new(),
@@ -243,79 +243,6 @@ impl AgentView {
         self.snapshot.active_persona()
     }
 
-    /// 把宿主配置快照解析为直接 Agent 组件；核心本身不依赖该快照类型。
-    pub fn refresh_settings(&mut self, snapshot: AgentConfigSnapshot, cx: &mut Context<Self>) {
-        if snapshot.generation() <= self.agent_config_generation {
-            return;
-        }
-        self.agent.cancel_pending_voice();
-        self.cancel_speech();
-        self.agent_config_generation = snapshot.generation();
-        self.refresh_revision = self.refresh_revision.wrapping_add(1).max(1);
-        let revision = self.refresh_revision;
-        self.refresh_task = None;
-
-        let Some(persona) = snapshot.personas().active().cloned() else {
-            return;
-        };
-        let model = persona
-            .model
-            .as_deref()
-            .and_then(|id| snapshot.settings().model(id))
-            .or_else(|| snapshot.settings().selected())
-            .cloned();
-        let limits = chat_limits(&persona, snapshot.settings());
-        let language = snapshot.language();
-        let system_prompt = persona.system_prompt;
-        let persona_id = persona.id;
-        let agent = self.agent.clone();
-        let memory = agent.memory();
-        let build = Tokio::spawn(cx, async move {
-            let client_model = model.clone();
-            let client = tokio::task::spawn_blocking(move || {
-                client_model
-                    .as_ref()
-                    .map_or_else(Client::default, client_from_model)
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-            let (model_iden, options) = model
-                .as_ref()
-                .and_then(model_and_options_from_config)
-                .map_or((None, None), |(model, options)| (Some(model), options));
-            agent
-                .apply_configuration(
-                    snapshot.generation(),
-                    client,
-                    model_iden,
-                    options,
-                    system_prompt,
-                    memory,
-                    persona_id,
-                    limits,
-                    language,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok::<(), String>(())
-        });
-        self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            let result = build.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.refresh_revision != revision {
-                    return;
-                }
-                this.refresh_task = None;
-                if let Err(error) = result.unwrap_or_else(|error| Err(error.to_string())) {
-                    this.agent.set_status(Some(
-                        t!("chat.persistence_unavailable", error = error).to_string(),
-                    ));
-                }
-                cx.notify();
-            });
-        }));
-    }
-
     pub fn set_input_visible(
         &mut self,
         visible: bool,
@@ -353,55 +280,6 @@ impl AgentView {
         )
     }
 
-    pub fn voice_speech_started(
-        &mut self,
-        utterance_id: u64,
-        language: AppLanguage,
-        cx: &mut Context<Self>,
-    ) {
-        self.cancel_remote_transcription();
-        self.cancel_speech();
-        cx.emit(AgentViewEvent::StopSpeech);
-        let snapshot = CONFIG.agent_config_snapshot();
-        if snapshot.generation() != self.agent_config_generation {
-            self.refresh_settings(snapshot, cx);
-            return;
-        }
-        self.agent.voice_started(utterance_id, language);
-        self.sync_agent_snapshot(cx);
-        cx.notify();
-    }
-
-    /// 在按键边沿立即停止本地语音，语义层打断仍等待真实语音确认。
-    pub fn voice_input_pressed(&mut self, cx: &mut Context<Self>) {
-        self.cancel_speech();
-        cx.emit(AgentViewEvent::StopSpeech);
-    }
-
-    pub fn send_voice_transcript(
-        &mut self,
-        utterance_id: u64,
-        text: String,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let Some(language) = self.agent.take_voice_transcript(utterance_id) else {
-            return false;
-        };
-        self.send_message(text, None, language, Some(ThinkingFeedback::Voice), cx)
-    }
-
-    pub fn voice_utterance_cancelled(&mut self, utterance_id: u64) {
-        self.cancel_remote_transcription_for(utterance_id);
-        self.cancel_speech();
-        self.agent.cancel_voice(utterance_id);
-    }
-
-    pub fn cancel_pending_voice(&mut self) {
-        self.cancel_remote_transcription();
-        self.cancel_speech();
-        self.agent.cancel_pending_voice();
-    }
-
     /// 隐藏桌宠时挂起 Agent，并丢弃触发中的整轮对话。
     pub fn suspend_for_hidden(&mut self, cx: &mut Context<Self>) {
         if self.suspended {
@@ -422,92 +300,6 @@ impl AgentView {
         }
         self.suspended = false;
         self.agent.resume_after_hidden();
-    }
-
-    pub fn transcribe_voice(
-        &mut self,
-        revision: u64,
-        utterance_id: u64,
-        model_id: String,
-        samples: Vec<i16>,
-        voice: VoiceController,
-        cx: &mut Context<Self>,
-    ) {
-        self.cancel_remote_transcription();
-        self.cancel_speech();
-        cx.emit(AgentViewEvent::StopSpeech);
-        let language = self.snapshot.language();
-        let Some(model) = CONFIG.llm_settings().model(&model_id).cloned() else {
-            voice.complete_remote_transcription(
-                revision,
-                utterance_id,
-                Err(t!("voice.model_missing", locale = language.id()).to_string()),
-            );
-            return;
-        };
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        let task = Tokio::spawn(
-            cx,
-            Abortable::new(
-                async move {
-                    let input = TranscriptionInput::new(samples)
-                        .map_err(|error| error.localized_message(language))?;
-                    transcribe(&model, input, language)
-                        .await
-                        .map_err(|error| error.localized_message(language))
-                },
-                abort_registration,
-            ),
-        );
-        let request = RemoteTranscriptionRequest {
-            revision,
-            utterance_id,
-            voice: voice.clone(),
-        };
-        self.voice_transcription_abort = Some(abort_handle);
-        self.voice_transcription_request = Some(request.clone());
-        self.voice_transcription_task = Some(cx.spawn(async move |this, cx| {
-            let result = match task.await {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) | Err(_) => {
-                    Err(t!("voice.transcription_cancelled", locale = language.id()).to_string())
-                }
-            };
-            let current = this
-                .update(cx, |this, _| {
-                    this.voice_transcription_request
-                        .as_ref()
-                        .is_some_and(|request| {
-                            request.revision == revision && request.utterance_id == utterance_id
-                        })
-                })
-                .unwrap_or(false);
-            if current {
-                voice.complete_remote_transcription(revision, utterance_id, result);
-            }
-            let _ = this.update(cx, |this, _| {
-                if this
-                    .voice_transcription_request
-                    .as_ref()
-                    .is_some_and(|request| {
-                        request.revision == revision && request.utterance_id == utterance_id
-                    })
-                {
-                    this.voice_transcription_request = None;
-                    this.voice_transcription_abort = None;
-                    this.voice_transcription_task = None;
-                }
-            });
-        }));
-    }
-
-    pub fn voice_failed(&mut self, message: String, cx: &mut Context<Self>) {
-        self.cancel_remote_transcription();
-        self.cancel_speech();
-        cx.emit(AgentViewEvent::StopSpeech);
-        self.agent.cancel_pending_voice();
-        self.agent.set_status(Some(message));
-        self.sync_agent_snapshot(cx);
     }
 
     fn submit_from_input(
@@ -599,111 +391,6 @@ impl AgentView {
             self.sync_agent_snapshot(cx);
             self.schedule_reply_fade(cx);
         }
-    }
-
-    pub(in crate::ui) fn stop_voice_interaction(&mut self, cx: &mut Context<Self>) {
-        self.thinking_feedback_revision = self.thinking_feedback_revision.wrapping_add(1).max(1);
-        self.thinking_feedback = None;
-        self.cancel_remote_transcription();
-        self.agent.cancel_pending_voice();
-        cx.emit(AgentViewEvent::StopSpeech);
-        self.stop(cx);
-        cx.notify();
-    }
-
-    fn cancel_remote_transcription(&mut self) {
-        if let Some(request) = self.voice_transcription_request.take() {
-            request
-                .voice
-                .cancel_remote_transcription(request.revision, request.utterance_id);
-        }
-        if let Some(abort) = self.voice_transcription_abort.take() {
-            abort.abort();
-        }
-        self.voice_transcription_task = None;
-    }
-
-    fn cancel_remote_transcription_for(&mut self, utterance_id: u64) {
-        if self
-            .voice_transcription_request
-            .as_ref()
-            .is_some_and(|request| request.utterance_id == utterance_id)
-        {
-            self.cancel_remote_transcription();
-        }
-    }
-
-    fn start_speech(&mut self, snapshot: AgentSnapshot, cx: &mut Context<Self>) {
-        self.cancel_speech();
-        let revision = self.speech_revision;
-        let personas = CONFIG.persona_settings();
-        let Some(persona) = personas.active() else {
-            return;
-        };
-        if persona.id != snapshot.active_persona() {
-            return;
-        }
-        let Some(model_id) = persona.tts_model.as_deref() else {
-            return;
-        };
-        let Some(message) = snapshot.messages().iter().find(|message| {
-            Some(message.id()) == snapshot.reply_message_id()
-                && message.role() == lunamate_agent::ChatRole::Assistant
-        }) else {
-            return;
-        };
-        if !matches!(message.state(), lunamate_agent::ChatMessageState::Complete) {
-            return;
-        }
-        let Some(model) = CONFIG.llm_settings().model(model_id).cloned() else {
-            return;
-        };
-        let text = message.visible_content().to_owned();
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        let task = Tokio::spawn(
-            cx,
-            Abortable::new(
-                async move { synthesize(&model, &text).await },
-                abort_registration,
-            ),
-        );
-        self.speech_abort = Some(abort_handle);
-        self.speech_task = Some(cx.spawn(async move |this, cx| {
-            match task.await {
-                Ok(Ok(Ok(audio))) => {
-                    let _ = this.update(cx, |this, cx| {
-                        if this.suspended || this.speech_revision != revision {
-                            return;
-                        }
-                        let sample_rate = audio.sample_rate();
-                        cx.emit(AgentViewEvent::SpeechAudio {
-                            samples: audio.into_samples(),
-                            sample_rate,
-                        });
-                    });
-                }
-                Ok(Ok(Err(error))) => log::warn!("助手回复语音合成失败：{error}"),
-                Ok(Err(_)) => {}
-                Err(error) if !error.is_cancelled() => {
-                    log::warn!("助手回复语音合成任务异常结束：{error}");
-                }
-                Err(_) => {}
-            }
-            let _ = this.update(cx, |this, _| {
-                if this.speech_revision == revision {
-                    this.speech_abort = None;
-                    this.speech_task = None;
-                }
-            });
-        }));
-    }
-
-    fn cancel_speech(&mut self) {
-        self.speech_revision = self.speech_revision.wrapping_add(1).max(1);
-        if let Some(abort) = self.speech_abort.take() {
-            abort.abort();
-        }
-        self.speech_task = None;
     }
 
     fn choose_image(&mut self, cx: &mut Context<Self>) {

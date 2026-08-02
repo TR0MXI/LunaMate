@@ -168,6 +168,24 @@ _version = 2
 "en" = "Setting applied, but could not be saved: %{error}"
 "ja" = "設定は適用されましたが、保存できませんでした: %{error}"
 
+[status.logging_file_policy_saved_restart]
+"zh-CN" = "日志设置已保存，重启后应用文件策略"
+"zh-TW" = "日誌設定已儲存，重新啟動後套用檔案策略"
+"en" = "Logging settings saved; restart to apply the file policy"
+"ja" = "ログ設定を保存しました。ファイルポリシーは再起動後に適用されます"
+
+[status.logging_save_failed]
+"zh-CN" = "无法保存日志设置：%{error}"
+"zh-TW" = "無法儲存日誌設定：%{error}"
+"en" = "Could not save logging settings: %{error}"
+"ja" = "ログ設定を保存できませんでした: %{error}"
+
+[status.logging_level_apply_failed]
+"zh-CN" = "日志设置已保存，但无法立即应用日志等级：%{error}"
+"zh-TW" = "日誌設定已儲存，但無法立即套用日誌等級：%{error}"
+"en" = "Logging settings were saved, but the log level could not be applied now: %{error}"
+"ja" = "ログ設定は保存されましたが、ログレベルをすぐに適用できませんでした: %{error}"
+
 [status.positions_clearing]
 "zh-CN" = "正在清除窗口位置"
 "zh-TW" = "正在清除視窗位置"

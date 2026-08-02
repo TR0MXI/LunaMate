@@ -89,7 +89,7 @@ proc-macro-error2 = { git = "https://github.com/fgardt/proc-macro-error-2", rev 
 [target.'cfg(target_os = "windows")'.dependencies]
 # 通用产物固定包含 Vulkan。
 whisper-rs = { version = "0.16.0", features = ["log_backend", "vulkan"] }
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26.0"
@@ -114,11 +114,13 @@ tray-icon = { version = "0.24.1", default-features = false }
 # 只启用静态截图 API；不启用全格式 image 或 Windows Graphics Capture feature。
 xcap.workspace = true
 
+[target."cfg(unix)".dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["fs"] }
+
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
 strip = "symbols"
 
 [profile.profiling]

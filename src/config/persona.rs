@@ -3,8 +3,8 @@
 use std::{collections::HashSet, path::Path};
 
 use lunamate_agent::config::{
-    AppLanguage, DEFAULT_PERSONA_ID, PersonaConfig, PersonaContextLimits, PersonaSettings,
-    normalize_persona_id,
+    AppLanguage, DEFAULT_PERSONA_ID, LlmSettings, ModelKind, PersonaConfig, PersonaContextLimits,
+    PersonaSettings, normalize_persona_id,
 };
 use rust_i18n::t;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value};
@@ -170,6 +170,58 @@ pub(super) fn parse_persona_settings(
         keep
     });
     settings
+}
+
+/// 清除解析后无法解析为对应模型能力的人格绑定，避免把宽松读取结果交给严格快照。
+pub(super) fn clear_invalid_model_bindings(
+    llm: &LlmSettings,
+    settings: &mut PersonaSettings,
+    warnings: &mut Vec<String>,
+    language: AppLanguage,
+) {
+    for persona in &mut settings.personas {
+        let chat_binding_valid = persona
+            .model
+            .as_deref()
+            .map(|id| {
+                llm.model(id)
+                    .is_some_and(|model| model.kind == ModelKind::ChatCompletions)
+            })
+            .unwrap_or(true);
+        if !chat_binding_valid {
+            warnings.push(
+                t!(
+                    "persona.error.model_binding_cleared",
+                    locale = language.id(),
+                    persona = &persona.id,
+                    field = "persona.model"
+                )
+                .to_string(),
+            );
+            persona.model = None;
+        }
+
+        let tts_binding_valid = persona
+            .tts_model
+            .as_deref()
+            .map(|id| {
+                llm.model(id)
+                    .is_some_and(|model| model.kind == ModelKind::SpeechSynthesis)
+            })
+            .unwrap_or(true);
+        if !tts_binding_valid {
+            warnings.push(
+                t!(
+                    "persona.error.model_binding_cleared",
+                    locale = language.id(),
+                    persona = &persona.id,
+                    field = "persona.tts_model"
+                )
+                .to_string(),
+            );
+            persona.tts_model = None;
+        }
+    }
 }
 
 fn parse_pending_deletions(

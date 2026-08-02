@@ -2,7 +2,10 @@
 //!
 //! 上层只通过本模块暴露的控制器驱动动作，不直接依赖 Mocari 的播放器细节。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use mocari::{
     ModelRuntime,
@@ -54,6 +57,18 @@ struct MotionGroup {
     idle: bool,
     motions: Vec<MotionPlayer>,
     next_index: usize,
+}
+
+#[derive(Clone)]
+struct CachedMotion {
+    canonical_path: Option<std::path::PathBuf>,
+    result: Result<Arc<Motion3>, CachedMotionError>,
+}
+
+#[derive(Clone)]
+struct CachedMotionError {
+    category: ModelDiagnosticCategory,
+    message: String,
 }
 
 /// 保存模型声明的动作，并负责当前动作的播放与应用。
@@ -127,35 +142,12 @@ impl AnimationController {
                 next_index: 0,
             })
             .collect::<Vec<_>>();
-        let declared_files = references
-            .values()
-            .flatten()
-            .filter_map(|reference| {
-                resolver
-                    .resolve_file(reference.file(), MAX_AUXILIARY_RESOURCE_BYTES)
-                    .ok()
-            })
-            .collect::<BTreeSet<_>>();
         let declared_count = references
             .values()
             .fold(0_usize, |count, group| count.saturating_add(group.len()));
-        let external = if cancellation.is_cancelled() || declared_count >= MAX_MOTION_COUNT {
-            Vec::new()
-        } else {
-            resolver
-                .discover_external_motions()
-                .into_iter()
-                .filter(|reference| {
-                    resolver
-                        .resolve_file(reference.reference(), MAX_AUXILIARY_RESOURCE_BYTES)
-                        .ok()
-                        .is_some_and(|path| !declared_files.contains(&path))
-                })
-                .collect::<Vec<_>>()
-        };
-        let total_count = declared_count.saturating_add(external.len());
-        let omitted_count = total_count.saturating_sub(MAX_MOTION_COUNT);
         let mut diagnostics = ModelLoadDiagnostics::default();
+        let mut declared_files = BTreeSet::new();
+        let mut motion_cache = BTreeMap::<String, CachedMotion>::new();
         let mut processed_count = 0_usize;
         let mut reported_limit = false;
         let mut resource_budget_exhausted = false;
@@ -183,37 +175,45 @@ impl AnimationController {
                                 reference.file(),
                                 ModelDiagnosticCategory::LimitExceeded,
                                 format!(
-                                    "动作声明与外部动作总数为 {total_count}，仅处理前 {MAX_MOTION_COUNT} 项"
+                                    "动作声明与外部动作总数为 {declared_count}，仅处理前 {MAX_MOTION_COUNT} 项"
                                 ),
                             )
-                            .with_affected_count(omitted_count),
+                            .with_affected_count(
+                                declared_count.saturating_sub(MAX_MOTION_COUNT),
+                            ),
                         );
                         reported_limit = true;
                     }
-                    continue;
+                    break 'groups;
                 }
                 processed_count += 1;
 
-                let source = match resolver.read_text_with_budget_and_checkpoint(
-                    reference.file(),
-                    MAX_AUXILIARY_RESOURCE_BYTES,
-                    budget,
-                    || cancellation.is_cancelled(),
-                ) {
-                    Ok(source) => source,
-                    Err(error) => {
-                        if cancellation.is_cancelled() {
+                let cached = match motion_cache.get(reference.file()).cloned() {
+                    Some(cached) => cached,
+                    None => {
+                        let Some(cached) =
+                            load_cached_motion(reference.file(), resolver, budget, cancellation)
+                        else {
                             break 'groups;
-                        }
-                        budget_exhausted =
-                            error.category() == ModelDiagnosticCategory::LimitExceeded;
+                        };
+                        motion_cache.insert(reference.file().to_owned(), cached.clone());
+                        cached
+                    }
+                };
+                if let Some(path) = cached.canonical_path {
+                    declared_files.insert(path);
+                }
+                let motion = match cached.result {
+                    Ok(motion) => motion,
+                    Err(error) => {
+                        budget_exhausted = error.category == ModelDiagnosticCategory::LimitExceeded;
                         resource_budget_exhausted |= budget_exhausted;
                         diagnostics.push(ModelLoadDiagnostic::motion(
                             group,
                             index,
                             reference.file(),
-                            error.category(),
-                            error.message(),
+                            error.category,
+                            error.message,
                         ));
                         if budget_exhausted {
                             break;
@@ -224,33 +224,6 @@ impl AnimationController {
                 if cancellation.is_cancelled() {
                     break 'groups;
                 }
-                let motion = match Motion3::from_json_str(&source) {
-                    Ok(motion) => motion,
-                    Err(error) => {
-                        diagnostics.push(ModelLoadDiagnostic::motion(
-                            group,
-                            index,
-                            reference.file(),
-                            ModelDiagnosticCategory::Parse,
-                            format!("动作 JSON 内容无效或版本不受支持：{error}"),
-                        ));
-                        continue;
-                    }
-                };
-                if cancellation.is_cancelled() {
-                    break 'groups;
-                }
-                let duration = motion.meta().duration();
-                if !duration.is_finite() || duration <= 0.0 {
-                    diagnostics.push(ModelLoadDiagnostic::motion(
-                        group,
-                        index,
-                        reference.file(),
-                        ModelDiagnosticCategory::InvalidDuration,
-                        format!("动作时长必须是有限正数，当前值为 {duration}"),
-                    ));
-                    continue;
-                }
                 clips.push(MotionPlayer::with_looping(
                     motion,
                     group == DEFAULT_MOTION_GROUP,
@@ -260,6 +233,25 @@ impl AnimationController {
                 break;
             }
         }
+
+        let mut external = Vec::new();
+        if !cancellation.is_cancelled()
+            && !resource_budget_exhausted
+            && declared_count < MAX_MOTION_COUNT
+        {
+            for reference in
+                resolver.discover_external_motions_with_checkpoint(|| cancellation.is_cancelled())
+            {
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                if !declared_files.contains(reference.canonical_path()) {
+                    external.push(reference);
+                }
+            }
+        }
+        let total_count = declared_count.saturating_add(external.len());
+        let omitted_count = total_count.saturating_sub(MAX_MOTION_COUNT);
 
         if !cancellation.is_cancelled() && !resource_budget_exhausted {
             for reference in external {
@@ -505,6 +497,75 @@ impl AnimationController {
             .get(group)
             .map(|index| self.groups[*index].motions.len())
     }
+
+    #[cfg(test)]
+    pub(in crate::model) fn parsed_motion_identities_for_test(
+        &self,
+        group: &str,
+    ) -> Option<Vec<*const Motion3>> {
+        self.group_indices.get(group).map(|index| {
+            self.groups[*index]
+                .motions
+                .iter()
+                .map(|player| std::ptr::from_ref(player.motion()))
+                .collect()
+        })
+    }
+}
+
+fn load_cached_motion(
+    reference: &str,
+    resolver: &ModelResourceResolver,
+    budget: &mut AuxiliaryResourceBudget,
+    cancellation: &RenderCancellation,
+) -> Option<CachedMotion> {
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    let (canonical_path, source) = match resolver.read_text_with_path_and_budget_and_checkpoint(
+        reference,
+        MAX_AUXILIARY_RESOURCE_BYTES,
+        budget,
+        || cancellation.is_cancelled(),
+    ) {
+        Ok(resource) => resource,
+        Err(_) if cancellation.is_cancelled() => return None,
+        Err(error) => {
+            return Some(CachedMotion {
+                canonical_path: None,
+                result: Err(CachedMotionError {
+                    category: error.category(),
+                    message: error.message().to_owned(),
+                }),
+            });
+        }
+    };
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    let result = Motion3::from_json_str(&source)
+        .map_err(|error| CachedMotionError {
+            category: ModelDiagnosticCategory::Parse,
+            message: format!("动作 JSON 内容无效或版本不受支持：{error}"),
+        })
+        .and_then(|motion| {
+            let duration = motion.meta().duration();
+            if duration.is_finite() && duration > 0.0 {
+                Ok(Arc::new(motion))
+            } else {
+                Err(CachedMotionError {
+                    category: ModelDiagnosticCategory::InvalidDuration,
+                    message: format!("动作时长必须是有限正数，当前值为 {duration}"),
+                })
+            }
+        });
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    Some(CachedMotion {
+        canonical_path: Some(canonical_path),
+        result,
+    })
 }
 
 fn unique_external_runtime_id(base: String, occupied: &BTreeMap<String, usize>) -> String {

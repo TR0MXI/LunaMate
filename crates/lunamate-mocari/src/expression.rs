@@ -4,7 +4,7 @@
 //! [`ExpressionPlayer`] for one expression, or [`ExpressionManager`] when the app
 //! should fade older expressions out as newer ones start.
 
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
 use crate::{
     json::{
@@ -18,7 +18,7 @@ const MAX_ACTIVE_EXPRESSION_PLAYERS: usize = 8;
 #[derive(Debug, Clone)]
 /// Plays one parsed `exp3.json` expression against a [`ModelRuntime`].
 pub struct ExpressionPlayer {
-    expression: Expression3,
+    expression: Arc<Expression3>,
     time: f32,
     weight: f32,
     fade_out_started_at: Option<f32>,
@@ -27,9 +27,12 @@ pub struct ExpressionPlayer {
 
 impl ExpressionPlayer {
     /// Creates a player at time `0.0` with full weight.
-    pub fn new(expression: Expression3) -> Self {
+    ///
+    /// Passing an [`Arc<Expression3>`] shares immutable parameters while
+    /// transition state remains local to this player.
+    pub fn new(expression: impl Into<Arc<Expression3>>) -> Self {
         Self {
-            expression,
+            expression: expression.into(),
             time: 0.0,
             weight: 1.0,
             fade_out_started_at: None,
@@ -37,9 +40,14 @@ impl ExpressionPlayer {
         }
     }
 
-    /// Returns the expression data owned by this player.
+    /// Returns the immutable expression data referenced by this player.
     pub fn expression(&self) -> &Expression3 {
         &self.expression
+    }
+
+    #[cfg(test)]
+    pub(crate) fn parsed_identity_for_test(&self) -> *const Expression3 {
+        Arc::as_ptr(&self.expression)
     }
 
     /// Returns the current playback time in seconds.
@@ -186,7 +194,7 @@ impl ExpressionManager {
     }
 
     /// Starts an expression and fades out currently active expressions.
-    pub fn play(&mut self, expression: Expression3) {
+    pub fn play(&mut self, expression: impl Into<Arc<Expression3>>) {
         for player in &mut self.players {
             player.start_fade_out();
         }

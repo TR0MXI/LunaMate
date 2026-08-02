@@ -265,6 +265,11 @@ fn config_write_errors_report_operation_context_without_a_source_for_validation(
     assert_eq!(invalid.to_string(), "帧率必须为正整数");
     assert!(invalid.source().is_none());
 
+    let unavailable = ConfigWriteError::PersistenceUnavailable;
+    assert!(unavailable.to_string().contains("不可持久化"));
+    assert_eq!(unavailable.diagnostic_kind(), "persistence_unavailable");
+    assert!(unavailable.source().is_none());
+
     let io = ConfigWriteError::Io {
         operation: "写入配置文件",
         path: std::path::PathBuf::from("/tmp/lunamate/config.toml"),

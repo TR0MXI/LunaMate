@@ -11,7 +11,7 @@ use lunamate_agent::config::{
 use rust_i18n::t;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
-use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value};
+use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value, table_like_section};
 
 const MAX_MODELS: usize = 64;
 
@@ -30,7 +30,7 @@ pub(super) fn parse_llm_settings(
     language: AppLanguage,
 ) -> LlmSettings {
     let mut settings = LlmSettings::default();
-    let Some(llm) = document.get("llm") else {
+    let Some(llm) = table_like_section(document, "llm", warnings) else {
         return settings;
     };
     if let Some(selected) = llm.get("selected") {
@@ -65,23 +65,24 @@ pub(super) fn parse_llm_settings(
                 let mut ids = HashSet::with_capacity(models.len());
                 for (index, table) in models.iter().enumerate() {
                     let entry = format!("llm.models[{index}]");
-                    let model = match parse_llm_model(table, language).and_then(|model| {
-                        model.normalized(language).map_err(ConfigWriteError::from)
-                    }) {
-                        Ok(model) => model,
-                        Err(error) => {
-                            warnings.push(
-                                t!(
-                                    "config.error.entry_ignored",
-                                    locale = language.id(),
-                                    entry = &entry,
-                                    error = error
-                                )
-                                .to_string(),
-                            );
-                            continue;
-                        }
-                    };
+                    let model =
+                        match parse_llm_model(table, &entry, warnings, language).and_then(|model| {
+                            model.normalized(language).map_err(ConfigWriteError::from)
+                        }) {
+                            Ok(model) => model,
+                            Err(error) => {
+                                warnings.push(
+                                    t!(
+                                        "config.error.entry_ignored",
+                                        locale = language.id(),
+                                        entry = &entry,
+                                        error = error
+                                    )
+                                    .to_string(),
+                                );
+                                continue;
+                            }
+                        };
                     if !ids.insert(model.id.clone()) {
                         warnings.push(
                             t!(
@@ -177,6 +178,8 @@ pub(super) fn parse_llm_settings(
 
 fn parse_llm_model(
     table: &Table,
+    entry: &str,
+    warnings: &mut Vec<String>,
     language: AppLanguage,
 ) -> Result<LlmModelConfig, ConfigWriteError> {
     let required = |key: &str| {
@@ -217,94 +220,89 @@ fn parse_llm_model(
             .to_string(),
         )
     })?;
-    let optional = |key: &str| table.get(key).and_then(Item::as_str).map(str::to_owned);
     let use_gpu = match table.get("use_gpu") {
         None => false,
-        Some(item) => item.as_bool().ok_or_else(|| {
-            ConfigWriteError::InvalidValue(
-                t!(
-                    "config.error.expected_boolean",
-                    locale = language.id(),
-                    field = "use_gpu"
-                )
-                .to_string(),
-            )
-        })?,
+        Some(item) => match item.as_bool() {
+            Some(use_gpu) => use_gpu,
+            None => {
+                warnings.push(
+                    t!(
+                        "config.error.expected_boolean",
+                        locale = language.id(),
+                        field = format!("{entry}.use_gpu")
+                    )
+                    .to_string(),
+                );
+                false
+            }
+        },
     };
     Ok(LlmModelConfig {
         id: required("id")?,
         label: required("label")?,
         kind,
         provider,
-        model: optional("model").unwrap_or_default(),
-        endpoint: optional("endpoint"),
-        api_key: optional("api_key"),
-        voice: optional("voice"),
-        voice_type: optional("voice_type"),
-        local_path: optional("local_path").map(PathBuf::from),
+        model: optional_string(table, "model", entry, warnings, language).unwrap_or_default(),
+        endpoint: optional_string(table, "endpoint", entry, warnings, language),
+        api_key: optional_string(table, "api_key", entry, warnings, language),
+        voice: optional_string(table, "voice", entry, warnings, language),
+        voice_type: optional_string(table, "voice_type", entry, warnings, language),
+        local_path: optional_string(table, "local_path", entry, warnings, language)
+            .map(PathBuf::from),
         use_gpu,
-        whisper_language: optional("whisper_language"),
-        advanced: parse_advanced_options(table, language)?,
+        whisper_language: optional_string(table, "whisper_language", entry, warnings, language),
+        advanced: parse_advanced_options(table, entry, warnings, language)?,
     })
+}
+
+fn optional_string(
+    table: &Table,
+    key: &str,
+    entry: &str,
+    warnings: &mut Vec<String>,
+    language: AppLanguage,
+) -> Option<String> {
+    match table.get(key) {
+        None => None,
+        Some(item) => match item.as_str() {
+            Some(value) => Some(value.to_owned()),
+            None => {
+                warnings.push(
+                    t!(
+                        "config.error.expected_string_ignored",
+                        locale = language.id(),
+                        field = format!("{entry}.{key}")
+                    )
+                    .to_string(),
+                );
+                None
+            }
+        },
+    }
 }
 
 fn parse_advanced_options(
     table: &Table,
+    entry: &str,
+    warnings: &mut Vec<String>,
     language: AppLanguage,
 ) -> Result<LlmAdvancedOptions, ConfigWriteError> {
-    let integer = |key: &'static str| -> Result<Option<u32>, ConfigWriteError> {
-        match table.get(key) {
-            None => Ok(None),
-            Some(item) => item
-                .as_integer()
-                .and_then(|value| u32::try_from(value).ok())
-                .map(Some)
-                .ok_or_else(|| {
-                    ConfigWriteError::InvalidValue(
-                        t!(
-                            "config.error.expected_nonnegative_integer",
-                            locale = language.id(),
-                            field = key
-                        )
-                        .to_string(),
-                    )
-                }),
-        }
-    };
-    let ratio = |key: &'static str| -> Result<Option<f64>, ConfigWriteError> {
-        match table.get(key) {
-            None => Ok(None),
-            Some(item) => item
-                .as_float()
-                .or_else(|| item.as_integer().map(|value| value as f64))
-                .map(Some)
-                .ok_or_else(|| {
-                    ConfigWriteError::InvalidValue(
-                        t!(
-                            "config.error.expected_number",
-                            locale = language.id(),
-                            field = key
-                        )
-                        .to_string(),
-                    )
-                }),
-        }
-    };
-    let budget = integer("reasoning_budget")?;
+    let budget = optional_integer(table, "reasoning_budget", entry, warnings, language);
     let reasoning_effort = match table.get("reasoning_effort") {
         None => None,
-        Some(item) => {
-            let id = item.as_str().ok_or_else(|| {
-                ConfigWriteError::InvalidValue(
+        Some(item) => match item.as_str() {
+            None => {
+                warnings.push(
                     t!(
-                        "config.error.expected_string",
+                        "config.error.expected_string_ignored",
                         locale = language.id(),
-                        field = "reasoning_effort"
+                        field = format!("{entry}.reasoning_effort")
                     )
                     .to_string(),
-                )
-            })?;
-            Some(reasoning_effort_from_id(id, budget).ok_or_else(|| {
+                );
+                None
+            }
+            Some(id) => Some(reasoning_effort_from_id(id, budget).ok_or_else(|| {
                 ConfigWriteError::InvalidValue(
                     t!(
                         "llm.error.unknown_reasoning_effort",
@@ -313,16 +311,76 @@ fn parse_advanced_options(
                     )
                     .to_string(),
                 )
-            })?)
-        }
+            })?),
+        },
     };
     Ok(LlmAdvancedOptions {
-        context_window_tokens: integer("context_window_tokens")?,
+        context_window_tokens: optional_integer(
+            table,
+            "context_window_tokens",
+            entry,
+            warnings,
+            language,
+        ),
         reasoning_effort,
-        max_output_tokens: integer("max_output_tokens")?,
-        temperature: ratio("temperature")?,
-        top_p: ratio("top_p")?,
+        max_output_tokens: optional_integer(table, "max_output_tokens", entry, warnings, language),
+        temperature: optional_ratio(table, "temperature", entry, warnings, language),
+        top_p: optional_ratio(table, "top_p", entry, warnings, language),
     })
+}
+
+fn optional_integer(
+    table: &Table,
+    key: &str,
+    entry: &str,
+    warnings: &mut Vec<String>,
+    language: AppLanguage,
+) -> Option<u32> {
+    match table
+        .get(key)?
+        .as_integer()
+        .and_then(|value| u32::try_from(value).ok())
+    {
+        Some(value) => Some(value),
+        None => {
+            warnings.push(
+                t!(
+                    "config.error.expected_nonnegative_integer",
+                    locale = language.id(),
+                    field = format!("{entry}.{key}")
+                )
+                .to_string(),
+            );
+            None
+        }
+    }
+}
+
+fn optional_ratio(
+    table: &Table,
+    key: &str,
+    entry: &str,
+    warnings: &mut Vec<String>,
+    language: AppLanguage,
+) -> Option<f64> {
+    let item = table.get(key)?;
+    match item
+        .as_float()
+        .or_else(|| item.as_integer().map(|value| value as f64))
+    {
+        Some(value) => Some(value),
+        None => {
+            warnings.push(
+                t!(
+                    "config.error.expected_number",
+                    locale = language.id(),
+                    field = format!("{entry}.{key}")
+                )
+                .to_string(),
+            );
+            None
+        }
+    }
 }
 
 pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSettings) {
@@ -372,7 +430,6 @@ pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSetti
             "api_key",
             model.api_key.clone().map(Value::from),
         );
-        table.remove("app_id");
         write_optional(&mut table, "voice", model.voice.clone().map(Value::from));
         write_optional(
             &mut table,

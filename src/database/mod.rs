@@ -12,7 +12,10 @@ mod tests;
 
 use std::{error::Error, fmt, io, path::PathBuf};
 
-pub(crate) use atomic_file::{AtomicReplaceOperation, atomic_replace};
+pub(crate) use atomic_file::{
+    AtomicReplaceError, AtomicReplaceOperation, PreparedAtomicReplace, VisibleAtomicReplace,
+    atomic_replace, prepare_atomic_replace,
+};
 pub(crate) use engine::Database;
 pub(crate) use memory::MemoryTier;
 #[cfg(test)]

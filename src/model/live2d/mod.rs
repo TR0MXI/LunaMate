@@ -4,25 +4,29 @@ pub(in crate::model) mod gpu_renderer;
 pub(in crate::model) mod renderer;
 pub(in crate::model) mod resources;
 
-use std::{error::Error, fmt, path::Path, time::Duration};
+use std::{error::Error, fmt, time::Duration};
 
 #[cfg(test)]
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use super::{
     animation::{self, AnimationController, MotionPlayResult},
     capabilities::{AuxiliaryResourceBudget, ModelCapabilities, ModelLoadDiagnostics},
+    catalog::ModelManifest,
     expression::{self, ExpressionController},
     interaction::{ModelCommand, RenderedModelFrame, render_hit_areas},
 };
 #[cfg(test)]
 use gpui::RenderImage;
-use mocari::assets::{AssetLoadError, RuntimeModel, load_model_runtime};
+use mocari::{
+    assets::{AssetLoadError, RuntimeModel},
+    load_model_runtime_from_assets,
+};
 
 pub(crate) use self::gpu_renderer::{GpuModelRenderer, SurfaceAlphaMode};
 use self::renderer::{CpuRenderer, ModelTransform};
 pub(crate) use self::renderer::{RenderCancellation, RenderError};
-use self::resources::{ResourceValidationError, validate_model_resources};
+use self::resources::{ResourceValidationError, snapshot_model_resources};
 
 /// 设置窗口可以向用户展示并触发的已加载模型能力。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -153,7 +157,7 @@ pub(crate) enum ModelLoadError {
     InvalidRasterDimensions { width: u32, height: u32 },
     /// 清单、MOC、纹理、Physics 或 Pose 未通过必需资源预检。
     RequiredResources(ResourceValidationError),
-    /// Mocari 无法解析主体运行时或解码纹理。
+    /// Mocari 无法从已验证快照解析 MOC 或建立主体运行时。
     Runtime(AssetLoadError),
     /// 无法根据主体 Drawable 建立模型到光栅的坐标变换。
     Transform(RenderError),
@@ -199,7 +203,8 @@ pub(in crate::model) fn render_model(
     path: &Path,
     size: u32,
 ) -> Result<Arc<RenderImage>, Box<dyn Error>> {
-    let mut model = AnimatedModel::load(path, size, size, RenderCancellation::default())?;
+    let manifest = ModelManifest::for_path_for_test(path)?;
+    let mut model = AnimatedModel::load(&manifest, size, size, RenderCancellation::default())?;
     let frame = model.render_frame(Duration::ZERO, [0.0, 0.0])?;
     frame
         .image()
@@ -222,6 +227,18 @@ pub(crate) struct AnimatedModel {
 }
 
 impl AnimatedModel {
+    #[cfg(test)]
+    pub(in crate::model) fn load_path_for_test(
+        path: &Path,
+        width: u32,
+        height: u32,
+        cancellation: RenderCancellation,
+    ) -> Result<Self, ModelLoadError> {
+        let manifest =
+            ModelManifest::for_path_for_test(path).expect("测试清单的父目录必须存在并可建立根快照");
+        Self::load(&manifest, width, height, cancellation)
+    }
+
     /// 加载模型及其动作、表情和可交互能力。
     ///
     /// # Errors
@@ -229,12 +246,12 @@ impl AnimatedModel {
     /// 模型主体、必需资源或初始 Drawable 数据无法读取时返回错误。坏动作、表情和 HitArea
     /// 只会进入 [`ModelLoadDiagnostics`]，不会阻止模型主体加载。
     pub(crate) fn load(
-        path: &Path,
+        manifest: &ModelManifest,
         width: u32,
         height: u32,
         cancellation: RenderCancellation,
     ) -> Result<Self, ModelLoadError> {
-        Self::load_with_cpu_renderer(path, width, height, cancellation, true)
+        Self::load_with_cpu_renderer(manifest, width, height, cancellation, true)
     }
 
     /// 加载由原生 GPU underlay 呈现的模型，不分配 CPU 光栅缓冲。
@@ -243,16 +260,16 @@ impl AnimatedModel {
     ///
     /// 模型主体、必需资源或初始 Drawable 数据无法读取时返回错误。
     pub(crate) fn load_for_gpu(
-        path: &Path,
+        manifest: &ModelManifest,
         width: u32,
         height: u32,
         cancellation: RenderCancellation,
     ) -> Result<Self, ModelLoadError> {
-        Self::load_with_cpu_renderer(path, width, height, cancellation, false)
+        Self::load_with_cpu_renderer(manifest, width, height, cancellation, false)
     }
 
     fn load_with_cpu_renderer(
-        path: &Path,
+        manifest: &ModelManifest,
         width: u32,
         height: u32,
         cancellation: RenderCancellation,
@@ -265,13 +282,19 @@ impl AnimatedModel {
         cancellation
             .checkpoint()
             .map_err(|_| ModelLoadError::Cancelled)?;
-        let resolver = validate_model_resources(path).map_err(ModelLoadError::RequiredResources)?;
+        let resources = snapshot_model_resources(manifest, || cancellation.is_cancelled())
+            .map_err(|error| {
+                if error.is_cancelled() {
+                    ModelLoadError::Cancelled
+                } else {
+                    ModelLoadError::RequiredResources(error)
+                }
+            })?;
         cancellation
             .checkpoint()
             .map_err(|_| ModelLoadError::Cancelled)?;
-        // Mocari 当前仍会按路径重新打开清单和必需资源；预检只能限制稳定文件，无法消除
-        // 两次打开之间的替换窗口。彻底关闭该 TOCTOU 需要加载器接收已验证资源句柄。
-        let model = load_model_runtime(path).map_err(ModelLoadError::Runtime)?;
+        let (resolver, assets) = resources.into_parts();
+        let model = load_model_runtime_from_assets(assets).map_err(ModelLoadError::Runtime)?;
         cancellation
             .checkpoint()
             .map_err(|_| ModelLoadError::Cancelled)?;

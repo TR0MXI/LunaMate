@@ -45,6 +45,7 @@ struct CaptureRoute {
     capture_id: u64,
     wake_pending: Arc<AtomicBool>,
     overflowed: Arc<AtomicBool>,
+    failure_pending: Arc<AtomicBool>,
 }
 
 impl Capture {
@@ -70,6 +71,7 @@ impl Capture {
         let (producer, consumer) = HeapRb::<f32>::new(ring_capacity).split();
         let wake_pending = Arc::new(AtomicBool::new(false));
         let overflowed = Arc::new(AtomicBool::new(false));
+        let failure_pending = Arc::new(AtomicBool::new(false));
         let stream_config = supported.into();
         let route = CaptureRoute {
             commands,
@@ -77,6 +79,7 @@ impl Capture {
             capture_id,
             wake_pending: wake_pending.clone(),
             overflowed: overflowed.clone(),
+            failure_pending,
         };
         let stream = match supported.sample_format() {
             SampleFormat::I8 => {
@@ -181,6 +184,7 @@ where
         capture_id,
         wake_pending,
         overflowed,
+        failure_pending,
     } = route;
     let wake_commands = commands.clone();
     device
@@ -208,11 +212,13 @@ where
                 }
             },
             move |error| {
-                let _ = commands.try_send(VoiceCommand::CaptureFailed {
-                    revision,
-                    capture_id,
-                    message: error.to_string(),
-                });
+                if !failure_pending.swap(true, Ordering::AcqRel) {
+                    let _ = commands.try_send(VoiceCommand::CaptureFailed {
+                        revision,
+                        capture_id,
+                        message: error.to_string(),
+                    });
+                }
             },
             None,
         )

@@ -3,37 +3,42 @@
 //! 高频标量通过原子变量读取，模型选择通过 [`ArcSwap`] 发布不可变快照，窗口位置使用短临界区缓存。
 //! 配置文件只在启动和显式保存时访问；渲染路径不读取磁盘。
 
+mod access;
 mod appearance;
+mod commit;
 mod document;
 mod llm;
 mod model;
+mod persistence;
 mod persona;
+mod revision;
 mod shortcut;
+mod startup;
 mod types;
 mod voice;
+mod window;
 
 #[cfg(test)]
 mod tests;
 
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
-        Arc, LazyLock,
-        atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering},
+        LazyLock,
+        atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64},
     },
 };
 
 use arc_swap::ArcSwap;
-use parking_lot::{Mutex, RwLock, RwLockReadGuard};
+use parking_lot::{Mutex, RwLock};
+#[cfg(test)]
+use std::sync::{Arc, atomic::Ordering};
 use tokio::sync::watch;
-use toml_edit::{DocumentMut, Value};
 
 pub(crate) use appearance::{AppearanceSettings, CustomThemeSettings, ThemePreset};
 use document::{
-    default_config_path, document_for_update, ensure_table_like, read_config_file, remove_key,
-    set_item_value, validate_relative_path, write_appearance, write_config_file,
-    write_logging_settings, write_window_position,
+    ensure_table_like, remove_key, set_item_value, table_like_section, validate_relative_path,
+    write_appearance, write_logging_settings, write_window_position,
 };
 use llm::{parse_llm_settings, write_llm_settings};
 pub(crate) use lunamate_agent::config::{
@@ -53,9 +58,11 @@ pub(crate) use model::{
     SharedModelResourceSettings,
 };
 use model::{parse_model_resource_settings, write_model_resource_settings};
-use persona::{parse_persona_settings, write_persona_settings};
+use persona::{clear_invalid_model_bindings, parse_persona_settings, write_persona_settings};
 pub(crate) use shortcut::{KeyboardShortcut, ShortcutAction, ShortcutSettings};
 use shortcut::{parse_shortcut_settings, write_shortcut_settings};
+#[cfg(test)]
+use startup::finalize_loaded_agent_config;
 use types::{
     CUSTOM_FRAME_RATE_KEY, CUSTOM_FRAME_RATE_NAME, FOLLOW_DISPLAY_FRAME_RATE_NAME,
     UNLIMITED_FRAME_RATE_NAME,
@@ -70,6 +77,7 @@ pub(crate) use voice::{
     VoiceSettings, VoiceTranscriptionBackend,
 };
 use voice::{parse_voice_settings, write_voice_settings};
+
 /// 全局应用配置；首次访问时从平台用户配置目录加载。
 pub(crate) static CONFIG: LazyLock<LunaConfig> = LazyLock::new(LunaConfig::load);
 
@@ -122,33 +130,9 @@ struct LoadedConfig {
     model_resources: ModelResourceSettings,
 }
 
-impl Default for LoadedConfig {
-    fn default() -> Self {
-        Self {
-            frame_rate: FrameRate::default(),
-            model_window_size: ModelWindowSize::default(),
-            remember_window_positions: true,
-            eye_tracking: true,
-            show_fps: false,
-            use_native_tray_menu: false,
-            allow_agent_screenshot: false,
-            allow_agent_outfit_change: true,
-            logging: LoggingSettings::default(),
-            appearance: AppearanceSettings::default(),
-            snapshot: ConfigSnapshot::default(),
-            window_positions: WindowPositions::default(),
-            llm: LlmSettings::default(),
-            persona: PersonaSettings::default_for(AppLanguage::default()),
-            shortcuts: ShortcutSettings::default(),
-            voice: VoiceSettings::default(),
-            model_resources: ModelResourceSettings::default(),
-        }
-    }
-}
-
 /// 保存 LunaMate 的全部运行时配置，并提供无锁读取与受控持久化。
 pub(crate) struct LunaConfig {
-    path: PathBuf,
+    path: Option<PathBuf>,
     frame_rate: AtomicU32,
     model_window_size: AtomicU16,
     remember_window_positions: AtomicBool,
@@ -193,240 +177,56 @@ pub(crate) struct LunaConfig {
     revision_lock: Mutex<()>,
     write_lock: Mutex<()>,
     window_position_write_lock: Mutex<()>,
+    #[cfg(test)]
+    prepare_commit_barrier_for_test: Mutex<Option<Arc<std::sync::Barrier>>>,
+    #[cfg(test)]
+    prepare_failure_for_test: AtomicBool,
+    #[cfg(test)]
+    parent_sync_barrier_for_test: Mutex<Option<Arc<std::sync::Barrier>>>,
+    #[cfg(all(test, unix))]
+    parent_sync_failure_for_test: AtomicBool,
     startup_warning: Option<String>,
 }
 
 impl LunaConfig {
     /// 从默认配置路径加载；任何读取或解析错误都会回退为完整默认值。
     fn load() -> Self {
-        Self::load_from(default_config_path())
+        Self::load_from_optional_path(document::default_config_path())
     }
 
+    #[cfg(test)]
     fn load_from(path: PathBuf) -> Self {
-        let (loaded, startup_warning) = read_config_file(&path);
-        let (agent_screenshot_permission_revision_sender, _) = watch::channel(0);
-        let agent_config = AgentConfigSnapshot::try_new(
-            1,
-            Arc::new(loaded.llm.clone()),
-            Arc::new(loaded.persona.clone()),
-            loaded.appearance.language,
-        )
-        .expect("启动配置读取器必须产出经过规范化的 Agent 配置");
-        Self {
-            path,
-            frame_rate: AtomicU32::new(loaded.frame_rate.atomic_value()),
-            model_window_size: AtomicU16::new(loaded.model_window_size.atomic_value()),
-            remember_window_positions: AtomicBool::new(loaded.remember_window_positions),
-            eye_tracking: AtomicBool::new(loaded.eye_tracking),
-            show_fps: AtomicBool::new(loaded.show_fps),
-            use_native_tray_menu: AtomicBool::new(loaded.use_native_tray_menu),
-            allow_agent_screenshot: AtomicBool::new(loaded.allow_agent_screenshot),
-            allow_agent_outfit_change: AtomicBool::new(loaded.allow_agent_outfit_change),
-            requested_allow_agent_screenshot: AtomicBool::new(loaded.allow_agent_screenshot),
-            agent_screenshot_permission_retry_required: AtomicBool::new(false),
-            applied_allow_agent_screenshot_revision: AtomicU64::new(0),
-            agent_screenshot_permission_revision_sender,
-            agent_screenshot_execution_gate: RwLock::new(()),
-            logging: ArcSwap::from_pointee(loaded.logging),
-            appearance: ArcSwap::from_pointee(loaded.appearance),
-            snapshot: ArcSwap::from_pointee(loaded.snapshot),
-            window_positions: Mutex::new(loaded.window_positions),
-            llm: ArcSwap::from_pointee(loaded.llm),
-            persona: ArcSwap::from_pointee(loaded.persona),
-            shortcuts: ArcSwap::from_pointee(loaded.shortcuts),
-            voice: ArcSwap::from_pointee(loaded.voice),
-            model_resources: ArcSwap::from_pointee(loaded.model_resources),
-            agent_config: ArcSwap::from_pointee(agent_config),
-            llm_request_revision: AtomicU64::new(0),
-            persona_request_revision: AtomicU64::new(0),
-            shortcut_request_revision: AtomicU64::new(0),
-            voice_request_revision: AtomicU64::new(0),
-            model_request_revision: AtomicU64::new(0),
-            model_resources_request_revision: AtomicU64::new(0),
-            frame_rate_request_revision: AtomicU64::new(0),
-            model_window_size_request_revision: AtomicU64::new(0),
-            remember_positions_request_revision: AtomicU64::new(0),
-            eye_tracking_request_revision: AtomicU64::new(0),
-            show_fps_request_revision: AtomicU64::new(0),
-            use_native_tray_menu_request_revision: AtomicU64::new(0),
-            allow_agent_screenshot_request_revision: AtomicU64::new(0),
-            allow_agent_outfit_change_request_revision: AtomicU64::new(0),
-            logging_request_revision: AtomicU64::new(0),
-            appearance_request_revision: AtomicU64::new(0),
-            reset_positions_request_revision: AtomicU64::new(0),
-            write_nonce: AtomicU64::new(0),
-            revision_lock: Mutex::new(()),
-            write_lock: Mutex::new(()),
-            window_position_write_lock: Mutex::new(()),
-            startup_warning,
+        Self::load_from_optional_path(Some(path))
+    }
+
+    #[cfg(test)]
+    fn set_prepare_commit_barrier_for_test(&self, barrier: Arc<std::sync::Barrier>) {
+        *self.prepare_commit_barrier_for_test.lock() = Some(barrier);
+    }
+
+    #[cfg(test)]
+    fn pause_after_prepare_for_test(&self) {
+        let barrier = self.prepare_commit_barrier_for_test.lock().take();
+        if let Some(barrier) = barrier {
+            barrier.wait();
+            barrier.wait();
         }
     }
 
-    /// 返回启动配置诊断；该消息不会阻止用户继续修改并修复配置。
-    pub(crate) fn startup_warning(&self) -> Option<&str> {
-        self.startup_warning.as_deref()
+    #[cfg(test)]
+    fn fail_next_prepare_for_test(&self) {
+        self.prepare_failure_for_test.store(true, Ordering::Release);
     }
 
-    /// 在日志过滤等级生效后记录不含路径、凭据或自由文本的启动配置摘要。
-    pub(crate) fn log_startup_summary(&self) {
-        if self.startup_warning.is_some() {
-            log::warn!("启动配置包含无效或不可读取项，相关字段已回退安全默认值");
-        }
-        log::info!(
-            "配置已加载：warning={}, providers={}, personas={}, model_selected={}, shortcuts={}, voice_mode={}",
-            self.startup_warning.is_some(),
-            self.llm.load().models.len(),
-            self.persona.load().personas.len(),
-            self.snapshot.load().selected_model.is_some(),
-            self.shortcuts.load().configured_count(),
-            self.voice.load().mode.id()
-        );
+    #[cfg(test)]
+    fn set_parent_sync_barrier_for_test(&self, barrier: Arc<std::sync::Barrier>) {
+        *self.parent_sync_barrier_for_test.lock() = Some(barrier);
     }
 
-    /// 返回当前渲染帧率；该读取不会获取锁。
-    pub(crate) fn frame_rate(&self) -> FrameRate {
-        FrameRate::from_atomic_value(self.frame_rate.load(Ordering::Relaxed))
-    }
-
-    /// 返回桌宠主窗口的尺寸档位；该读取不会获取锁。
-    pub(crate) fn model_window_size(&self) -> ModelWindowSize {
-        ModelWindowSize::from_atomic_value(self.model_window_size.load(Ordering::Relaxed))
-    }
-
-    /// 返回是否在退出时保存并在下次启动时恢复窗口位置。
-    pub(crate) fn remember_window_positions(&self) -> bool {
-        self.remember_window_positions.load(Ordering::Relaxed)
-    }
-
-    /// 返回是否根据鼠标位置驱动模型的视线参数。
-    pub(crate) fn eye_tracking(&self) -> bool {
-        self.eye_tracking.load(Ordering::Relaxed)
-    }
-
-    /// 返回是否在桌宠窗口显示运行时帧率。
-    pub(crate) fn show_fps(&self) -> bool {
-        self.show_fps.load(Ordering::Relaxed)
-    }
-
-    /// 返回是否强制使用系统提供的托盘右键菜单。
-    pub(crate) fn use_native_tray_menu(&self) -> bool {
-        self.use_native_tray_menu.load(Ordering::Relaxed)
-    }
-
-    /// 返回当前是否存在已持久化且未被更新请求撤销的 Agent 截屏授权。
-    pub(crate) fn allow_agent_screenshot(&self) -> bool {
-        self.agent_screenshot_permission_revision().is_some()
-    }
-
-    /// 返回是否允许 Agent 为当前 Live2D 模型注册并执行换装工具。
-    pub(crate) fn allow_agent_outfit_change(&self) -> bool {
-        self.allow_agent_outfit_change.load(Ordering::Relaxed)
-    }
-
-    /// 返回设置界面最近一次请求的截屏授权状态；该值不代表权限已经持久化生效。
-    pub(crate) fn requested_allow_agent_screenshot(&self) -> bool {
-        self.requested_allow_agent_screenshot
-            .load(Ordering::Acquire)
-    }
-
-    /// 返回是否仍需把 fail-closed 的关闭状态重试写入磁盘。
-    pub(crate) fn agent_screenshot_permission_retry_required(&self) -> bool {
-        self.agent_screenshot_permission_retry_required
-            .load(Ordering::Acquire)
-    }
-
-    /// 订阅截屏授权请求 revision；新订阅者会立即看到当前 revision。
-    pub(crate) fn subscribe_agent_screenshot_permission_revision(&self) -> watch::Receiver<u64> {
-        self.agent_screenshot_permission_revision_sender.subscribe()
-    }
-
-    /// 返回当前有效截屏授权的 revision，供异步工具执行后复核。
-    pub(crate) fn agent_screenshot_permission_revision(&self) -> Option<u64> {
-        loop {
-            let requested_revision = self
-                .allow_agent_screenshot_request_revision
-                .load(Ordering::Acquire);
-            let applied_revision = self
-                .applied_allow_agent_screenshot_revision
-                .load(Ordering::Acquire);
-            let allowed = self.allow_agent_screenshot.load(Ordering::Acquire);
-            let requested = self
-                .requested_allow_agent_screenshot
-                .load(Ordering::Acquire);
-            if requested_revision
-                == self
-                    .allow_agent_screenshot_request_revision
-                    .load(Ordering::Acquire)
-            {
-                return (allowed && requested && applied_revision == requested_revision)
-                    .then_some(requested_revision);
-            }
-        }
-    }
-
-    /// 检查一次已注册工具使用的授权是否仍未被用户撤销。
-    pub(crate) fn agent_screenshot_permission_is_current(&self, revision: u64) -> bool {
-        self.agent_screenshot_permission_revision() == Some(revision)
-    }
-
-    /// 在授权 revision 仍有效时取得一次截图任务启动租约。
-    pub(crate) fn begin_agent_screenshot_capture(
-        &self,
-        revision: u64,
-    ) -> Option<RwLockReadGuard<'_, ()>> {
-        let guard = self.agent_screenshot_execution_gate.read();
-        self.agent_screenshot_permission_is_current(revision)
-            .then_some(guard)
-    }
-
-    /// 返回当前日志过滤与轮转配置快照。
-    pub(crate) fn logging_settings(&self) -> Arc<LoggingSettings> {
-        self.logging.load_full()
-    }
-
-    /// 返回当前模型清单的相对路径快照。
-    pub(crate) fn selected_model(&self) -> Option<PathBuf> {
-        self.snapshot.load().selected_model.clone()
-    }
-
-    /// 返回模型动作、表情与服装的显示名和分类覆盖快照。
-    pub(crate) fn model_resource_settings(&self) -> SharedModelResourceSettings {
-        self.model_resources.load_full()
-    }
-
-    /// 返回一次性发布的界面语言和主题配置快照。
-    pub(crate) fn appearance(&self) -> Arc<AppearanceSettings> {
-        self.appearance.load_full()
-    }
-
-    /// 返回一次性发布的供应商目录快照。
-    pub(crate) fn llm_settings(&self) -> SharedLlmSettings {
-        self.llm.load_full()
-    }
-
-    /// 返回一次性发布的人格目录与当前人格快照。
-    pub(crate) fn persona_settings(&self) -> SharedPersonaSettings {
-        self.persona.load_full()
-    }
-
-    /// 返回一次原子发布的 Agent 配置与 generation。
-    pub(crate) fn agent_config_snapshot(&self) -> AgentConfigSnapshot {
-        self.agent_config.load_full().as_ref().clone()
-    }
-
-    /// 返回四个应用动作的一次性快捷键配置快照。
-    pub(crate) fn shortcut_settings(&self) -> Arc<ShortcutSettings> {
-        self.shortcuts.load_full()
-    }
-
-    /// 返回一次性发布的本地语音配置快照。
-    pub(crate) fn voice_settings(&self) -> SharedVoiceSettings {
-        self.voice.load_full()
-    }
-
-    /// 返回指定窗口最近一次观察到的位置。
-    pub(crate) fn window_position(&self, window: ConfigWindow) -> Option<WindowPosition> {
-        self.window_positions.lock().window_position(window)
+    #[cfg(all(test, unix))]
+    fn fail_next_parent_sync_for_test(&self) {
+        self.parent_sync_failure_for_test
+            .store(true, Ordering::Release);
     }
 
     /// 更新帧率原子值，并准确修改 TOML 中对应键。
@@ -439,230 +239,6 @@ impl LunaConfig {
         let revision = self.reserve_frame_rate_revision();
         self.set_frame_rate_at_revision(frame_rate, revision)?
             .ok_or(ConfigWriteError::StaleConfigUpdate)
-    }
-
-    /// 为帧率写入分配单调 revision。
-    pub(crate) fn reserve_frame_rate_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.frame_rate_request_revision)
-    }
-
-    /// 仅提交仍然最新的帧率写入。
-    pub(crate) fn set_frame_rate_at_revision(
-        &self,
-        frame_rate: FrameRate,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let applied = self.edit_config_at_revision(
-            &self.frame_rate_request_revision,
-            revision,
-            "render.frame_rate",
-            || {
-                self.frame_rate
-                    .store(frame_rate.atomic_value(), Ordering::Relaxed);
-            },
-            |document| {
-                ensure_table_like(&mut document["render"]);
-                if !matches!(frame_rate, FrameRate::Custom(_)) {
-                    remove_key(document, "render", CUSTOM_FRAME_RATE_KEY);
-                }
-                let value = match frame_rate {
-                    FrameRate::Fps30 => Value::from(30_i64),
-                    FrameRate::Fps60 => Value::from(60_i64),
-                    FrameRate::Fps120 => Value::from(120_i64),
-                    FrameRate::FollowDisplay => Value::from(FOLLOW_DISPLAY_FRAME_RATE_NAME),
-                    FrameRate::Custom(fps) => {
-                        set_item_value(
-                            &mut document["render"][CUSTOM_FRAME_RATE_KEY],
-                            Value::from(i64::from(fps.get())),
-                        );
-                        Value::from(CUSTOM_FRAME_RATE_NAME)
-                    }
-                    FrameRate::Unlimited => Value::from(UNLIMITED_FRAME_RATE_NAME),
-                };
-                set_item_value(&mut document["render"]["frame_rate"], value);
-            },
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    /// 为帧率显示开关写入分配单调 revision。
-    pub(crate) fn reserve_show_fps_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.show_fps_request_revision)
-    }
-
-    /// 仅提交仍然最新的帧率显示开关写入。
-    pub(crate) fn set_show_fps_at_revision(
-        &self,
-        show: bool,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let applied = self.edit_config_at_revision(
-            &self.show_fps_request_revision,
-            revision,
-            "debug.show_fps",
-            || self.show_fps.store(show, Ordering::Relaxed),
-            |document| {
-                ensure_table_like(&mut document["debug"]);
-                set_item_value(&mut document["debug"]["show_fps"], Value::from(show));
-            },
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    /// 为原生托盘右键菜单开关写入分配单调 revision。
-    pub(crate) fn reserve_use_native_tray_menu_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.use_native_tray_menu_request_revision)
-    }
-
-    /// 仅提交仍然最新的原生托盘右键菜单开关写入。
-    pub(crate) fn set_use_native_tray_menu_at_revision(
-        &self,
-        enabled: bool,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let applied = self.edit_config_at_revision(
-            &self.use_native_tray_menu_request_revision,
-            revision,
-            "debug.use_native_tray_menu",
-            || self.use_native_tray_menu.store(enabled, Ordering::Relaxed),
-            |document| {
-                ensure_table_like(&mut document["debug"]);
-                set_item_value(
-                    &mut document["debug"]["use_native_tray_menu"],
-                    Value::from(enabled),
-                );
-            },
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    /// 为 Agent 换装工具开关写入分配单调 revision。
-    pub(crate) fn reserve_allow_agent_outfit_change_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.allow_agent_outfit_change_request_revision)
-    }
-
-    /// 仅提交仍然最新的 Agent 换装工具开关写入。
-    pub(crate) fn set_allow_agent_outfit_change_at_revision(
-        &self,
-        allowed: bool,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let applied = self.edit_config_at_revision(
-            &self.allow_agent_outfit_change_request_revision,
-            revision,
-            "tools.allow_agent_outfit_change",
-            || {
-                self.allow_agent_outfit_change
-                    .store(allowed, Ordering::Relaxed);
-            },
-            |document| {
-                ensure_table_like(&mut document["tools"]);
-                set_item_value(
-                    &mut document["tools"]["allow_agent_outfit_change"],
-                    Value::from(allowed),
-                );
-            },
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    /// 为 Agent 截屏授权写入分配单调 revision。
-    pub(crate) fn reserve_allow_agent_screenshot_revision(&self, allowed: bool) -> u64 {
-        // 撤权必须与截图任务启动互斥；返回后不得再按旧 revision 派发平台捕获。
-        let _execution_guard = self.agent_screenshot_execution_gate.write();
-        let _guard = self.revision_lock.lock();
-        let revision = reserve_revision(&self.allow_agent_screenshot_request_revision);
-        self.agent_screenshot_permission_revision_sender
-            .send_replace(revision);
-        self.requested_allow_agent_screenshot
-            .store(allowed, Ordering::Release);
-        self.agent_screenshot_permission_retry_required
-            .store(false, Ordering::Release);
-        revision
-    }
-
-    /// 仅提交仍然最新的 Agent 截屏授权；磁盘成功前不会开放权限。
-    pub(crate) fn set_allow_agent_screenshot_at_revision(
-        &self,
-        allowed: bool,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let result = (|| {
-            let _guard = self.write_lock.lock();
-            if !revision_is_current(&self.allow_agent_screenshot_request_revision, revision) {
-                return Ok(None);
-            }
-            if self
-                .applied_allow_agent_screenshot_revision
-                .load(Ordering::Acquire)
-                == revision
-                && self.allow_agent_screenshot.load(Ordering::Acquire) == allowed
-                && self
-                    .requested_allow_agent_screenshot
-                    .load(Ordering::Acquire)
-                    == allowed
-                && !self
-                    .agent_screenshot_permission_retry_required
-                    .load(Ordering::Acquire)
-            {
-                return Ok(Some(()));
-            }
-
-            let mut candidate_revision = revision;
-            let mut candidate_allowed = allowed;
-            loop {
-                if let Err(error) = self.edit_document_locked(|document| {
-                    ensure_table_like(&mut document["tools"]);
-                    set_item_value(
-                        &mut document["tools"]["allow_agent_screenshot"],
-                        Value::from(candidate_allowed),
-                    );
-                }) {
-                    let _revision_guard = self.revision_lock.lock();
-                    if revision_is_current(
-                        &self.allow_agent_screenshot_request_revision,
-                        candidate_revision,
-                    ) && self
-                        .requested_allow_agent_screenshot
-                        .load(Ordering::Acquire)
-                        == candidate_allowed
-                    {
-                        // 持久化结果不确定时不从旧磁盘值重新开放隐私权限。
-                        self.allow_agent_screenshot.store(false, Ordering::Release);
-                        self.requested_allow_agent_screenshot
-                            .store(false, Ordering::Release);
-                        self.agent_screenshot_permission_retry_required
-                            .store(!candidate_allowed, Ordering::Release);
-                    }
-                    return Err(error);
-                }
-
-                let _revision_guard = self.revision_lock.lock();
-                let current_revision = self
-                    .allow_agent_screenshot_request_revision
-                    .load(Ordering::Acquire);
-                let current_allowed = self
-                    .requested_allow_agent_screenshot
-                    .load(Ordering::Acquire);
-                if current_revision == candidate_revision && current_allowed == candidate_allowed {
-                    self.allow_agent_screenshot
-                        .store(candidate_allowed, Ordering::Release);
-                    self.applied_allow_agent_screenshot_revision
-                        .store(candidate_revision, Ordering::Release);
-                    self.agent_screenshot_permission_retry_required
-                        .store(false, Ordering::Release);
-                    return Ok((candidate_revision == revision).then_some(()));
-                }
-                candidate_revision = current_revision;
-                candidate_allowed = current_allowed;
-            }
-        })();
-        log_config_update(
-            "tools.allow_agent_screenshot",
-            revision,
-            result.as_ref().map(|applied| applied.is_some()),
-        );
-        result
     }
 
     /// 更新完整日志配置并持久化。
@@ -680,134 +256,6 @@ impl LunaConfig {
             .ok_or(ConfigWriteError::StaleConfigUpdate)
     }
 
-    /// 为完整日志配置写入分配单调 revision。
-    pub(crate) fn reserve_logging_settings_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.logging_request_revision)
-    }
-
-    /// 仅持久化并发布仍是最新请求的日志配置。
-    pub(crate) fn set_logging_settings_at_revision(
-        &self,
-        settings: LoggingSettings,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let settings = settings
-            .normalized()
-            .map_err(ConfigWriteError::InvalidValue)?;
-        let published = Arc::new(settings);
-        let applied = self.edit_config_at_revision(
-            &self.logging_request_revision,
-            revision,
-            "logging",
-            move || self.logging.store(published),
-            move |document| write_logging_settings(document, &settings),
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    /// 为桌宠主窗口尺寸写入分配单调 revision。
-    pub(crate) fn reserve_model_window_size_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.model_window_size_request_revision)
-    }
-
-    /// 仅提交仍然最新的桌宠主窗口尺寸写入。
-    pub(crate) fn set_model_window_size_at_revision(
-        &self,
-        size: ModelWindowSize,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let applied = self.edit_config_at_revision(
-            &self.model_window_size_request_revision,
-            revision,
-            "window.model_size",
-            || {
-                self.model_window_size
-                    .store(size.atomic_value(), Ordering::Relaxed);
-            },
-            |document| {
-                ensure_table_like(&mut document["window"]);
-                set_item_value(
-                    &mut document["window"]["model_size"],
-                    Value::from(size.id()),
-                );
-            },
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    /// 为眼部跟随开关写入分配单调 revision。
-    pub(crate) fn reserve_eye_tracking_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.eye_tracking_request_revision)
-    }
-
-    /// 仅提交仍然最新的眼部跟随开关写入。
-    pub(crate) fn set_eye_tracking_at_revision(
-        &self,
-        enabled: bool,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let applied = self.edit_config_at_revision(
-            &self.eye_tracking_request_revision,
-            revision,
-            "interaction.eye_tracking",
-            || self.eye_tracking.store(enabled, Ordering::Relaxed),
-            |document| {
-                ensure_table_like(&mut document["interaction"]);
-                set_item_value(
-                    &mut document["interaction"]["eye_tracking"],
-                    Value::from(enabled),
-                );
-            },
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    /// 为外观配置写入分配单调 revision。
-    pub(crate) fn reserve_appearance_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.appearance_request_revision)
-    }
-
-    /// 校验、持久化并一次性发布最新的外观配置。
-    pub(crate) fn set_appearance_at_revision(
-        &self,
-        settings: AppearanceSettings,
-        revision: u64,
-    ) -> Result<Option<Arc<AppearanceSettings>>, ConfigWriteError> {
-        let result = (|| {
-            let settings = Arc::new(
-                settings
-                    .normalized()
-                    .map_err(ConfigWriteError::InvalidValue)?,
-            );
-            let _guard = self.write_lock.lock();
-            if !revision_is_current(&self.appearance_request_revision, revision) {
-                return Ok(None);
-            }
-            self.edit_document_locked(|document| write_appearance(document, &settings))?;
-            // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
-            let _revision_guard = self.revision_lock.lock();
-            if !revision_is_current(&self.appearance_request_revision, revision) {
-                return Ok(None);
-            }
-            let language_changed = self.appearance.load().language != settings.language;
-            self.appearance.store(settings.clone());
-            if language_changed {
-                self.publish_agent_config(
-                    self.llm.load_full(),
-                    self.persona.load_full(),
-                    settings.language,
-                );
-            }
-            Ok(Some(settings))
-        })();
-        log_config_update(
-            "appearance",
-            revision,
-            result.as_ref().map(|applied| applied.is_some()),
-        );
-        result
-    }
-
     /// 更新窗口位置保存开关，并准确修改 TOML 中对应键。
     ///
     /// # Errors
@@ -823,282 +271,6 @@ impl LunaConfig {
             .ok_or(ConfigWriteError::StaleConfigUpdate)
     }
 
-    /// 为窗口位置记忆开关写入分配单调 revision。
-    pub(crate) fn reserve_remember_positions_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.remember_positions_request_revision)
-    }
-
-    /// 仅提交仍然最新的窗口位置记忆开关写入。
-    pub(crate) fn set_remember_window_positions_at_revision(
-        &self,
-        remember: bool,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let _position_guard = self.window_position_write_lock.lock();
-        let applied = self.edit_config_at_revision(
-            &self.remember_positions_request_revision,
-            revision,
-            "window.remember_position",
-            || {
-                self.remember_window_positions
-                    .store(remember, Ordering::Relaxed);
-            },
-            |document| {
-                ensure_table_like(&mut document["window"]);
-                set_item_value(
-                    &mut document["window"]["remember_position"],
-                    Value::from(remember),
-                );
-            },
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    /// 为模型选择写入分配单调 revision。
-    pub(crate) fn reserve_model_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.model_request_revision)
-    }
-
-    /// 仅提交仍然最新的模型选择写入。
-    pub(crate) fn set_selected_model_at_revision(
-        &self,
-        relative_path: Option<&Path>,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let selected_model = match relative_path {
-            Some(path) => Some(validate_relative_path(path)?),
-            None => None,
-        };
-        let applied = self.edit_config_at_revision(
-            &self.model_request_revision,
-            revision,
-            "model.selected",
-            || {
-                self.snapshot.rcu(|current| {
-                    let mut next = ConfigSnapshot::clone(current);
-                    next.selected_model.clone_from(&selected_model);
-                    Arc::new(next)
-                });
-            },
-            |document| match selected_model.as_ref() {
-                Some(path) => {
-                    ensure_table_like(&mut document["model"]);
-                    set_item_value(
-                        &mut document["model"]["selected"],
-                        Value::from(path.to_string_lossy().into_owned()),
-                    );
-                }
-                None => remove_key(document, "model", "selected"),
-            },
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    /// 为完整模型资源覆盖写入分配单调 revision。
-    pub(crate) fn reserve_model_resource_settings_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.model_resources_request_revision)
-    }
-
-    /// 原子持久化并发布仍是最新请求的模型资源覆盖。
-    pub(crate) fn set_model_resource_settings_at_revision(
-        &self,
-        settings: ModelResourceSettings,
-        revision: u64,
-    ) -> Result<Option<SharedModelResourceSettings>, ConfigWriteError> {
-        let settings = Arc::new(settings);
-        let published = settings.clone();
-        let persisted = settings.clone();
-        let applied = self.edit_config_at_revision(
-            &self.model_resources_request_revision,
-            revision,
-            "model.resources",
-            move || self.model_resources.store(published),
-            move |document| write_model_resource_settings(document, &persisted),
-        )?;
-        Ok(applied.then_some(settings))
-    }
-
-    /// 为一份由 Agent 设置编辑器提交的草稿分配单调 revision。
-    pub(crate) fn reserve_llm_settings_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.llm_request_revision)
-    }
-
-    /// 仅当该草稿仍是最新请求时才写入并发布；旧后台任务会被无害丢弃。
-    ///
-    /// # Errors
-    ///
-    /// 模型字段不合法，或配置文件无法持久化时返回错误。
-    pub(crate) fn set_llm_settings_at_revision(
-        &self,
-        settings: LlmSettings,
-        revision: u64,
-        validation_language: AppLanguage,
-    ) -> Result<Option<SharedLlmSettings>, ConfigWriteError> {
-        let result = (|| {
-            let settings = Arc::new(settings.normalized(validation_language)?);
-            let _guard = self.write_lock.lock();
-            if self.llm_request_revision.load(Ordering::Relaxed) != revision {
-                return Ok(None);
-            }
-            self.edit_document_locked(|document| write_llm_settings(document, &settings))?;
-            // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
-            let _revision_guard = self.revision_lock.lock();
-            if self.llm_request_revision.load(Ordering::Relaxed) != revision {
-                return Ok(None);
-            }
-            self.llm.store(settings.clone());
-            self.publish_agent_config(
-                settings.clone(),
-                self.persona.load_full(),
-                self.appearance.load().language,
-            );
-            Ok(Some(settings))
-        })();
-        log_config_update(
-            "agent.providers",
-            revision,
-            result.as_ref().map(|applied| applied.is_some()),
-        );
-        result
-    }
-
-    /// 为一份由人格设置编辑器提交的草稿分配单调 revision。
-    pub(crate) fn reserve_persona_settings_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.persona_request_revision)
-    }
-
-    /// 仅当该草稿仍是最新请求时才写入并发布；旧后台任务会被无害丢弃。
-    ///
-    /// # Errors
-    ///
-    /// 人格字段不合法，或配置文件无法持久化时返回错误。
-    pub(crate) fn set_persona_settings_at_revision(
-        &self,
-        settings: PersonaSettings,
-        revision: u64,
-        validation_language: AppLanguage,
-    ) -> Result<Option<SharedPersonaSettings>, ConfigWriteError> {
-        let result = (|| {
-            let settings = Arc::new(settings.normalized(validation_language)?);
-            let _guard = self.write_lock.lock();
-            if self.persona_request_revision.load(Ordering::Relaxed) != revision {
-                return Ok(None);
-            }
-            self.edit_document_locked(|document| write_persona_settings(document, &settings))?;
-            // reservation 与发布共享短锁，确保复核通过后不会插入更新的 revision。
-            let _revision_guard = self.revision_lock.lock();
-            if self.persona_request_revision.load(Ordering::Relaxed) != revision {
-                return Ok(None);
-            }
-            self.persona.store(settings.clone());
-            self.publish_agent_config(
-                self.llm.load_full(),
-                settings.clone(),
-                self.appearance.load().language,
-            );
-            Ok(Some(settings))
-        })();
-        log_config_update(
-            "agent.personas",
-            revision,
-            result.as_ref().map(|applied| applied.is_some()),
-        );
-        result
-    }
-
-    /// 为一份完整快捷键配置分配单调 revision。
-    pub(crate) fn reserve_shortcut_settings_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.shortcut_request_revision)
-    }
-
-    /// 校验、持久化并一次性发布仍为最新请求的快捷键配置。
-    pub(crate) fn set_shortcut_settings_at_revision(
-        &self,
-        settings: ShortcutSettings,
-        revision: u64,
-    ) -> Result<Option<Arc<ShortcutSettings>>, ConfigWriteError> {
-        let result = (|| {
-            let settings = Arc::new(settings.normalized()?);
-            let _guard = self.write_lock.lock();
-            if !revision_is_current(&self.shortcut_request_revision, revision) {
-                return Ok(None);
-            }
-            self.edit_document_locked(|document| write_shortcut_settings(document, &settings))?;
-            let _revision_guard = self.revision_lock.lock();
-            if !revision_is_current(&self.shortcut_request_revision, revision) {
-                return Ok(None);
-            }
-            self.shortcuts.store(settings.clone());
-            Ok(Some(settings))
-        })();
-        log_config_update(
-            "shortcuts",
-            revision,
-            result.as_ref().map(|applied| applied.is_some()),
-        );
-        result
-    }
-
-    /// 为一份完整语音配置分配单调 revision。
-    pub(crate) fn reserve_voice_settings_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.voice_request_revision)
-    }
-
-    /// 校验、持久化并一次性发布仍为最新请求的语音配置。
-    pub(crate) fn set_voice_settings_at_revision(
-        &self,
-        settings: VoiceSettings,
-        revision: u64,
-    ) -> Result<Option<SharedVoiceSettings>, ConfigWriteError> {
-        let result = (|| {
-            let settings = Arc::new(settings.normalized()?);
-            let _guard = self.write_lock.lock();
-            if !revision_is_current(&self.voice_request_revision, revision) {
-                return Ok(None);
-            }
-            self.edit_document_locked(|document| write_voice_settings(document, &settings))?;
-            let _revision_guard = self.revision_lock.lock();
-            if !revision_is_current(&self.voice_request_revision, revision) {
-                return Ok(None);
-            }
-            self.voice.store(settings.clone());
-            Ok(Some(settings))
-        })();
-        log_config_update(
-            "voice",
-            revision,
-            result.as_ref().map(|applied| applied.is_some()),
-        );
-        result
-    }
-
-    /// 只更新内存中的窗口位置快照；拖动期间不会访问磁盘。
-    pub(crate) fn cache_window_position(&self, window: ConfigWindow, position: WindowPosition) {
-        let mut positions = self.window_positions.lock();
-        if positions.window_position(window) != Some(position) {
-            positions.set_window_position(window, Some(position));
-        }
-    }
-
-    /// 将已缓存的两个窗口位置集中写入配置文件。
-    ///
-    /// 关闭位置保存时该方法不访问磁盘。
-    ///
-    /// # Errors
-    ///
-    /// 配置目录或文件无法读取、创建或写入时返回错误。
-    pub(crate) fn persist_window_positions(&self) -> Result<(), ConfigWriteError> {
-        let _position_guard = self.window_position_write_lock.lock();
-        if !self.remember_window_positions() {
-            return Ok(());
-        }
-        let positions = *self.window_positions.lock();
-        self.edit_document(|document| {
-            write_window_position(document, ConfigWindow::DesktopPet, positions.desktop_pet);
-            write_window_position(document, ConfigWindow::Settings, positions.settings);
-        })
-    }
-
     /// 清除内存和配置文件中保存的全部窗口位置。
     ///
     /// # Errors
@@ -1110,125 +282,4 @@ impl LunaConfig {
         self.reset_window_positions_at_revision(revision)?
             .ok_or(ConfigWriteError::StaleConfigUpdate)
     }
-
-    /// 为窗口位置重置写入分配单调 revision。
-    pub(crate) fn reserve_reset_positions_revision(&self) -> u64 {
-        self.reserve_request_revision(&self.reset_positions_request_revision)
-    }
-
-    /// 仅提交仍然最新的窗口位置重置。
-    pub(crate) fn reset_window_positions_at_revision(
-        &self,
-        revision: u64,
-    ) -> Result<Option<()>, ConfigWriteError> {
-        let _position_guard = self.window_position_write_lock.lock();
-        let applied = self.edit_config_at_revision(
-            &self.reset_positions_request_revision,
-            revision,
-            "window.saved_positions",
-            || {
-                *self.window_positions.lock() = WindowPositions::default();
-            },
-            |document| {
-                remove_key(document, "window", ConfigWindow::DesktopPet.table_name());
-                remove_key(document, "window", ConfigWindow::Settings.table_name());
-            },
-        )?;
-        Ok(applied.then_some(()))
-    }
-
-    fn edit_document(&self, edit: impl FnOnce(&mut DocumentMut)) -> Result<(), ConfigWriteError> {
-        let _guard = self.write_lock.lock();
-        self.edit_document_locked(edit)
-    }
-
-    fn reserve_request_revision(&self, counter: &AtomicU64) -> u64 {
-        let _guard = self.revision_lock.lock();
-        reserve_revision(counter)
-    }
-
-    /// 调用方已持有 revision 锁，所有配置域先规范化再作为一个不可变快照发布。
-    fn publish_agent_config(
-        &self,
-        settings: SharedLlmSettings,
-        personas: SharedPersonaSettings,
-        language: AppLanguage,
-    ) {
-        let generation = self.agent_config.load().generation().wrapping_add(1).max(1);
-        let snapshot = AgentConfigSnapshot::try_new(generation, settings, personas, language)
-            .expect("根配置层只能发布已经通过领域校验的 Agent 配置");
-        self.agent_config.store(Arc::new(snapshot));
-    }
-
-    fn edit_document_locked(
-        &self,
-        edit: impl FnOnce(&mut DocumentMut),
-    ) -> Result<(), ConfigWriteError> {
-        let mut document = document_for_update(&self.path)?;
-        edit(&mut document);
-
-        if let Some(parent) = self
-            .path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            fs::create_dir_all(parent).map_err(|source| ConfigWriteError::Io {
-                operation: "创建配置目录",
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-        let nonce = reserve_revision(&self.write_nonce);
-        write_config_file(&self.path, &document, nonce)
-    }
-
-    fn edit_config_at_revision(
-        &self,
-        counter: &AtomicU64,
-        revision: u64,
-        setting: &'static str,
-        publish: impl FnOnce(),
-        edit: impl FnOnce(&mut DocumentMut),
-    ) -> Result<bool, ConfigWriteError> {
-        let result = (|| {
-            let _guard = self.write_lock.lock();
-            if !revision_is_current(counter, revision) {
-                return Ok(false);
-            }
-            self.edit_document_locked(edit)?;
-            // 磁盘写入期间允许新请求递增 revision；最终复核与发布必须保持原子顺序。
-            let _revision_guard = self.revision_lock.lock();
-            if !revision_is_current(counter, revision) {
-                return Ok(false);
-            }
-            publish();
-            Ok(true)
-        })();
-        log_config_update(setting, revision, result.as_ref().map(|applied| *applied));
-        result
-    }
-}
-
-fn log_config_update(setting: &str, revision: u64, outcome: Result<bool, &ConfigWriteError>) {
-    match outcome {
-        Ok(true) => log::info!("配置已更新：setting={setting}, revision={revision}"),
-        Ok(false) => {
-            log::debug!("配置更新已被较新请求替代：setting={setting}, revision={revision}");
-        }
-        Err(error) => log::error!(
-            "配置更新失败：setting={setting}, revision={revision}, error_kind={}",
-            error.diagnostic_kind()
-        ),
-    }
-}
-
-fn reserve_revision(counter: &AtomicU64) -> u64 {
-    counter
-        .fetch_add(1, Ordering::Relaxed)
-        .wrapping_add(1)
-        .max(1)
-}
-
-fn revision_is_current(counter: &AtomicU64, revision: u64) -> bool {
-    counter.load(Ordering::Relaxed) == revision
 }

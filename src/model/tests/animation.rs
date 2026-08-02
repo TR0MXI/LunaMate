@@ -10,6 +10,10 @@ use crate::model::{
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -59,6 +63,33 @@ fn write_motion_with_loop(path: &Path, duration: f32, looping: bool) {
         ),
     )
     .expect("测试动作应当可以创建");
+}
+
+fn write_large_motion(path: &Path) {
+    const SEGMENT_COUNT: usize = 4_096;
+    let mut segments = Vec::with_capacity(2 + SEGMENT_COUNT * 3);
+    segments.extend([0.0, 0.0]);
+    for index in 1..=SEGMENT_COUNT {
+        let point = index as f32;
+        segments.extend([0.0, point, point]);
+    }
+    let source = serde_json::json!({
+        "Version": 3,
+        "Meta": {
+            "Duration": SEGMENT_COUNT as f32,
+            "Fps": 60,
+            "Loop": false,
+            "CurveCount": 1,
+            "TotalSegmentCount": SEGMENT_COUNT,
+            "TotalPointCount": SEGMENT_COUNT + 1
+        },
+        "Curves": [{
+            "Target": "Parameter",
+            "Id": "ParamAngleX",
+            "Segments": segments
+        }]
+    });
+    fs::write(path, source.to_string()).expect("大型测试动作应当可以创建");
 }
 
 fn parse_model(motions: &str) -> Model3 {
@@ -166,15 +197,22 @@ fn declared_group_with_only_bad_motions_is_invalid_instead_of_missing() {
 #[test]
 fn motion_limit_keeps_prefix_and_reports_one_aggregate_diagnostic() {
     let directory = TestDirectory::new();
-    write_motion(&directory.path().join("valid.motion3.json"), 1.0);
-    let references = (0..MAX_MOTION_COUNT + 3)
+    write_large_motion(&directory.path().join("valid.motion3.json"));
+    let omitted = 16_384;
+    let references = (0..MAX_MOTION_COUNT + omitted)
         .map(|_| r#"{"File":"valid.motion3.json"}"#)
         .collect::<Vec<_>>()
         .join(",");
     let model = parse_model(&format!(r#"{{"Tap":[{references}]}}"#));
 
-    let (mut controller, diagnostics) =
-        AnimationController::load_manifest(&model, &directory.resolver());
+    let opened = Arc::new(AtomicUsize::new(0));
+    let resolver = directory.resolver().with_open_hook_for_test({
+        let opened = Arc::clone(&opened);
+        move |_| {
+            opened.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let (mut controller, diagnostics) = AnimationController::load_manifest(&model, &resolver);
 
     assert_eq!(
         controller.loaded_motion_count("Tap"),
@@ -191,7 +229,16 @@ fn motion_limit_keeps_prefix_and_reports_one_aggregate_diagnostic() {
         .expect("动作超限应当生成聚合诊断");
     assert_eq!(limit.group(), Some("Tap"));
     assert_eq!(limit.declaration_index(), Some(MAX_MOTION_COUNT));
-    assert_eq!(limit.affected_count(), 3);
+    assert_eq!(limit.affected_count(), omitted);
+    assert_eq!(opened.load(Ordering::Relaxed), 1);
+    let identities = controller
+        .parsed_motion_identities_for_test("Tap")
+        .expect("已加载动作组应当存在");
+    let first_identity = identities.first().expect("动作组应当包含播放器");
+    assert!(
+        identities.iter().all(|identity| identity == first_identity),
+        "重复声明必须共享同一个解析动作对象"
+    );
     assert_eq!(
         controller.play_interaction("Tap"),
         MotionPlayResult::Started
@@ -348,14 +395,14 @@ fn vts_version_zero_looping_external_motion_loads_as_idle_motion() {
                 "Loop": true,
                 "CurveCount": 1,
                 "TotalSegmentCount": 1,
-                "TotalPointCount": 2,
+                "TotalPointCount": 7,
                 "UserDataCount": 0,
                 "TotalUserDataSize": 0
             },
             "Curves": [{
                 "Target": "Parameter",
                 "Id": "ParamAngleX",
-                "Segments": [0, 0, 0, 29.986647, 1]
+                "Segments": [0, 0, 1, 9.995549, 0, 19.991096, 0, 29.986647, 1]
             }]
         }"#,
     )
@@ -379,6 +426,29 @@ fn vts_version_zero_looping_external_motion_loads_as_idle_motion() {
         MotionPlayResult::Started
     );
     assert_eq!(controller.active_is_looping(), Some(true));
+    assert_eq!(
+        controller.active_group_for_test(),
+        Some("external:standby.motion3.json")
+    );
+}
+
+#[test]
+#[ignore = "需要通过 LUNAMATE_TEST_STANDBY_MODEL 提供用户自备 model3.json"]
+fn user_supplied_vts_standby_loads_as_idle_motion() {
+    let manifest = std::env::var_os("LUNAMATE_TEST_STANDBY_MODEL")
+        .map(PathBuf::from)
+        .expect("手动 standby 测试必须设置 LUNAMATE_TEST_STANDBY_MODEL");
+    let source = fs::read_to_string(&manifest).expect("用户自备 model3.json 应可读取为 UTF-8");
+    let model = Model3::from_json_str(&source).expect("用户自备 model3.json 应可解析");
+    let resolver =
+        ModelResourceResolver::for_manifest(&manifest).expect("用户自备模型目录应可建立资源解析器");
+
+    let (controller, diagnostics) = AnimationController::load_manifest(&model, &resolver);
+
+    assert!(diagnostics.entries().is_empty(), "{diagnostics:#?}");
+    assert!(controller.available_resources().iter().any(|resource| {
+        resource.runtime_id() == "external:standby.motion3.json" && resource.is_idle()
+    }));
     assert_eq!(
         controller.active_group_for_test(),
         Some("external:standby.motion3.json")
@@ -508,6 +578,43 @@ fn cancellation_before_loading_skips_every_motion_declaration() {
         controller.play_interaction("Idle"),
         MotionPlayResult::InvalidMotion
     );
+}
+
+#[test]
+fn cancellation_during_declared_motion_resolution_stops_further_opens() {
+    let directory = TestDirectory::new();
+    for name in ["first", "second", "third"] {
+        write_motion(&directory.path().join(format!("{name}.motion3.json")), 1.0);
+    }
+    let model = parse_model(
+        r#"{"Tap":[
+                {"File":"first.motion3.json"},
+                {"File":"second.motion3.json"},
+                {"File":"third.motion3.json"}
+            ]}"#,
+    );
+    let cancellation = RenderCancellation::default();
+    let opened = Arc::new(AtomicUsize::new(0));
+    let resolver = directory.resolver().with_open_hook_for_test({
+        let cancellation = cancellation.clone();
+        let opened = Arc::clone(&opened);
+        move |_| {
+            opened.fetch_add(1, Ordering::Relaxed);
+            cancellation.cancel();
+        }
+    });
+    let mut budget = AuxiliaryResourceBudget::default();
+
+    let (controller, diagnostics) = AnimationController::load_manifest_with_resources(
+        &model,
+        &resolver,
+        &mut budget,
+        &cancellation,
+    );
+
+    assert_eq!(opened.load(Ordering::Relaxed), 1);
+    assert_eq!(controller.loaded_motion_count("Tap"), Some(0));
+    assert!(diagnostics.entries().is_empty());
 }
 
 #[test]

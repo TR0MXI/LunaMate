@@ -24,7 +24,7 @@ impl Render for DesktopPetView {
         if let Some(moved) = self.position_controller.apply_pending_reset(window, cx)
             && !moved
         {
-            log::debug!("{}", t!("log.pet_move_unsupported"));
+            log::debug!("event=window_move_unsupported window=desktop_pet");
         }
         let palette = UiPalette::from_app(cx);
         let control_background = palette.secondary;

@@ -353,6 +353,8 @@ fn normalize(value: Vector2) -> Vector2 {
 
 const AIR_RESISTANCE: f32 = 5.0;
 const MAXIMUM_DELTA_TIME: f32 = 5.0;
+const MAXIMUM_PHYSICS_FPS: f32 = 240.0;
+const MAXIMUM_PHYSICS_STEPS_PER_EVALUATE: usize = 240;
 const MOVEMENT_THRESHOLD: f32 = 0.001;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -466,6 +468,12 @@ impl PhysicsRuntime {
                 }
             })
             .collect();
+        let fps = physics.meta().fps();
+        let fps = if fps > 0.0 && fps.is_finite() {
+            fps.min(MAXIMUM_PHYSICS_FPS)
+        } else {
+            0.0
+        };
 
         Self {
             settings,
@@ -473,7 +481,7 @@ impl PhysicsRuntime {
             current_remain_time: 0.0,
             parameter_cache: Vec::new(),
             parameter_input_cache: Vec::new(),
-            fps: physics.meta().fps(),
+            fps,
         }
     }
 
@@ -483,6 +491,16 @@ impl PhysicsRuntime {
 
     pub fn set_options(&mut self, options: PhysicsOptions) {
         self.options = options;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixed_fps_for_test(&self) -> f32 {
+        self.fps
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remaining_time_for_test(&self) -> f32 {
+        self.current_remain_time
     }
 
     pub fn reset(&mut self) {
@@ -540,7 +558,10 @@ impl PhysicsRuntime {
             return;
         }
 
-        while self.current_remain_time >= physics_delta_time {
+        for _ in 0..MAXIMUM_PHYSICS_STEPS_PER_EVALUATE {
+            if self.current_remain_time < physics_delta_time {
+                break;
+            }
             let input_weight = physics_delta_time / self.current_remain_time;
             for (index, &parameter_value) in parameter_values.iter().enumerate() {
                 self.parameter_cache[index] = self.parameter_input_cache[index]
@@ -565,6 +586,9 @@ impl PhysicsRuntime {
             }
 
             self.current_remain_time -= physics_delta_time;
+        }
+        if self.current_remain_time >= physics_delta_time {
+            self.current_remain_time = 0.0;
         }
 
         let alpha = self.current_remain_time / physics_delta_time;

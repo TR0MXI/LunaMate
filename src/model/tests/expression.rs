@@ -10,6 +10,10 @@ use crate::model::{
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -64,7 +68,24 @@ fn write_expression_with_fades(path: &Path, fade_in: f32, fade_out: f32) {
                 r#"{{"Type":"Live2D Expression","FadeInTime":{fade_in},"FadeOutTime":{fade_out},"Parameters":[]}}"#
             ),
         )
-        .expect("测试淡入淡出表情应当可以创建");
+    .expect("测试淡入淡出表情应当可以创建");
+}
+
+fn write_large_expression(path: &Path) {
+    let parameters = (0..2_048)
+        .map(|index| {
+            serde_json::json!({
+                "Id": format!("Param{index}"),
+                "Value": index as f32,
+                "Blend": "Overwrite"
+            })
+        })
+        .collect::<Vec<_>>();
+    let source = serde_json::json!({
+        "Type": "Live2D Expression",
+        "Parameters": parameters
+    });
+    fs::write(path, source.to_string()).expect("大型测试表情应当可以创建");
 }
 
 fn parse_model(expressions: &str) -> Model3 {
@@ -417,15 +438,22 @@ fn later_successful_duplicate_overrides_but_later_failure_keeps_success() {
 #[test]
 fn expression_limit_keeps_prefix_and_reports_one_aggregate_diagnostic() {
     let directory = TestDirectory::new();
-    write_expression(&directory.path().join("valid.exp3.json"), 1.0);
-    let references = (0..MAX_EXPRESSION_COUNT + 2)
+    write_large_expression(&directory.path().join("valid.exp3.json"));
+    let omitted = 16_384;
+    let references = (0..MAX_EXPRESSION_COUNT + omitted)
         .map(|index| format!(r#"{{"Name":"Expression{index}","File":"valid.exp3.json"}}"#))
         .collect::<Vec<_>>()
         .join(",");
     let model = parse_model(&format!("[{references}]"));
 
-    let (controller, diagnostics) =
-        ExpressionController::load_manifest(&model, &directory.resolver());
+    let opened = Arc::new(AtomicUsize::new(0));
+    let resolver = directory.resolver().with_open_hook_for_test({
+        let opened = Arc::clone(&opened);
+        move |_| {
+            opened.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let (controller, diagnostics) = ExpressionController::load_manifest(&model, &resolver);
 
     assert_eq!(controller.loaded_expression_count(), MAX_EXPRESSION_COUNT);
     assert_eq!(
@@ -439,7 +467,52 @@ fn expression_limit_keeps_prefix_and_reports_one_aggregate_diagnostic() {
         .expect("表情超限应当生成聚合诊断");
     assert_eq!(limit.name(), Some("Expression128"));
     assert_eq!(limit.declaration_index(), Some(MAX_EXPRESSION_COUNT));
-    assert_eq!(limit.affected_count(), 2);
+    assert_eq!(limit.affected_count(), omitted);
+    assert_eq!(opened.load(Ordering::Relaxed), 1);
+    let identities = controller.parsed_expression_identities_for_test();
+    let first_identity = identities.first().expect("至少应加载一个表情");
+    assert!(
+        identities.iter().all(|identity| identity == first_identity),
+        "重复声明必须共享同一个解析表情对象"
+    );
+}
+
+#[test]
+fn cancellation_during_declared_expression_resolution_stops_further_opens() {
+    let directory = TestDirectory::new();
+    for name in ["first", "second", "third"] {
+        write_expression(&directory.path().join(format!("{name}.exp3.json")), 1.0);
+    }
+    let model = parse_model(
+        r#"[
+            {"Name":"First","File":"first.exp3.json"},
+            {"Name":"Second","File":"second.exp3.json"},
+            {"Name":"Third","File":"third.exp3.json"}
+        ]"#,
+    );
+    let cancellation = RenderCancellation::default();
+    let opened = Arc::new(AtomicUsize::new(0));
+    let resolver = directory.resolver().with_open_hook_for_test({
+        let cancellation = cancellation.clone();
+        let opened = Arc::clone(&opened);
+        move |_| {
+            opened.fetch_add(1, Ordering::Relaxed);
+            cancellation.cancel();
+        }
+    });
+    let mut budget = AuxiliaryResourceBudget::default();
+
+    let (controller, diagnostics) = ExpressionController::load_manifest_with_resources_for_test(
+        &model,
+        &resolver,
+        &[],
+        &mut budget,
+        &cancellation,
+    );
+
+    assert_eq!(opened.load(Ordering::Relaxed), 1);
+    assert_eq!(controller.loaded_expression_count(), 0);
+    assert!(diagnostics.entries().is_empty());
 }
 
 #[test]

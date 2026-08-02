@@ -2,7 +2,6 @@
 
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
-    path::PathBuf,
     sync::{Arc, mpsc::Receiver},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -10,12 +9,12 @@ use std::{
 
 use async_channel::Receiver as AsyncReceiver;
 use parking_lot::{Condvar, Mutex};
-use rust_i18n::t;
 
 use crate::platform::{InitializationCancellation, NativeAttachment, attach_underlay};
 
 use super::{
     capabilities::ModelLoadDiagnostics,
+    catalog::ModelManifest,
     interaction::{ModelCommand, RenderedModelFrame},
     live2d::{ModelPreviewCapabilities, RenderCancellation},
 };
@@ -146,17 +145,17 @@ impl GpuUnderlay {
         let worker = thread::Builder::new()
             .name("lunamate-live2d-gpu".to_owned())
             .spawn(move || {
-                log::info!("Live2D GPU worker 已启动");
+                log::info!("event=gpu_worker_started");
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     worker::run(factory, worker_mailbox, event_sender, worker_latest_frame)
                 }));
                 if result.is_err() {
-                    log::error!("Live2D GPU worker 发生内部 panic");
+                    log::error!("event=gpu_worker_failed reason=panic");
                     let _ = panic_sender.try_send(GpuUnderlayEvent::Unavailable {
                         kind: GpuUnavailableKind::WorkerPanic,
                     });
                 }
-                log::info!("Live2D GPU worker 已停止");
+                log::info!("event=gpu_worker_stopped");
             })
             .map_err(|error| format!("无法启动 Live2D GPU worker：{error}"))?;
 
@@ -191,7 +190,7 @@ impl GpuUnderlay {
     pub(crate) fn load(
         &mut self,
         generation: u64,
-        path: Option<PathBuf>,
+        path: Option<ModelManifest>,
         size: GpuUnderlaySize,
         cancellation: RenderCancellation,
         commands: Receiver<ModelCommand>,
@@ -236,7 +235,7 @@ impl GpuUnderlay {
         if let Some(worker) = self.request_shutdown()
             && worker.join().is_err()
         {
-            log::error!("{}", t!("log.gpu_worker_panicked"));
+            log::error!("event=gpu_worker_exit_failed reason=panic");
         }
         self.attachment.take();
     }
@@ -250,7 +249,7 @@ impl Drop for GpuUnderlay {
 
 pub(in crate::model) struct LoadRequest {
     pub(in crate::model) generation: u64,
-    pub(in crate::model) path: Option<PathBuf>,
+    pub(in crate::model) path: Option<ModelManifest>,
     pub(in crate::model) size: GpuUnderlaySize,
     pub(in crate::model) cancellation: RenderCancellation,
     pub(in crate::model) commands: Receiver<ModelCommand>,

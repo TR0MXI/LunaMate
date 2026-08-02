@@ -207,11 +207,15 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
 完成 Rust 代码变更后，依次执行并修复所有问题：
 
 ```bash
+cargo deny check advisories
 cargo check --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --all
 cargo test --locked
 ```
+
+`deny.toml` 中的 advisory 例外必须记录不可达依据与移除条件；依赖升级使例外不再命中时，
+`unused-ignored-advisory = "deny"` 会要求立即删除过期条目。
 
 Mocari 变形器 scratch 的时间与分配基准分别执行：
 

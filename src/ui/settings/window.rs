@@ -5,7 +5,6 @@ use gpui::{
     Window, WindowControlArea, div, prelude::*, px, svg,
 };
 use gpui_component::StyledExt;
-use rust_i18n::t;
 
 use crate::{
     config::ConfigWindow,
@@ -81,7 +80,7 @@ impl Render for SettingsWindowView {
         if let Some(moved) = self.position_controller.apply_pending_reset(window, cx)
             && !moved
         {
-            log::debug!("{}", t!("log.settings_move_unsupported"));
+            log::debug!("event=window_move_unsupported window=settings");
         }
         let config = self.config.clone();
         div().size_full().bg(gpui::transparent_black()).child(

@@ -1,9 +1,10 @@
 use gpui::{point, px, size};
+use lunamate_agent::tools::{AgentOutfitRequest, AgentOutfitResult};
 use rust_i18n::t;
 
 use crate::{
     model::{ModelDiagnosticCategory, ModelLoadDiagnostic, ModelLoadDiagnostics},
-    ui::desktop_pet::{ModelLoadState, look_target_for_position},
+    ui::desktop_pet::{DesktopPetView, ModelLoadState, look_target_for_position},
 };
 
 #[test]
@@ -68,4 +69,15 @@ fn look_target_clamps_cursor_positions_outside_the_window() {
         look_target_for_position(point(px(320.0), px(180.0)), viewport),
         [1.0, -1.0]
     );
+}
+
+#[test]
+fn outfit_completion_reports_whether_the_immediate_load_command_was_issued() {
+    let (not_issued, failed) = AgentOutfitRequest::channel("variant:coat".to_owned(), 1);
+    not_issued.complete(DesktopPetView::model_load_command_was_issued_for_test(7, 7));
+    assert_eq!(failed.try_recv(), Ok(AgentOutfitResult::Failed));
+
+    let (issued, applied) = AgentOutfitRequest::channel("variant:coat".to_owned(), 1);
+    issued.complete(DesktopPetView::model_load_command_was_issued_for_test(7, 8));
+    assert_eq!(applied.try_recv(), Ok(AgentOutfitResult::Applied));
 }

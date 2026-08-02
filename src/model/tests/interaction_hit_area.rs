@@ -359,8 +359,9 @@ fn rendered_hit_area_bounds_follow_visible_drawable_vertices() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("models/hiyori_free/runtime/hiyori_free_t08.model3.json");
 
-    let mut model = AnimatedModel::load(&path, 128, 128, RenderCancellation::default())
-        .expect("自备测试模型应当可以加载");
+    let mut model =
+        AnimatedModel::load_path_for_test(&path, 128, 128, RenderCancellation::default())
+            .expect("自备测试模型应当可以加载");
     let first = model
         .render_frame(Duration::ZERO, [0.0, 0.0])
         .expect("首帧应当可以渲染");

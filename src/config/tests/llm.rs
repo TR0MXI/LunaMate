@@ -146,10 +146,14 @@ fn endpoint_normalization_preserves_base_path() {
         Some("https://example.com/v1/")
     );
     assert_eq!(
-        normalize_endpoint(LlmProvider::OpenAI, Some("http://example.com/v1"), LANGUAGE,)
-            .expect("HTTP endpoint 应当有效")
-            .as_deref(),
-        Some("http://example.com/v1/")
+        normalize_endpoint(
+            LlmProvider::OpenAI,
+            Some("http://localhost:11434/v1"),
+            LANGUAGE,
+        )
+        .expect("回环 HTTP endpoint 应当有效")
+        .as_deref(),
+        Some("http://localhost:11434/v1/")
     );
 }
 
@@ -165,7 +169,7 @@ fn blank_endpoints_are_treated_as_provider_defaults() {
 }
 
 #[test]
-fn plain_http_is_allowed_for_local_and_remote_hosts() {
+fn plain_http_accepts_loopback_and_remote_hosts() {
     for endpoint in [
         "http://localhost:11434",
         "http://LOCALHOST:11434",
@@ -174,6 +178,7 @@ fn plain_http_is_allowed_for_local_and_remote_hosts() {
         "http://192.168.1.10:11434",
         "http://example.com",
         "http://[2001:db8::1]:11434",
+        "http://localhost.evil:11434",
     ] {
         assert!(
             normalize_endpoint(LlmProvider::Ollama, Some(endpoint), LANGUAGE).is_ok(),
@@ -509,6 +514,63 @@ models = "not-an-array"
 }
 
 #[test]
+fn wrong_llm_section_type_warns_and_uses_the_default_domain() {
+    let document = "llm = false\n"
+        .parse::<DocumentMut>()
+        .expect("测试配置应当可以解析");
+    let mut warnings = Vec::new();
+
+    let settings = parse_llm_settings(&document, &mut warnings, LANGUAGE);
+
+    assert_eq!(settings, LlmSettings::default());
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("llm"));
+    assert!(warnings[0].contains("TOML 表"));
+}
+
+#[test]
+fn wrong_optional_model_field_types_fall_back_independently() {
+    let document = r#"
+[[llm.models]]
+id = "chat"
+label = "Chat"
+kind = "chat-completions"
+provider = "ollama"
+model = "qwen3:8b"
+endpoint = 42
+api_key = false
+
+[[llm.models]]
+id = "local-stt"
+label = "Local Whisper"
+kind = "transcription"
+provider = "local-whisper"
+model = 42
+local_path = "/models/ggml-small.bin"
+use_gpu = "yes"
+"#
+    .parse::<DocumentMut>()
+    .expect("测试配置应当可以解析");
+    let mut warnings = Vec::new();
+
+    let settings = parse_llm_settings(&document, &mut warnings, LANGUAGE);
+
+    assert_eq!(settings.models.len(), 2);
+    let chat = settings.model("chat").expect("有效聊天模型必须保留");
+    assert_eq!(chat.endpoint, None);
+    assert_eq!(chat.api_key, None);
+    let transcription = settings.model("local-stt").expect("本地转写模型必须保留");
+    assert_eq!(transcription.model, "whisper");
+    assert!(!transcription.use_gpu);
+    for field in ["endpoint", "api_key", "model", "use_gpu"] {
+        assert!(
+            warnings.iter().any(|warning| warning.contains(field)),
+            "{field} 错误类型必须产生诊断：{warnings:?}"
+        );
+    }
+}
+
+#[test]
 fn selection_pointing_at_a_removed_model_is_dropped_with_a_warning() {
     let document = r#"
 [llm]
@@ -634,7 +696,6 @@ kind = "speech-synthesis"
 provider = "openai"
 model = "gpt-4o-mini-tts"
 api_key = "test-key"
-app_id = "obsolete-app-id"
 voice = "alloy"
 
 [[llm.models]]
@@ -687,7 +748,6 @@ voice_type = "zh_female_vv_uranus_bigtts"
     assert_eq!(stt.whisper_language.as_deref(), Some("zh"));
 
     write_llm_settings(&mut document, &settings);
-    assert!(!document.to_string().contains("app_id"));
     let mut rewritten_warnings = Vec::new();
     assert_eq!(
         parse_llm_settings(&document, &mut rewritten_warnings, LANGUAGE),

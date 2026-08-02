@@ -188,7 +188,7 @@ fn dispatch_action(actions: &Sender<SystemTrayAction>, action: SystemTrayAction)
         Ok(()) => true,
         Err(TrySendError::Closed(_)) => false,
         Err(TrySendError::Full(_)) => {
-            log::warn!("{}", t!("log.tray_action_queue_full"));
+            log::warn!("event=tray_action_dropped reason=queue_full");
             false
         }
     }
@@ -437,7 +437,6 @@ mod imp {
     use async_channel::{Sender, TrySendError};
     use ksni::{TrayMethods, menu::CheckmarkItem, menu::StandardItem};
     use parking_lot::Mutex;
-    use rust_i18n::t;
     use tokio::runtime::Handle;
 
     use super::{
@@ -542,11 +541,11 @@ mod imp {
             let task = runtime.spawn(async move {
                 let handle = match tray.assume_sni_available(true).spawn().await {
                     Ok(handle) => {
-                        log::info!("Linux StatusNotifierItem 托盘服务已注册");
+                        log::info!("event=tray_service_registered platform=linux");
                         handle
                     }
-                    Err(error) => {
-                        log::warn!("{}", t!("log.tray_init_failed", error = error.to_string()));
+                    Err(_) => {
+                        log::warn!("event=tray_init_failed platform=linux stage=register");
                         return;
                     }
                 };
@@ -560,14 +559,14 @@ mod imp {
                             }
                             while refresh_receiver.try_recv().is_ok() {}
                             if handle.update(|_: &mut LinuxTray| {}).await.is_none() {
-                                log::warn!("{}", t!("log.tray_update_stopped"));
+                                log::warn!("event=tray_update_stopped platform=linux");
                                 break;
                             }
                         }
                     }
                 }
                 handle.shutdown().await;
-                log::debug!("Linux StatusNotifierItem 托盘服务已停止");
+                log::debug!("event=tray_service_stopped platform=linux");
             });
 
             Ok(Self {

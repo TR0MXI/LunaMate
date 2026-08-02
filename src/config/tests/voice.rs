@@ -24,7 +24,7 @@ fn automatic_mode_combines_vad_and_shortcut_capabilities() {
 
 #[test]
 fn voice_settings_round_trip_without_losing_unrelated_keys() {
-    let mut document = "[custom]\nkeep = true\n[voice]\nvad_model = \"/models/legacy-vad.bin\"\n"
+    let mut document = "[custom]\nkeep = true\n[voice]\nfuture_option = \"keep\"\n"
         .parse::<DocumentMut>()
         .expect("测试配置应当可以解析");
     let settings = VoiceSettings {
@@ -38,14 +38,13 @@ fn voice_settings_round_trip_without_losing_unrelated_keys() {
     assert!(warnings.is_empty());
     assert_eq!(restored, settings);
     assert_eq!(document["custom"]["keep"].as_bool(), Some(true));
-    assert!(document["voice"].get("vad_model").is_none());
+    assert_eq!(document["voice"]["future_option"].as_str(), Some("keep"));
 }
 
 #[test]
 fn malformed_voice_fields_fail_closed_independently() {
     let document = r#"[voice]
 mode = "always"
-vad_model = "/models/vad.bin"
 "#
     .parse::<DocumentMut>()
     .expect("测试配置应当可以解析");
@@ -55,6 +54,21 @@ vad_model = "/models/vad.bin"
 
     assert_eq!(settings.mode, VoiceMode::Off);
     assert_eq!(warnings.len(), 1);
+}
+
+#[test]
+fn wrong_voice_section_type_warns_and_uses_the_default_domain() {
+    let document = "voice = \"auto\"\n"
+        .parse::<DocumentMut>()
+        .expect("测试配置应当可以解析");
+    let mut warnings = Vec::new();
+
+    let settings = parse_voice_settings(&document, &mut warnings);
+
+    assert_eq!(settings, VoiceSettings::default());
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("voice"));
+    assert!(warnings[0].contains("TOML 表"));
 }
 
 #[test]

@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 use lunamate_agent::config::{LlmSettings, ModelProvider};
 use toml_edit::{DocumentMut, Value};
 
-use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value};
+use super::{ConfigWriteError, ensure_table_like, set_item_value, table_like_section};
 
 /// 控制麦克风何时采集和提交语音。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -117,7 +117,7 @@ pub(super) fn parse_voice_settings(
     warnings: &mut Vec<String>,
 ) -> VoiceSettings {
     let mut settings = VoiceSettings::default();
-    let Some(voice) = document.get("voice") else {
+    let Some(voice) = table_like_section(document, "voice", warnings) else {
         return settings;
     };
 
@@ -142,7 +142,4 @@ pub(super) fn write_voice_settings(document: &mut DocumentMut, settings: &VoiceS
         &mut document["voice"]["mode"],
         Value::from(settings.mode.id()),
     );
-    remove_key(document, "voice", "transcription_model");
-    remove_key(document, "voice", "use_gpu");
-    remove_key(document, "voice", "vad_model");
 }

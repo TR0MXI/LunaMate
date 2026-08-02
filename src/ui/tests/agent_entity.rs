@@ -101,3 +101,29 @@ fn stopping_voice_interaction_clears_the_pending_utterance(cx: &mut TestAppConte
         assert_eq!(view.pending_voice_for_test(), None);
     });
 }
+
+#[gpui::test]
+fn failed_agent_configuration_generation_can_retry_without_rolling_back_a_newer_attempt(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = mount(cx, None);
+    view.update(cx, |view, _cx| {
+        let failed = view
+            .begin_agent_config_refresh_for_test(2)
+            .expect("更新 generation 应开始应用");
+        assert_eq!(view.agent_config_generation_for_test(), INITIAL_GENERATION);
+        assert!(view.finish_agent_config_refresh_for_test(failed, 2, false));
+        assert_eq!(view.agent_config_generation_for_test(), INITIAL_GENERATION);
+
+        let retry = view
+            .begin_agent_config_refresh_for_test(2)
+            .expect("失败 generation 应允许原值重试");
+        let newer = view
+            .begin_agent_config_refresh_for_test(3)
+            .expect("更新 generation 应替代重试任务");
+        assert!(!view.finish_agent_config_refresh_for_test(retry, 2, false));
+        assert_eq!(view.agent_config_generation_for_test(), INITIAL_GENERATION);
+        assert!(view.finish_agent_config_refresh_for_test(newer, 3, true));
+        assert_eq!(view.agent_config_generation_for_test(), 3);
+    });
+}

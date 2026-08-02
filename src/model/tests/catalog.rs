@@ -3,7 +3,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::model::catalog::{MAX_DISCOVERY_DEPTH, ModelCatalog, ensure_model_directory};
+use crate::model::catalog::{
+    MAX_DISCOVERY_DEPTH, MAX_PENDING_DIRECTORIES, ModelCatalog, ensure_model_directory,
+};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -117,6 +119,37 @@ fn excessive_discovery_depth_warns_without_hiding_root_model() {
         catalog
             .warning()
             .is_some_and(|warning| warning.contains("扫描深度"))
+    );
+}
+
+#[test]
+fn wide_model_root_is_bounded_and_preserves_collected_models() {
+    let directory = TestDirectory::new();
+    let root_manifest = directory.path().join("root.model3.json");
+    fs::write(&root_manifest, "{}").expect("根目录模型清单应当可以创建");
+    for index in 0..=MAX_PENDING_DIRECTORIES {
+        let model_directory = directory.path().join(format!("wide-{index:04}"));
+        fs::create_dir(&model_directory).expect("宽目录测试子目录应当可以创建");
+        fs::write(model_directory.join("variant.model3.json"), "{}")
+            .expect("宽目录测试模型清单应当可以创建");
+    }
+
+    let catalog = ModelCatalog::load(directory.path().to_path_buf(), None)
+        .expect("达到目录预算不应丢弃已扫描结果");
+
+    assert_eq!(
+        catalog.counts(),
+        (MAX_PENDING_DIRECTORIES + 1, MAX_PENDING_DIRECTORIES + 1)
+    );
+    assert_eq!(
+        catalog.warning(),
+        Some("模型目录扫描达到资源预算，部分目录或模型清单未处理")
+    );
+    assert_eq!(
+        catalog
+            .model_path(Path::new("root.model3.json"))
+            .map(|manifest| manifest.path().to_path_buf()),
+        Some(root_manifest)
     );
 }
 
@@ -244,14 +277,17 @@ fn runtime_selection_resolves_only_scanned_manifests_and_can_be_cleared() {
     let selected = Path::new("luna/luna.model3.json");
 
     assert_eq!(
-        catalog.model_path(selected),
+        catalog
+            .model_path(selected)
+            .map(|manifest| manifest.path().to_path_buf()),
         Some(directory.path().join(selected))
     );
     assert_eq!(catalog.model_path(Path::new("missing.model3.json")), None);
     assert_eq!(
         catalog
             .set_runtime_selection(Some(selected))
-            .expect("扫描结果内的运行时模型应当可以选择"),
+            .expect("扫描结果内的运行时模型应当可以选择")
+            .map(|manifest| manifest.path().to_path_buf()),
         Some(directory.path().join(selected))
     );
     assert_eq!(

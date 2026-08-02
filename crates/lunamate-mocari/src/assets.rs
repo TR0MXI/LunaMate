@@ -8,7 +8,6 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    thread,
 };
 
 use crate::{
@@ -96,8 +95,45 @@ impl DecodedTexture {
     }
 }
 
+#[derive(Debug)]
+/// Caller-owned inputs for constructing a runtime without filesystem access.
+///
+/// Applications that enforce their own resource budgets can read and validate
+/// every required file once, then move the resulting immutable values into this
+/// snapshot. [`load_model_runtime_from_assets`] only parses the supplied MOC
+/// bytes and never opens paths from the model manifest or `model_dir`.
+pub struct RuntimeModelAssets {
+    model: Model3,
+    moc: Vec<u8>,
+    physics: Option<Physics3>,
+    pose: Option<Pose3>,
+    textures: Vec<DecodedTexture>,
+    model_dir: PathBuf,
+}
+
+impl RuntimeModelAssets {
+    /// Creates a caller-owned runtime asset snapshot.
+    pub fn new(
+        model: Model3,
+        moc: Vec<u8>,
+        physics: Option<Physics3>,
+        pose: Option<Pose3>,
+        textures: Vec<DecodedTexture>,
+        model_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            model,
+            moc,
+            physics,
+            pose,
+            textures,
+            model_dir: model_dir.into(),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
-/// Errors that can occur while loading a complete model from disk.
+/// Errors that can occur while loading a complete model.
 pub enum AssetLoadError {
     /// A referenced file could not be read.
     #[error("failed to read {path}: {source}")]
@@ -122,12 +158,6 @@ pub enum AssetLoadError {
         /// Original image decoding error.
         #[source]
         source: image::ImageError,
-    },
-    /// A texture decoding worker panicked before returning a decoding result.
-    #[error("texture decode worker panicked while decoding {path}")]
-    TextureDecodeWorkerPanicked {
-        /// Path of the texture assigned to the failed worker.
-        path: String,
     },
     /// The supplied model path has no parent directory for resolving assets.
     #[error("path has no parent: {path}")]
@@ -156,9 +186,18 @@ pub fn load_model(path: impl AsRef<Path>) -> Result<DefaultModel, AssetLoadError
 /// loop can update parameters, apply motions and expressions, call
 /// [`ModelRuntime::update_meshes`], and draw the resulting meshes.
 pub fn load_model_runtime(path: impl AsRef<Path>) -> Result<RuntimeModel, AssetLoadError> {
-    let path = path.as_ref();
-    let model_dir = path.parent().map(Path::to_path_buf);
-    parse_model(path)?.into_runtime_model(model_dir)
+    parse_model(path)?.into_runtime_model()
+}
+
+/// Builds a mutable runtime exclusively from caller-owned assets.
+///
+/// This entry point performs no filesystem operations. In particular, paths in
+/// the parsed model and the supplied model directory are retained as metadata
+/// but are not opened while constructing the runtime.
+pub fn load_model_runtime_from_assets(
+    assets: RuntimeModelAssets,
+) -> Result<RuntimeModel, AssetLoadError> {
+    parse_model_assets(assets)?.into_runtime_model()
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +248,7 @@ struct ParsedModel {
     physics: Option<Physics3>,
     pose: Option<Pose3>,
     textures: Vec<DecodedTexture>,
+    model_dir: PathBuf,
 }
 
 impl ParsedModel {
@@ -238,10 +278,7 @@ impl ParsedModel {
         })
     }
 
-    fn into_runtime_model(
-        self,
-        model_dir: Option<PathBuf>,
-    ) -> Result<RuntimeModel, AssetLoadError> {
+    fn into_runtime_model(self) -> Result<RuntimeModel, AssetLoadError> {
         let mut runtime = ModelRuntime::new(
             self.model,
             self.canvas,
@@ -264,7 +301,7 @@ impl ParsedModel {
         Ok(RuntimeModel {
             runtime,
             textures: self.textures,
-            model_dir,
+            model_dir: Some(self.model_dir),
         })
     }
 }
@@ -278,17 +315,6 @@ fn parse_model(path: impl AsRef<Path>) -> Result<ParsedModel, AssetLoadError> {
     })?;
     let moc_path = model_dir.join(model.moc());
     let moc = read_bytes(&moc_path)?;
-
-    let art_meshes = Moc3ArtMeshes::parse(&moc).map_err(AssetLoadError::Moc3)?;
-    let art_mesh_keyforms = Moc3ArtMeshKeyforms::parse(&moc).map_err(AssetLoadError::Moc3)?;
-    let deformers = Moc3Deformers::parse(&moc).map_err(AssetLoadError::Moc3)?;
-    let bindings = Moc3KeyformBindings::parse(&moc).map_err(AssetLoadError::Moc3)?;
-    let ids = Moc3Ids::parse(&moc).map_err(AssetLoadError::Moc3)?;
-    let offscreen = Moc3OffscreenInfo::parse(&moc).map_err(AssetLoadError::Moc3)?;
-    let glues = Moc3Glues::parse(&moc).map_err(AssetLoadError::Moc3)?;
-    let parts = Moc3Parts::parse(&moc).map_err(AssetLoadError::Moc3)?;
-    let canvas = Moc3CanvasInfo::parse(&moc).map_err(AssetLoadError::Moc3)?;
-    let draw_order_groups = Moc3DrawOrderGroups::parse(&moc).map_err(AssetLoadError::Moc3)?;
     let physics = match model.physics() {
         Some(physics_file) => {
             let physics_source = read_text(&model_dir.join(physics_file))?;
@@ -305,6 +331,31 @@ fn parse_model(path: impl AsRef<Path>) -> Result<ParsedModel, AssetLoadError> {
     };
     let textures = decode_textures(model_dir, model.textures())?;
 
+    parse_model_assets(RuntimeModelAssets::new(
+        model, moc, physics, pose, textures, model_dir,
+    ))
+}
+
+fn parse_model_assets(assets: RuntimeModelAssets) -> Result<ParsedModel, AssetLoadError> {
+    let RuntimeModelAssets {
+        model,
+        moc,
+        physics,
+        pose,
+        textures,
+        model_dir,
+    } = assets;
+    let art_meshes = Moc3ArtMeshes::parse(&moc).map_err(AssetLoadError::Moc3)?;
+    let art_mesh_keyforms = Moc3ArtMeshKeyforms::parse(&moc).map_err(AssetLoadError::Moc3)?;
+    let deformers = Moc3Deformers::parse(&moc).map_err(AssetLoadError::Moc3)?;
+    let bindings = Moc3KeyformBindings::parse(&moc).map_err(AssetLoadError::Moc3)?;
+    let ids = Moc3Ids::parse(&moc).map_err(AssetLoadError::Moc3)?;
+    let offscreen = Moc3OffscreenInfo::parse(&moc).map_err(AssetLoadError::Moc3)?;
+    let glues = Moc3Glues::parse(&moc).map_err(AssetLoadError::Moc3)?;
+    let parts = Moc3Parts::parse(&moc).map_err(AssetLoadError::Moc3)?;
+    let canvas = Moc3CanvasInfo::parse(&moc).map_err(AssetLoadError::Moc3)?;
+    let draw_order_groups = Moc3DrawOrderGroups::parse(&moc).map_err(AssetLoadError::Moc3)?;
+
     Ok(ParsedModel {
         model,
         canvas,
@@ -320,6 +371,7 @@ fn parse_model(path: impl AsRef<Path>) -> Result<ParsedModel, AssetLoadError> {
         physics,
         pose,
         textures,
+        model_dir,
     })
 }
 
@@ -341,30 +393,10 @@ fn decode_textures(
     model_dir: &Path,
     textures: &[String],
 ) -> Result<Vec<DecodedTexture>, AssetLoadError> {
-    let paths = textures
+    textures
         .iter()
-        .map(|texture| model_dir.join(texture))
-        .collect::<Vec<_>>();
-    if paths.len() <= 1 {
-        return paths.into_iter().map(decode_texture).collect();
-    }
-
-    thread::scope(|scope| {
-        let handles = paths
-            .iter()
-            .map(|path| (path, scope.spawn(move || decode_texture(path))))
-            .collect::<Vec<_>>();
-
-        handles
-            .into_iter()
-            .map(|(path, handle)| match handle.join() {
-                Ok(result) => result,
-                Err(_) => Err(AssetLoadError::TextureDecodeWorkerPanicked {
-                    path: path.display().to_string(),
-                }),
-            })
-            .collect()
-    })
+        .map(|texture| decode_texture(model_dir.join(texture)))
+        .collect()
 }
 
 fn decode_texture(path: impl AsRef<Path>) -> Result<DecodedTexture, AssetLoadError> {

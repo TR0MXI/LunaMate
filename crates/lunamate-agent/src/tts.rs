@@ -5,13 +5,13 @@ use std::{error::Error, fmt, io::Read, time::Duration};
 use flate2::read::GzDecoder;
 use futures::{SinkExt as _, StreamExt as _};
 use serde::Serialize;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message, client::IntoClientRequest as _},
-};
+use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest as _};
 use uuid::Uuid;
 
-use crate::config::{LlmModelConfig, LlmProvider, ModelKind, ModelProvider};
+use crate::{
+    config::{LlmModelConfig, LlmProvider, ModelKind, ModelProvider},
+    transport::{connect_websocket_once, provider_http_client},
+};
 
 const SAMPLE_RATE: u32 = 24_000;
 const MAX_TEXT_BYTES: usize = 16 * 1024;
@@ -109,11 +109,13 @@ async fn synthesize_openai(
     let api_key = required(model.api_key.as_deref())?;
     let voice = required(model.voice.as_deref())?;
     let endpoint = model.endpoint.as_deref().unwrap_or(OPENAI_ENDPOINT);
-    let client = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(|_| SpeechSynthesisError::Network)?;
+    let client = provider_http_client(
+        Some(endpoint),
+        CONNECT_TIMEOUT,
+        REQUEST_TIMEOUT,
+        REQUEST_TIMEOUT,
+    )
+    .map_err(|_| SpeechSynthesisError::Network)?;
     let response = client
         .post(format!(
             "{}audio/speech",
@@ -152,7 +154,7 @@ async fn synthesize_doubao(
         "X-Api-Connect-Id",
         &Uuid::new_v4().to_string(),
     )?;
-    let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
+    let (mut socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_websocket_once(request))
         .await
         .map_err(|_| SpeechSynthesisError::Timeout)?
         .map_err(|_| SpeechSynthesisError::Network)?;

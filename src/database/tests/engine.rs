@@ -2,6 +2,8 @@
 
 use std::error::Error as _;
 
+use surrealdb::types::{Bytes, RecordId};
+
 use super::run_async;
 use crate::database::{Database, DatabaseError, engine::MAX_DOCUMENT_BYTES};
 
@@ -141,6 +143,37 @@ fn document_at_the_size_limit_round_trips() {
 
         assert_eq!(document.format_version(), 3);
         assert_eq!(document.contents().len(), MAX_DOCUMENT_BYTES);
+    });
+}
+
+#[test]
+fn oversized_stored_document_is_rejected_during_read() {
+    run_async(async {
+        let database = Database::open_memory().await.expect("内存数据库应可打开");
+        let oversized = vec![0x5A; MAX_DOCUMENT_BYTES + 1];
+        database
+            .client
+            .query(
+                "UPSERT ONLY $record SET scope = 'agent', document_key = 'oversized', \
+                 format_version = 1, payload = $payload RETURN NONE;",
+            )
+            .bind(("record", RecordId::new("app_storage", "agent:oversized")))
+            .bind(("payload", Bytes::from(oversized)))
+            .await
+            .expect("测试超限记录写入请求应执行")
+            .check()
+            .expect("测试应能绕过生产写入边界植入超限记录");
+
+        let result = database.read_document("agent", "oversized").await;
+
+        match result {
+            Err(DatabaseError::DocumentTooLarge { actual, maximum }) => {
+                assert_eq!(actual, MAX_DOCUMENT_BYTES + 1);
+                assert_eq!(maximum, MAX_DOCUMENT_BYTES);
+            }
+            Err(error) => panic!("超限记录应返回文档过大错误，实际为：{error}"),
+            Ok(_) => panic!("超限记录不应作为正常文档返回"),
+        }
     });
 }
 

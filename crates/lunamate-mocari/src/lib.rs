@@ -4,8 +4,8 @@
 //! Mocari is split into a small set of layers so applications can choose how much
 //! control they need:
 //!
-//! - [`assets`] loads a `.model3.json` file, its referenced `.moc3` data, pose
-//!   file, and PNG textures from disk.
+//! - [`assets`] loads complete model folders from disk or constructs a runtime
+//!   from caller-owned, already validated assets.
 //! - [`ModelRuntime`] owns the mutable model state used by motions, expressions,
 //!   pose fading, and drawable mesh generation.
 //! - [`motion`] and [`expression`] provide lightweight players for Cubism motion
@@ -55,6 +55,7 @@ pub mod render;
 /// Mutable model state used for parameter edits, pose updates, and mesh output.
 pub mod runtime;
 
+pub use crate::assets::{RuntimeModelAssets, load_model_runtime_from_assets};
 pub use crate::core::{DrawableId, Id, ParameterId, PartId};
 pub use crate::error::{Error, Result};
 pub use crate::expression::{ExpressionManager, ExpressionPlayer};

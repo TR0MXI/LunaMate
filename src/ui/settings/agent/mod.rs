@@ -2,9 +2,7 @@
 
 mod components;
 mod persona;
-mod persona_render;
 mod provider;
-mod provider_render;
 
 use gpui::{Context, Entity, Window};
 use gpui_component::input::InputState;

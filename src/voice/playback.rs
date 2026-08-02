@@ -7,7 +7,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use cpal::{
@@ -15,6 +15,33 @@ use cpal::{
     traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _},
 };
 use rubato::{FftFixedInOut, Resampler as _};
+
+const OUTPUT_ERROR_REPORT_INTERVAL: Duration = Duration::from_secs(5);
+
+struct OutputErrorReporter {
+    occurrences: Arc<AtomicU64>,
+    last_report: Instant,
+}
+
+impl OutputErrorReporter {
+    fn new(occurrences: Arc<AtomicU64>) -> Self {
+        Self {
+            occurrences,
+            last_report: Instant::now(),
+        }
+    }
+
+    fn report(&mut self, force: bool) {
+        if !force && self.last_report.elapsed() < OUTPUT_ERROR_REPORT_INTERVAL {
+            return;
+        }
+        let occurrences = self.occurrences.swap(0, Ordering::AcqRel);
+        self.last_report = Instant::now();
+        if occurrences > 0 {
+            log::warn!("event=audio_output_stream_error occurrences={occurrences} coalesced=true");
+        }
+    }
+}
 
 enum PlaybackCommand {
     Play {
@@ -104,13 +131,20 @@ impl Drop for SpeechPlaybackShutdown {
 fn run(commands: std::sync::mpsc::Receiver<PlaybackCommand>, generation: Arc<AtomicU64>) {
     let mut _stream: Option<Stream> = None;
     let mut playback_complete: Option<Arc<AtomicBool>> = None;
+    let mut output_errors: Option<OutputErrorReporter> = None;
     loop {
+        if let Some(reporter) = &mut output_errors {
+            reporter.report(false);
+        }
         if playback_complete
             .as_ref()
             .is_some_and(|completed| completed.load(Ordering::Acquire))
         {
             _stream = None;
             playback_complete = None;
+            if let Some(mut reporter) = output_errors.take() {
+                reporter.report(true);
+            }
         }
         let command = match commands.recv_timeout(Duration::from_millis(100)) {
             Ok(command) => command,
@@ -129,16 +163,24 @@ fn run(commands: std::sync::mpsc::Receiver<PlaybackCommand>, generation: Arc<Ato
                     command_generation,
                     generation.clone(),
                 ) {
-                    Ok((next, completed)) => {
+                    Ok((next, completed, mut reporter)) => {
                         if generation.load(Ordering::Acquire) == command_generation {
+                            if let Some(mut previous) = output_errors.take() {
+                                previous.report(true);
+                            }
                             _stream = Some(next);
                             playback_complete = Some(completed);
+                            reporter.report(false);
+                            output_errors = Some(reporter);
                         }
                     }
-                    Err(error) => {
+                    Err(_) => {
                         _stream = None;
                         playback_complete = None;
-                        log::warn!("TTS 音频播放失败：{error}");
+                        if let Some(mut reporter) = output_errors.take() {
+                            reporter.report(true);
+                        }
+                        log::warn!("event=speech_playback_failed stage=prepare_or_start");
                     }
                 }
             }
@@ -148,10 +190,16 @@ fn run(commands: std::sync::mpsc::Receiver<PlaybackCommand>, generation: Arc<Ato
             } if generation.load(Ordering::Acquire) == command_generation => {
                 _stream = None;
                 playback_complete = None;
+                if let Some(mut reporter) = output_errors.take() {
+                    reporter.report(true);
+                }
             }
             PlaybackCommand::Stop { .. } => {}
             PlaybackCommand::Shutdown => break,
         }
+    }
+    if let Some(mut reporter) = output_errors {
+        reporter.report(true);
     }
 }
 
@@ -160,7 +208,7 @@ fn build_output_stream(
     input_rate: u32,
     playback_generation: u64,
     current_generation: Arc<AtomicU64>,
-) -> Result<(Stream, Arc<AtomicBool>), String> {
+) -> Result<(Stream, Arc<AtomicBool>, OutputErrorReporter), String> {
     if samples.is_empty() || input_rate == 0 {
         return Err("TTS PCM 为空或采样率无效".to_owned());
     }
@@ -185,7 +233,7 @@ fn build_output_stream(
     let queue = VecDeque::from(normalized);
     let completed = Arc::new(AtomicBool::new(false));
     let config = supported.config();
-    let stream = match supported.sample_format() {
+    let (stream, output_errors) = match supported.sample_format() {
         SampleFormat::I8 => build_typed::<i8>(
             &device,
             &config,
@@ -302,7 +350,7 @@ fn build_output_stream(
     stream
         .play()
         .map_err(|error| format!("无法启动音频输出：{error}"))?;
-    Ok((stream, completed))
+    Ok((stream, completed, OutputErrorReporter::new(output_errors)))
 }
 
 fn build_typed<T>(
@@ -313,11 +361,13 @@ fn build_typed<T>(
     completed: Arc<AtomicBool>,
     playback_generation: u64,
     current_generation: Arc<AtomicU64>,
-) -> Result<Stream, String>
+) -> Result<(Stream, Arc<AtomicU64>), String>
 where
     T: SizedSample + FromSample<f32>,
 {
-    device
+    let output_errors = Arc::new(AtomicU64::new(0));
+    let callback_errors = output_errors.clone();
+    let stream = device
         .build_output_stream(
             *config,
             move |output: &mut [T], _| {
@@ -338,10 +388,13 @@ where
                     completed.store(true, Ordering::Release);
                 }
             },
-            |error| log::warn!("TTS 音频输出流发生错误：{error}"),
+            move |_| {
+                callback_errors.fetch_add(1, Ordering::Relaxed);
+            },
             None,
         )
-        .map_err(|error| format!("无法打开音频输出：{error}"))
+        .map_err(|error| format!("无法打开音频输出：{error}"))?;
+    Ok((stream, output_errors))
 }
 
 fn next_generation(generation: &AtomicU64) -> u64 {

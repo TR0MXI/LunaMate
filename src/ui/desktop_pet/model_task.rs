@@ -4,10 +4,12 @@ use std::{
     error::Error,
     fmt,
     future::Future,
-    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
+
+#[cfg(test)]
+use std::path::Path;
 
 use futures::{FutureExt as _, future::select};
 use gpui::Context;
@@ -18,8 +20,8 @@ use crate::{
     config::{CONFIG, FrameRate},
     model::{
         AnimatedModel, FramePacer, FrameWakeReceiver, MAX_COMMANDS_PER_FRAME, ModelCommand,
-        ModelLoadDiagnostics, ModelLoadError, ModelPreviewCapabilities, RenderCancellation,
-        RenderError, RenderedModelFrame, command_channel, frame_wake_channel,
+        ModelLoadDiagnostics, ModelLoadError, ModelManifest, ModelPreviewCapabilities,
+        RenderCancellation, RenderError, RenderedModelFrame, command_channel, frame_wake_channel,
     },
 };
 
@@ -105,18 +107,22 @@ impl Error for ModelGenerationLoadError {
 
 impl DesktopPetView {
     /// 加载模型；已经就绪或正在加载的相同路径会复用当前 generation。
-    pub(super) fn load_model(&mut self, model_path: Option<PathBuf>, cx: &mut Context<Self>) {
+    pub(super) fn load_model(&mut self, model_path: Option<ModelManifest>, cx: &mut Context<Self>) {
         self.load_model_inner(model_path, false, cx);
     }
 
     /// 强制用新 generation 替换当前模型，供设置变更与资源重扫使用。
-    pub(super) fn reload_model(&mut self, model_path: Option<PathBuf>, cx: &mut Context<Self>) {
+    pub(super) fn reload_model(
+        &mut self,
+        model_path: Option<ModelManifest>,
+        cx: &mut Context<Self>,
+    ) {
         self.load_model_inner(model_path, true, cx);
     }
 
     fn load_model_inner(
         &mut self,
-        model_path: Option<PathBuf>,
+        model_path: Option<ModelManifest>,
         force_reload: bool,
         cx: &mut Context<Self>,
     ) {
@@ -124,12 +130,8 @@ impl DesktopPetView {
             self.model_state,
             ModelLoadState::Loading(_) | ModelLoadState::Ready { .. }
         );
-        if model_generation_can_be_reused(
-            self.selected_model.as_deref(),
-            model_path.as_deref(),
-            generation_active,
-            force_reload,
-        ) {
+        if !force_reload && generation_active && self.selected_model.as_ref() == model_path.as_ref()
+        {
             return;
         }
 
@@ -149,7 +151,7 @@ impl DesktopPetView {
         }
         self.selected_model = model_path.clone();
         log::info!(
-            "Live2D 模型 generation 已创建：generation={}, renderer={}, has_model={}, width={}, height={}",
+            "event=model_generation_created generation={} renderer={} has_model={} width={} height={}",
             self.model_generation,
             if self.gpu_underlay.is_some() {
                 "gpu"
@@ -175,7 +177,7 @@ impl DesktopPetView {
             self.model_state = ModelLoadState::NoModel;
             if self.cpu_fallback_pending {
                 log::info!(
-                    "Live2D 已完成 GPU 到 CPU 回退：generation={}, renderer=cpu, has_model=false",
+                    "event=model_renderer_fallback_completed generation={} renderer=cpu has_model=false",
                     self.model_generation
                 );
                 self.cpu_fallback_pending = false;
@@ -264,11 +266,11 @@ impl DesktopPetView {
                         if this.model_generation == generation {
                             if this.cpu_fallback_pending {
                                 log::error!(
-                                    "Live2D GPU 回退后的 CPU 模型加载失败：generation={generation}, stage=model_load"
+                                    "event=model_load_failed generation={generation} renderer=cpu stage=model_load fallback=true"
                                 );
                             } else {
                                 log::warn!(
-                                    "Live2D 模型加载失败：generation={generation}, renderer=cpu, stage=model_load"
+                                    "event=model_load_failed generation={generation} renderer=cpu stage=model_load fallback=false"
                                 );
                             }
                             this.cpu_fallback_pending = false;
@@ -327,16 +329,16 @@ impl DesktopPetView {
                     let expression_count = capabilities.expressions().len();
                     this.model_state = ModelLoadState::ready(diagnostics);
                     log::info!(
-                        "Live2D 模型已就绪：generation={generation}, renderer=cpu, movable_expressions={movable_expression_count}, motions={motion_count}, expressions={expression_count}, diagnostics={diagnostic_count}"
+                        "event=model_ready generation={generation} renderer=cpu movable_expressions={movable_expression_count} motions={motion_count} expressions={expression_count} diagnostics={diagnostic_count}"
                     );
                     if diagnostic_count > 0 {
                         log::warn!(
-                            "Live2D 模型存在非致命能力问题：generation={generation}, diagnostics={diagnostic_count}"
+                            "event=model_capability_warning generation={generation} diagnostics={diagnostic_count}"
                         );
                     }
                     if this.cpu_fallback_pending {
                         log::info!(
-                            "Live2D 已完成 GPU 到 CPU 回退：generation={generation}, renderer=cpu"
+                            "event=model_renderer_fallback_completed generation={generation} renderer=cpu has_model=true"
                         );
                     }
                     this.cpu_fallback_pending = false;
@@ -503,7 +505,9 @@ impl DesktopPetView {
                             }
                             Err(error) if error.is_cancelled() => false,
                             Err(error) => {
-                                log::error!("{}", t!("log.frame_render_stopped", error = error));
+                                log::error!(
+                                    "event=model_frame_render_stopped generation={generation} renderer=cpu"
+                                );
                                 this.frame = None;
                                 this.sync_cursor_tracking_task(cx);
                                 this.config.update(cx, |config, cx| {
@@ -554,6 +558,7 @@ impl DesktopPetView {
 }
 
 /// 返回当前 generation 是否可以满足本次模型请求。
+#[cfg(test)]
 pub(in crate::ui) fn model_generation_can_be_reused(
     selected: Option<&Path>,
     requested: Option<&Path>,

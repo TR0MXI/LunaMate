@@ -351,6 +351,8 @@ impl Error for FrameRateError {}
 pub(crate) enum ConfigWriteError {
     /// 外部值不满足配置约束。
     InvalidValue(String),
+    /// 启动时无法确定可信的平台用户配置目录。
+    PersistenceUnavailable,
     /// 写入开始前已经被同一配置项的新请求替代。
     #[cfg(test)]
     StaleConfigUpdate,
@@ -367,6 +369,7 @@ impl ConfigWriteError {
     pub(crate) const fn diagnostic_kind(&self) -> &'static str {
         match self {
             Self::InvalidValue(_) => "invalid_value",
+            Self::PersistenceUnavailable => "persistence_unavailable",
             #[cfg(test)]
             Self::StaleConfigUpdate => "stale_update",
             Self::Io { .. } => "io",
@@ -378,6 +381,9 @@ impl fmt::Display for ConfigWriteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidValue(message) => formatter.write_str(message),
+            Self::PersistenceUnavailable => {
+                formatter.write_str("无法确定平台用户配置目录，当前配置不可持久化")
+            }
             #[cfg(test)]
             Self::StaleConfigUpdate => formatter.write_str("配置写入已被更新请求替代"),
             Self::Io {
@@ -392,7 +398,7 @@ impl fmt::Display for ConfigWriteError {
 impl Error for ConfigWriteError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::InvalidValue(_) => None,
+            Self::InvalidValue(_) | Self::PersistenceUnavailable => None,
             #[cfg(test)]
             Self::StaleConfigUpdate => None,
             Self::Io { source, .. } => Some(source),
