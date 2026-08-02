@@ -312,15 +312,30 @@ fn panic_hook_persists_a_private_record_and_calls_the_previous_hook() {
         .env("RUST_BACKTRACE", "0")
         .output()
         .expect("panic hook 子进程应当可以启动");
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success(), "触发 panic 的子进程不应成功退出");
+    assert!(
+        stderr.contains(PANIC_TEST_PAYLOAD),
+        "安装前的默认 hook 应继续接收原始 panic：{stderr}"
+    );
+    assert!(
+        !stderr.contains("event=crash_persistence_failed"),
+        "panic hook 不应回退到 stderr：{stderr}"
+    );
     let crash_path = working_directory
         .path()
         .join("logs")
         .join("lunamate")
         .join(CRASH_LOG_BASENAME);
-    let record = fs::read_to_string(&crash_path)
-        .expect("panic hook 应在固定 logs/lunamate 目录同步写入 crash 记录");
+    let record = fs::read_to_string(&crash_path).unwrap_or_else(|error| {
+        panic!(
+            "panic hook 应在固定 logs/lunamate 目录同步写入 crash 记录：path={}，error={error}，status={}，stdout={}，stderr={stderr}",
+            crash_path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
     assert!(record.contains("event=process_panic\n"));
     assert!(record.contains(concat!("version=", env!("CARGO_PKG_VERSION"), "\n")));
     assert!(record.contains("thread_name=logging::tests::runtime::panic_hook_child\n"));
@@ -328,6 +343,7 @@ fn panic_hook_persists_a_private_record_and_calls_the_previous_hook() {
     assert!(record.contains("backtrace_status=captured\n"));
     assert!(record.contains("backtrace_begin\n"));
     assert!(record.contains("backtrace_end\n"));
+    assert!(record.ends_with("record_end\n"));
     assert!(record.len() <= MAX_CRASH_RECORD_BYTES);
     assert!(!record.contains(PANIC_TEST_PAYLOAD));
     assert!(record.lines().any(|line| {
@@ -341,11 +357,6 @@ fn panic_hook_persists_a_private_record_and_calls_the_previous_hook() {
             .is_some_and(|value| value > 0)
     }));
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(PANIC_TEST_PAYLOAD),
-        "安装前的默认 hook 应继续接收原始 panic"
-    );
     #[cfg(unix)]
     assert_eq!(unix_mode(&crash_path), 0o600);
 }

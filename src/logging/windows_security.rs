@@ -1,6 +1,6 @@
 //! 使用 Win32 句柄为 LunaMate 诊断目录和文件设置并验证保护 DACL。
 //!
-//! DACL 只包含当前进程用户的 `GENERIC_ALL` ACE。目录 ACE 向子目录和文件继承，确保
+//! DACL 只包含当前进程用户的 `FILE_ALL_ACCESS` ACE。目录 ACE 向子目录和文件继承，确保
 //! flexi_logger 在轮转时新建的文件从创建起就不会继承 `logs` 根目录的宽权限。
 
 use std::{
@@ -18,7 +18,7 @@ use std::{
 
 use windows::{
     Win32::{
-        Foundation::{GENERIC_ALL, HANDLE, HLOCAL, LocalFree},
+        Foundation::{HANDLE, HLOCAL, LocalFree},
         Security::{
             ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
             AddAccessAllowedAceEx,
@@ -30,11 +30,11 @@ use windows::{
             TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
         },
         Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY,
-            FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-            FILE_SHARE_WRITE, FILE_WRITE_DATA, GetFileInformationByHandle, OPEN_ALWAYS,
-            OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+            BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ALL_ACCESS, FILE_APPEND_DATA,
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
+            GetFileInformationByHandle, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
         },
         System::{
             SystemServices::ACCESS_ALLOWED_ACE_TYPE,
@@ -311,7 +311,13 @@ fn build_private_acl(sid: PSID, directory: bool) -> io::Result<PrivateAcl> {
     // SAFETY: `acl` 是按 `u32` 对齐的可写缓冲区，长度由 ACL、ACE 和已验证 SID 精确计算。
     unsafe {
         InitializeAcl(acl.as_mut_ptr(), acl_bytes, ACL_REVISION)?;
-        AddAccessAllowedAceEx(acl.as_mut_ptr(), ACL_REVISION, flags, GENERIC_ALL.0, sid)?;
+        AddAccessAllowedAceEx(
+            acl.as_mut_ptr(),
+            ACL_REVISION,
+            flags,
+            FILE_ALL_ACCESS.0,
+            sid,
+        )?;
     }
     verify_acl(acl.as_ptr(), sid, directory)?;
     Ok(acl)
@@ -398,7 +404,7 @@ fn verify_acl(acl: *const ACL, sid: PSID, directory: bool) -> io::Result<()> {
         if u32::from(ace.Header.AceType) != ACCESS_ALLOWED_ACE_TYPE
             || ace.Header.AceFlags != expected_ace_flags(directory).0 as u8
             || ace.Header.AceSize != expected_ace_size
-            || ace.Mask != GENERIC_ALL.0
+            || ace.Mask != FILE_ALL_ACCESS.0
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
