@@ -14,5 +14,5 @@ pub(crate) use native::{
 };
 pub(crate) use placement::{WindowMover, WindowPositionController, move_window_to_default};
 pub(crate) use tray_menu::NativeTrayMenuWindow;
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 pub(in crate::platform) use tray_menu::physical_window_rect;

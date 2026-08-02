@@ -5,10 +5,9 @@ use std::{
 
 use mocari::load_model_runtime_from_assets;
 
-use crate::model::live2d::resources::{
-    read_bounded_file_for_test, snapshot_model_resources_with_open_hook_for_test,
-    validate_model_resources,
-};
+#[cfg(unix)]
+use crate::model::live2d::resources::snapshot_model_resources_with_open_hook_for_test;
+use crate::model::live2d::resources::{read_bounded_file_for_test, validate_model_resources};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -202,13 +201,12 @@ fn manifest_replaced_by_external_symlink_before_open_is_rejected() {
     let manifest = write_manifest(&model_dir, "model.moc3");
     let outside = directory.path().join("outside-manifest.model3.json");
     fs::write(&outside, b"outside manifest").expect("目录外替代清单应当可以创建");
-    let canonical_manifest = fs::canonicalize(&manifest).expect("清单规范路径应当可以取得");
     let mut hook_called = false;
 
-    let error = snapshot_model_resources_with_open_hook_for_test(&manifest, |canonical_path| {
-        assert_eq!(canonical_path, canonical_manifest);
-        fs::remove_file(canonical_path).expect("已校验清单应当可以移除");
-        symlink(&outside, canonical_path).expect("目录外清单符号链接应当可以创建");
+    let error = snapshot_model_resources_with_open_hook_for_test(&manifest, |manifest_path| {
+        assert_eq!(manifest_path, manifest);
+        fs::remove_file(manifest_path).expect("已校验清单应当可以移除");
+        symlink(&outside, manifest_path).expect("目录外清单符号链接应当可以创建");
         hook_called = true;
     })
     .expect_err("metadata 后、open 前替换的清单必须被拒绝")

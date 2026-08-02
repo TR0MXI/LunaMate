@@ -36,6 +36,7 @@ const MAX_BACKTRACE_BYTES: usize = 48 * 1024;
 const MAX_CRASH_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_LABEL_BYTES: usize = 96;
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+#[cfg(not(target_os = "windows"))]
 const PRIVATE_FILE_MODE: u32 = 0o600;
 
 static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();

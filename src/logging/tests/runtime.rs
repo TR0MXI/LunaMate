@@ -11,9 +11,10 @@ use flexi_logger::LogSpecification;
 
 use super::super::crash::{
     CRASH_LOG_BASENAME, CrashBacktraceStatus, CrashContext, CrashLocation, MAX_CRASH_RECORD_BYTES,
-    format_crash_record, is_lunamate_diagnostic_name_for_test, persist_crash_record_at,
-    prepare_log_directory_at,
+    format_crash_record, is_lunamate_diagnostic_name_for_test,
 };
+#[cfg(unix)]
+use super::super::crash::{persist_crash_record_at, prepare_log_directory_at};
 use super::super::*;
 
 const PANIC_HOOK_CHILD_ENV: &str = "LUNAMATE_TEST_PANIC_HOOK_CHILD";
@@ -361,7 +362,8 @@ fn panic_hook_child() {
 #[test]
 fn unix_log_permissions_are_private_in_an_isolated_process() {
     let root = tempfile::tempdir().expect("权限测试需要一个独立且可写的临时目录");
-    let logs_root = root.path().join("logs");
+    let canonical_root = fs::canonicalize(root.path()).expect("权限测试临时目录应当可以规范化");
+    let logs_root = canonical_root.join("logs");
     fs::create_dir(&logs_root).expect("权限测试应能建立共享 logs 根目录");
     fs::set_permissions(&logs_root, fs::Permissions::from_mode(0o751))
         .expect("权限测试应能设置共享 logs 根目录的初始权限");
@@ -466,13 +468,14 @@ fn unix_owned_links_fail_closed_without_changing_external_permissions() {
     }
 
     let root = tempfile::tempdir().expect("链接测试需要独立临时目录");
-    let target = root.path().join("external.log");
+    let canonical_root = fs::canonicalize(root.path()).expect("链接测试临时目录应当可以规范化");
+    let target = canonical_root.join("external.log");
     fs::write(&target, b"external\n").expect("链接测试应能建立外部目标");
     fs::set_permissions(&target, fs::Permissions::from_mode(0o664))
         .expect("链接测试应能设置外部目标权限");
 
     for link_kind in ["symbolic", "hard"] {
-        let directory = root.path().join(format!("{link_kind}-logs"));
+        let directory = canonical_root.join(format!("{link_kind}-logs"));
         fs::create_dir(&directory).expect("链接测试应能建立专属目录");
         let owned_path = directory.join("lunamate_rCURRENT.log");
         if link_kind == "symbolic" {

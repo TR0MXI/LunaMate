@@ -202,7 +202,7 @@ impl ModelResourceResolver {
     }
 
     /// 在最终清单路径打开前运行确定性测试替换。
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(in crate::model) fn open_manifest_with_open_hook_for_test(
         manifest: &ModelManifest,
         maximum_bytes: u64,
@@ -230,7 +230,7 @@ impl ModelResourceResolver {
     }
 
     /// 在最终清单句柄打开后运行恢复操作，确定性验证 swap-and-restore 竞态。
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(in crate::model) fn open_manifest_with_open_hooks_for_test(
         manifest: &ModelManifest,
         maximum_bytes: u64,
@@ -297,7 +297,7 @@ impl ModelResourceResolver {
     }
 
     /// 在最终资源路径打开前运行确定性测试替换。
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(in crate::model) fn open_file_with_open_hook_for_test(
         &self,
         reference: &str,

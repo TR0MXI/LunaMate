@@ -1,4 +1,7 @@
-use std::{fs, io::Read as _, path::PathBuf};
+use std::{fs, path::PathBuf};
+
+#[cfg(unix)]
+use std::io::Read as _;
 
 use crate::model::capabilities::{
     AuxiliaryResourceBudget, ExternalExpressionReference, MAX_AUXILIARY_RESOURCE_BYTES,

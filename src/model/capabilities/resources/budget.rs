@@ -112,7 +112,7 @@ impl ModelResourceResolver {
     }
 
     /// 在最终路径打开前运行测试替换操作，且读取仍复用生产身份校验与预算逻辑。
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(in crate::model) fn read_text_with_open_hook_for_test(
         &self,
         reference: &str,

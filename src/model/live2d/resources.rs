@@ -32,23 +32,23 @@ const MAX_TEXTURE_DECODE_BYTES: u64 = MAX_TOTAL_TEXTURE_PIXELS * 4 + MAX_TEXTURE
 const READ_CHUNK_BYTES: usize = 64 * 1024;
 
 struct ResourceFileOpener<'a> {
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     before_open: Option<&'a mut dyn FnMut(&Path)>,
-    #[cfg(not(test))]
+    #[cfg(not(all(test, unix)))]
     _marker: std::marker::PhantomData<&'a mut ()>,
 }
 
 impl<'a> ResourceFileOpener<'a> {
     fn production() -> Self {
         Self {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             before_open: None,
-            #[cfg(not(test))]
+            #[cfg(not(all(test, unix)))]
             _marker: std::marker::PhantomData,
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn with_open_hook_for_test(before_open: &'a mut dyn FnMut(&Path)) -> Self {
         Self {
             before_open: Some(before_open),
@@ -59,7 +59,7 @@ impl<'a> ResourceFileOpener<'a> {
         &mut self,
         manifest: &ModelManifest,
     ) -> Result<(ModelResourceResolver, fs::File), ResourceValidationError> {
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         if let Some(before_open) = self.before_open.as_deref_mut() {
             return ModelResourceResolver::open_manifest_with_open_hook_for_test(
                 manifest,
@@ -79,7 +79,7 @@ impl<'a> ResourceFileOpener<'a> {
         label: &str,
         maximum_bytes: u64,
     ) -> Result<fs::File, ResourceValidationError> {
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         if let Some(before_open) = self.before_open.as_deref_mut() {
             return resolver
                 .open_file_with_open_hook_for_test(reference, maximum_bytes, before_open)
@@ -216,7 +216,7 @@ pub(in crate::model) fn validate_model_resources(
 }
 
 /// 在每次最终路径打开前运行确定性替换，用于覆盖路径替换竞态。
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(in crate::model) fn snapshot_model_resources_with_open_hook_for_test(
     path: &Path,
     mut before_open: impl FnMut(&Path),
