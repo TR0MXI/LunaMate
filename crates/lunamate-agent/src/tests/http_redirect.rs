@@ -519,11 +519,11 @@ fn run_proxy_child(mode: &str, endpoint: &str, proxy: &str) -> Output {
         .arg("--nocapture")
         .arg("--test-threads=1")
         .env(PROXY_CHILD_MODE_ENV, mode)
-        .env(PROXY_CHILD_ENDPOINT_ENV, endpoint)
-        .env("HTTP_PROXY", proxy)
-        .env("ALL_PROXY", proxy);
+        .env(PROXY_CHILD_ENDPOINT_ENV, endpoint);
     for variable in [
+        "HTTP_PROXY",
         "http_proxy",
+        "ALL_PROXY",
         "all_proxy",
         "HTTPS_PROXY",
         "https_proxy",
@@ -533,6 +533,7 @@ fn run_proxy_child(mode: &str, endpoint: &str, proxy: &str) -> Output {
     ] {
         command.env_remove(variable);
     }
+    command.env("HTTP_PROXY", proxy).env("ALL_PROXY", proxy);
     command.output().expect("代理策略测试子进程应可启动")
 }
 
@@ -571,6 +572,9 @@ fn serve_listener(
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                stream
+                    .set_nonblocking(false)
+                    .map_err(|error| error.to_string())?;
                 stats.requests.fetch_add(1, Ordering::SeqCst);
                 let body_bytes = consume_request(&mut stream).map_err(|error| error.to_string())?;
                 stats.body_bytes.fetch_add(body_bytes, Ordering::SeqCst);
