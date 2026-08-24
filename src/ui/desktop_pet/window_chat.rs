@@ -27,9 +27,10 @@ impl DesktopPetView {
 
     fn set_chat_input_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         if open {
-            // 桌宠在 macOS 上是非激活 NSPanel，鼠标点击不会自动把应用设为活动应用；
-            // 必须先激活窗口，再让 InputState 请求第一响应者，否则输入法事件仍会发送给
-            // 之前的活动应用。
+            // 桌宠在 macOS 上是非激活 NSPanel。仅激活窗口只会调用
+            // makeKeyAndOrderFront:，不会让 NSApplication 接收键盘和输入法事件。
+            #[cfg(target_os = "macos")]
+            cx.activate(true);
             window.activate_window();
         }
         if self.chat_input_open == open {
