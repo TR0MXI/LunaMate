@@ -25,6 +25,8 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 log = "0.4.34"
 lunamate-agent = { path = "crates/lunamate-agent" }
 mocari = { version = "0.4.0", path = "crates/lunamate-mocari", features = ["wgpu"] }
+objc2 = "=0.6.4"
+objc2-app-kit = "=0.3.2"
 parking_lot = "0.12.5"
 rapidhash = { version = "4.5.1", features = ["unsafe"] }
 raw-window-handle = "0.6.2"
@@ -42,10 +44,6 @@ xcap = { version = "0.9.8", default-features = false }
 name = "lunamate"
 version.workspace = true
 edition.workspace = true
-
-[lints.rust]
-# objc 0.2.7 的宏会在调用 crate 中检查这个旧版 Clippy feature。
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 
 [lints.clippy]
 unwrap_used = "deny"
@@ -88,8 +86,8 @@ whisper-rs = { version = "0.16.0", features = ["log_backend", "vulkan"] }
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cocoa = "0.26.0"
-objc = "0.2.7"
+objc2.workspace = true
+objc2-app-kit.workspace = true
 # Apple 平台通用产物固定包含系统 Metal 后端。
 whisper-rs = { version = "0.16.0", features = ["log_backend", "metal"] }
 

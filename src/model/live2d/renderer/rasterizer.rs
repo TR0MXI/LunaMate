@@ -246,7 +246,7 @@ impl Rasterizer {
 
         let vertices = drawable.vertices();
         let mut drawable_bounds: Option<PixelBounds> = None;
-        for (triangle_index, triangle) in drawable.indices().chunks_exact(3).enumerate() {
+        for (triangle_index, triangle) in drawable.indices().as_chunks::<3>().0.iter().enumerate() {
             if triangle_index % CANCEL_CHECK_TRIANGLES == 0 {
                 cancellation.checkpoint()?;
             }

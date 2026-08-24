@@ -209,7 +209,12 @@ pub(in crate::platform) fn tray_icon_rgba(style: TrayIconStyle) -> Result<Vec<u8
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     let mut pixels = pixmap.take();
-    for pixel in pixels.chunks_exact_mut(4).filter(|pixel| pixel[3] != 0) {
+    for pixel in pixels
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .filter(|pixel| pixel[3] != 0)
+    {
         pixel[..3].copy_from_slice(&style.foreground);
     }
     Ok(pixels)
@@ -412,18 +417,15 @@ mod imp {
 
     #[cfg(target_os = "macos")]
     fn tray_scale_factor(_x: f64, _y: f64) -> f64 {
-        use cocoa::{appkit::NSScreen, base::nil};
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSScreen;
 
-        // SAFETY: `tray-icon` 在 AppKit 主线程同步发送点击事件；返回的 NSScreen 只在
-        // 当前调用中读取，不保存 Objective-C 对象指针。
-        unsafe {
-            let screen = NSScreen::mainScreen(nil);
-            if screen == nil {
-                1.0
-            } else {
-                NSScreen::backingScaleFactor(screen)
-            }
-        }
+        let Some(main_thread) = MainThreadMarker::new() else {
+            return 1.0;
+        };
+        NSScreen::mainScreen(main_thread)
+            .map(|screen| screen.backingScaleFactor())
+            .unwrap_or(1.0)
     }
 }
 
@@ -615,7 +617,7 @@ mod imp {
 
     fn linux_icon(style: TrayIconStyle) -> Result<ksni::Icon, String> {
         let mut data = tray_icon_rgba(style)?;
-        for pixel in data.chunks_exact_mut(4) {
+        for pixel in data.as_chunks_mut::<4>().0 {
             pixel.rotate_right(1);
         }
         Ok(ksni::Icon {

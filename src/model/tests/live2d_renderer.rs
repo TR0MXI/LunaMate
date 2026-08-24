@@ -179,7 +179,9 @@ fn opaque_pixels(image: &gpui::RenderImage) -> usize {
     image
         .as_bytes(0)
         .expect("渲染结果应当包含一帧")
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| pixel[3] > 0)
         .count()
 }
@@ -188,8 +190,10 @@ fn frames_overlap(first: &gpui::RenderImage, second: &gpui::RenderImage) -> bool
     let first = first.as_bytes(0).expect("渲染结果应当包含一帧");
     let second = second.as_bytes(0).expect("渲染结果应当包含一帧");
     first
-        .chunks_exact(4)
-        .zip(second.chunks_exact(4))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(second.as_chunks::<4>().0.iter())
         .any(|(left, right)| left[3] > 0 && right[3] > 0)
 }
 

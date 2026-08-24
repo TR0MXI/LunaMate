@@ -5,11 +5,7 @@ use gpui::Window;
 /// 将 macOS 桌宠窗口修正为真正的无边框透明面板。
 #[cfg(target_os = "macos")]
 pub(crate) fn configure_desktop_pet_window(window: &Window) -> Result<(), String> {
-    use cocoa::{
-        appkit::{NSColor, NSWindow, NSWindowStyleMask},
-        base::{NO, id, nil},
-    };
-    use objc::{msg_send, runtime::Object, sel, sel_impl};
+    use objc2_app_kit::{NSColor, NSView, NSWindowStyleMask};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let handle = HasWindowHandle::window_handle(window)
@@ -17,26 +13,23 @@ pub(crate) fn configure_desktop_pet_window(window: &Window) -> Result<(), String
     let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
         return Err("桌宠窗口没有 AppKit 原生句柄".to_owned());
     };
-    let native_view = handle.ns_view.as_ptr().cast::<Object>();
+    // SAFETY: raw-window-handle 保证该指针在 WindowHandle 生命周期内指向当前 GPUI NSView。
+    let native_view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
 
-    // SAFETY: NSView 来自当前主线程中仍存活的 GPUI 窗口；样式和外观修改均同步发生在
-    // AppKit 主线程。保留 GPUI 设置的 NonactivatingPanel 位，只移除会生成系统窗口框的位。
-    unsafe {
-        let native_window: id = msg_send![native_view, window];
-        if native_window.is_null() {
-            return Err("桌宠 NSView 尚未绑定 NSWindow".to_owned());
-        }
-        let existing_style = NSWindow::styleMask(native_window);
-        let framed_style = NSWindowStyleMask::NSTitledWindowMask
-            | NSWindowStyleMask::NSClosableWindowMask
-            | NSWindowStyleMask::NSMiniaturizableWindowMask
-            | NSWindowStyleMask::NSResizableWindowMask
-            | NSWindowStyleMask::NSFullSizeContentViewWindowMask;
-        NSWindow::setStyleMask_(native_window, existing_style & !framed_style);
-        NSWindow::setHasShadow_(native_window, NO);
-        NSWindow::setOpaque_(native_window, NO);
-        NSWindow::setBackgroundColor_(native_window, NSColor::clearColor(nil));
-    }
+    let native_window = native_view
+        .window()
+        .ok_or_else(|| "桌宠 NSView 尚未绑定 NSWindow".to_owned())?;
+    let existing_style = native_window.styleMask();
+    let framed_style = NSWindowStyleMask::Titled
+        | NSWindowStyleMask::Closable
+        | NSWindowStyleMask::Miniaturizable
+        | NSWindowStyleMask::Resizable
+        | NSWindowStyleMask::FullSizeContentView;
+    native_window.setStyleMask(existing_style & !framed_style);
+    native_window.setHasShadow(false);
+    native_window.setOpaque(false);
+    let clear_color = NSColor::clearColor();
+    native_window.setBackgroundColor(Some(&clear_color));
     Ok(())
 }
 
@@ -87,8 +80,7 @@ pub(crate) fn set_desktop_pet_window_visible(window: &Window, visible: bool) -> 
 /// 显示或隐藏桌宠原生窗口，同时保留 GPUI 实体与 Live2D 运行时。
 #[cfg(target_os = "macos")]
 pub(crate) fn set_desktop_pet_window_visible(window: &Window, visible: bool) -> Result<(), String> {
-    use cocoa::base::{id, nil};
-    use objc::{msg_send, runtime::Object, sel, sel_impl};
+    use objc2_app_kit::NSView;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let handle = HasWindowHandle::window_handle(window)
@@ -96,20 +88,16 @@ pub(crate) fn set_desktop_pet_window_visible(window: &Window, visible: bool) -> 
     let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
         return Err("桌宠窗口没有 AppKit 原生句柄".to_owned());
     };
-    let native_view = handle.ns_view.as_ptr().cast::<Object>();
+    // SAFETY: raw-window-handle 保证该指针在 WindowHandle 生命周期内指向当前 GPUI NSView。
+    let native_view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
 
-    // SAFETY: `native_view` 来自当前主线程中仍存活的 GPUI NSView；其 window 在查询和
-    // 同步 order 调用期间保持有效，消息参数 `nil` 不转移任何对象所有权。
-    unsafe {
-        let native_window: id = msg_send![native_view, window];
-        if native_window.is_null() {
-            return Err("桌宠 NSView 尚未绑定 NSWindow".to_owned());
-        }
-        if visible {
-            let _: () = msg_send![native_window, orderFrontRegardless];
-        } else {
-            let _: () = msg_send![native_window, orderOut: nil];
-        }
+    let native_window = native_view
+        .window()
+        .ok_or_else(|| "桌宠 NSView 尚未绑定 NSWindow".to_owned())?;
+    if visible {
+        native_window.orderFrontRegardless();
+    } else {
+        native_window.orderOut(None);
     }
     Ok(())
 }

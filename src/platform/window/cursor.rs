@@ -86,29 +86,22 @@ fn global_cursor_position(window: &Window) -> Option<Point<Pixels>> {
 
 #[cfg(target_os = "macos")]
 fn global_cursor_position(window: &Window) -> Option<Point<Pixels>> {
-    use cocoa::{base::id, foundation::NSPoint};
-    use objc::{msg_send, runtime::Object, sel, sel_impl};
+    use objc2_app_kit::NSView;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let handle = HasWindowHandle::window_handle(window).ok()?;
     let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
         return None;
     };
-    let native_view = handle.ns_view.as_ptr().cast::<Object>();
-    // SAFETY: NSView 来自当前主线程中仍存活的 GPUI 窗口；查询返回值均为按值复制，
-    // Objective-C 消息不会保存 Rust 侧引用。
-    unsafe {
-        let native_window: id = msg_send![native_view, window];
-        if native_window.is_null() {
-            return None;
-        }
-        let position: NSPoint = msg_send![native_window, mouseLocationOutsideOfEventStream];
-        let height = f32::from(window.viewport_size().height);
-        Some(Point::new(
-            px(position.x as f32),
-            px(height - position.y as f32),
-        ))
-    }
+    // SAFETY: raw-window-handle 保证该指针在 WindowHandle 生命周期内指向当前 GPUI NSView。
+    let native_view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+    let native_window = native_view.window()?;
+    let position = native_window.mouseLocationOutsideOfEventStream();
+    let height = f32::from(window.viewport_size().height);
+    Some(Point::new(
+        px(position.x as f32),
+        px(height - position.y as f32),
+    ))
 }
 
 #[cfg(target_os = "linux")]

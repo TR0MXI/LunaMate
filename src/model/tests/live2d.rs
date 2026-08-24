@@ -71,7 +71,7 @@ fn renders_local_model_when_available() {
 
     let image = render_model(&path, 128).expect("local test model should render");
     let bytes = image.as_bytes(0).expect("render should contain one frame");
-    assert!(bytes.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    assert!(bytes.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
     let eye_pixels = (15..25)
         .flat_map(|y| (52..76).map(move |x| (y * 128 + x) * 4))
         .filter(|offset| {
@@ -122,5 +122,5 @@ fn renders_to_a_rectangular_target_when_local_model_is_available() {
         .expect("render should contain one frame");
 
     assert_eq!(bytes.len(), 72 * 128 * 4);
-    assert!(bytes.chunks_exact(4).any(|pixel| pixel[3] > 0));
+    assert!(bytes.as_chunks::<4>().0.iter().any(|pixel| pixel[3] > 0));
 }
