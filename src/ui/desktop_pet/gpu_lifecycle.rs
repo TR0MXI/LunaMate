@@ -482,10 +482,14 @@ impl DesktopPetView {
             self.model_generation
         );
         self.visibility_revision = self.visibility_revision.wrapping_add(1);
+        if !visible {
+            self.chat_input_open = false;
+        }
         self.chat.update(cx, |chat, cx| {
             if visible {
                 chat.resume_after_hidden();
             } else {
+                chat.set_input_visible(false, window, cx);
                 chat.suspend_for_hidden(cx);
             }
         });

@@ -1,8 +1,8 @@
 //! 组装设置主体布局，并根据当前侧栏分区调度页面渲染。
 
 use gpui::{
-    AnyElement, AnyView, Context, IntoElement, KeyDownEvent, MouseButton, Render, StyleRefinement,
-    Window, div, prelude::*, px,
+    AnyElement, AnyView, Context, IntoElement, KeyDownEvent, MouseButton, Render, Window, div,
+    prelude::*, px,
 };
 use rust_i18n::t;
 
@@ -156,11 +156,9 @@ impl Render for SettingsView {
     }
 }
 
-/// 把一个独立设置编辑器实体嵌入主体区域，并缓存其渲染结果。
+/// 把一个独立设置编辑器实体嵌入主体区域。
 fn embedded_page<V: Render>(view: gpui::Entity<V>) -> AnyElement {
-    AnyView::from(view)
-        .cached(StyleRefinement::default().size_full())
-        .into_any_element()
+    AnyView::from(view).into_any_element()
 }
 
 /// 设置窗口尚未激活时不持有输入组件，此时给出可诊断的占位提示。

@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, IntoElement,
-    MouseButton, MouseMoveEvent, ObjectFit, Render, StyleRefinement, StyledImage, Window,
-    WindowControlArea, bounce, div, ease_in_out, ease_out_quint, img, prelude::*, px, svg,
+    MouseButton, MouseMoveEvent, ObjectFit, Render, StyledImage, Window, WindowControlArea, bounce,
+    div, ease_in_out, ease_out_quint, img, prelude::*, px, svg,
 };
 use gpui_component::{StyledExt as _, tooltip::Tooltip};
 use rust_i18n::t;
@@ -178,9 +178,7 @@ impl Render for DesktopPetView {
                     .right_0()
                     .bottom_0()
                     .left_0()
-                    .child(
-                        gpui::AnyView::from(chat).cached(StyleRefinement::default().size_full()),
-                    ),
+                    .child(gpui::AnyView::from(chat).into_any_element()),
             )
             .when_some(voice_indicator, |this, indicator| this.child(indicator))
             .child(

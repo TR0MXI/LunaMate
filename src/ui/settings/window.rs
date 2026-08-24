@@ -1,8 +1,8 @@
 //! 承载设置主体的独立窗口壳层，处理标题栏拖动和窗口位置缓存。
 
 use gpui::{
-    AnyView, Context, Entity, IntoElement, MouseButton, Render, StyleRefinement, Subscription,
-    Window, WindowControlArea, div, prelude::*, px, svg,
+    AnyView, Context, Entity, IntoElement, MouseButton, Render, Subscription, Window,
+    WindowControlArea, div, prelude::*, px, svg,
 };
 use gpui_component::StyledExt;
 
@@ -178,9 +178,10 @@ impl Render for SettingsWindowView {
                         ),
                 )
                 .child(
-                    div().flex_1().min_h_0().child(
-                        AnyView::from(config).cached(StyleRefinement::default().size_full()),
-                    ),
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .child(AnyView::from(config).into_any_element()),
                 ),
         )
     }

@@ -254,6 +254,9 @@ impl AgentView {
             self.refresh_settings(CONFIG.agent_config_snapshot(), cx);
             self.input.update(cx, |input, cx| input.focus(window, cx));
         } else {
+            // 先释放焦点，确保 macOS 不会继续向已从当前帧移除的 NSTextInputClient
+            // 发送输入法组合文本回调。
+            window.blur();
             cx.notify();
         }
     }
