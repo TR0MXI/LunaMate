@@ -476,6 +476,12 @@ pub(super) fn run() {
             let async_handle = async_handle_for_app.clone();
             let voice = voice_for_app.clone();
             let speech_playback = speech_playback_for_app.clone();
+            // macOS 的 PopUp 会创建 NSNonactivatingPanel，无法稳定接收文本输入法事件；
+            // Floating 仍保持置顶，但允许 AppKit 激活应用并把第一响应者交给输入控件。
+            #[cfg(target_os = "macos")]
+            let desktop_pet_window_kind = WindowKind::Floating;
+            #[cfg(not(target_os = "macos"))]
+            let desktop_pet_window_kind = WindowKind::PopUp;
 
             let result = cx.open_window(
                 WindowOptions {
@@ -486,7 +492,7 @@ pub(super) fn run() {
                     )),
                     window_min_size: Some(window_min_size),
                     titlebar: None,
-                    kind: WindowKind::PopUp,
+                    kind: desktop_pet_window_kind,
                     window_background: WindowBackgroundAppearance::Transparent,
                     window_decorations: Some(WindowDecorations::Client),
                     is_resizable: false,
