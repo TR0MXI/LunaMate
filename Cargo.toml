@@ -12,8 +12,8 @@ arc-swap = "1.9.2"
 ashpd = { version = "0.13.13", default-features = false }
 async-channel = "2.5.0"
 base64 = "0.22.1"
-flexi_logger = { version = "0.31.9", features = ["async", "compress"] }
-futures = "0.3.33"
+flexi_logger = { version = "0.31.10", features = ["async", "compress"] }
+futures = "0.3.34"
 genai = "0.6.5"
 global-hotkey = "0.8.0"
 gpui = { git = "https://github.com/zed-industries/zed" }
@@ -22,7 +22,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui_tokio = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
 gpui_wgpu = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
-log = "0.4.33"
+log = "0.4.34"
 lunamate-agent = { path = "crates/lunamate-agent" }
 mocari = { version = "0.4.0", path = "crates/lunamate-mocari", features = ["wgpu"] }
 parking_lot = "0.12.5"
@@ -32,11 +32,11 @@ ringbuf = "0.4.8"
 rust-i18n = "4.2.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-surrealdb = { version = "3.2.3", default-features = false, features = ["kv-surrealkv"] }
+surrealdb = { version = "3.2.4", default-features = false, features = ["kv-surrealkv"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync"] }
 toml_edit = "0.25.13"
 url = "2.5.8"
-xcap = { version = "0.9.7", default-features = false }
+xcap = { version = "0.9.8", default-features = false }
 
 [package]
 name = "lunamate"
@@ -75,16 +75,12 @@ lunamate-agent.workspace = true
 # 生产构建仅包含本地 SurrealKV，不引入远程协议、原生 TLS、脚本或 ML。
 surrealdb.workspace = true
 ringbuf.workspace = true
-cpal = "0.18.1"
+cpal = "0.18.2"
 rubato = "0.16.2"
 global-hotkey.workspace = true
 tempfile = "3.27.0"
 resvg = { version = "0.46.0", default-features = false }
 rapidhash.workspace = true
-
-[patch.crates-io]
-# 上游 PR #14 修复了 2.0.1 中的 Rust future-incompatibility 警告。
-proc-macro-error2 = { git = "https://github.com/fgardt/proc-macro-error-2", rev = "53ff94b61c678593158db1a3d50269c6f0de0db7" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # 通用产物固定包含 Vulkan。
@@ -110,7 +106,7 @@ whisper-rs = { version = "0.16.0", features = ["log_backend", "vulkan"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 # Windows 与 macOS 直接复用各自原生事件循环，不启用 GTK 相关默认 feature。
-tray-icon = { version = "0.24.1", default-features = false }
+tray-icon = { version = "0.24.2", default-features = false }
 # 只启用静态截图 API；不启用全格式 image 或 Windows Graphics Capture feature。
 xcap.workspace = true
 

@@ -6,7 +6,7 @@ use gpui::{
 };
 use gpui_component::{
     Sizable as _, StyledExt as _,
-    input::{Input, InputState},
+    input::{Input, InputState, Textarea},
     menu::{ContextMenuExt as _, PopupMenuItem},
     tooltip::Tooltip,
 };
@@ -459,10 +459,10 @@ impl PersonaSettingsView {
                         .w_full()
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
-                            Input::new(&message.input)
+                            Textarea::new(&message.input)
                                 .w_full()
                                 .appearance(false)
-                                .focus_bordered(false),
+                                .bordered(false),
                         ),
                 )
                 .into_any_element()

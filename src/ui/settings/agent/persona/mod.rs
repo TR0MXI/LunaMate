@@ -13,7 +13,10 @@ use std::{cell::Cell, collections::HashSet, path::PathBuf, rc::Rc};
 use gpui::{
     Bounds, Entity, EventEmitter, FocusHandle, Pixels, Point, ScrollHandle, Subscription, Task,
 };
-use gpui_component::{input::InputState, select::SelectState};
+use gpui_component::{
+    input::{InputState, TextareaState},
+    select::SelectState,
+};
 use lunamate_agent::config::{AppLanguage, PersonaSettings, SharedLlmSettings};
 use lunamate_agent::memory::PersonaMemoryUsage;
 use lunamate_agent::{AgentMemory, ChatRole};
@@ -80,7 +83,7 @@ impl ContextMessageLayout {
 struct ContextMessageEditor {
     id: u64,
     role: ChatRole,
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
     layout: Rc<Cell<ContextMessageLayout>>,
     saved_content: String,
     tokens: usize,
@@ -101,8 +104,8 @@ pub(in crate::ui) struct PersonaSettingsView {
     editing_index: Option<usize>,
     active_page: PersonaPage,
     name_input: Entity<InputState>,
-    system_prompt_input: Entity<InputState>,
-    input_prompt_input: Entity<InputState>,
+    system_prompt_input: Entity<TextareaState>,
+    input_prompt_input: Entity<TextareaState>,
     provider_select: Entity<SelectState<Vec<gpui::SharedString>>>,
     tts_select: Entity<SelectState<Vec<gpui::SharedString>>>,
     live2d_select: Entity<SelectState<Vec<gpui::SharedString>>>,

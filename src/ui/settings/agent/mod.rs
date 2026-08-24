@@ -5,30 +5,51 @@ mod persona;
 mod provider;
 
 use gpui::{Context, Entity, Window};
-use gpui_component::input::InputState;
+use gpui_component::input::{InputState, TextareaState};
 
 use lunamate_agent::config::{LlmProvider, ModelProvider, llm_provider_id};
 
 /// 单次输入焦点周期的原始值，用于 Esc 放弃尚未提交的修改。
 pub(super) struct InputEditSession {
-    input: Entity<InputState>,
+    input: InputEditTarget,
     original: String,
+}
+
+enum InputEditTarget {
+    Input(Entity<InputState>),
+    Textarea(Entity<TextareaState>),
 }
 
 impl InputEditSession {
     pub(super) fn begin<V>(input: &Entity<InputState>, cx: &Context<V>) -> Self {
         Self {
-            input: input.clone(),
+            input: InputEditTarget::Input(input.clone()),
+            original: input.read(cx).value().to_string(),
+        }
+    }
+
+    pub(super) fn begin_textarea<V>(input: &Entity<TextareaState>, cx: &Context<V>) -> Self {
+        Self {
+            input: InputEditTarget::Textarea(input.clone()),
             original: input.read(cx).value().to_string(),
         }
     }
 
     pub(super) fn belongs_to(&self, input: &Entity<InputState>) -> bool {
-        self.input == *input
+        matches!(&self.input, InputEditTarget::Input(current) if current == input)
+    }
+
+    pub(super) fn belongs_to_textarea(&self, input: &Entity<TextareaState>) -> bool {
+        matches!(&self.input, InputEditTarget::Textarea(current) if current == input)
     }
 
     pub(super) fn restore<V: 'static>(self, window: &mut Window, cx: &mut Context<V>) {
-        set_input(&self.input, &self.original, window, cx);
+        match self.input {
+            InputEditTarget::Input(input) => set_input(&input, &self.original, window, cx),
+            InputEditTarget::Textarea(input) => {
+                set_textarea(&input, &self.original, window, cx);
+            }
+        }
         window.blur();
     }
 }
@@ -60,6 +81,15 @@ fn non_empty(value: &str) -> Option<String> {
 
 fn set_input<V: 'static>(
     input: &Entity<InputState>,
+    value: &str,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
+    input.update(cx, |input, cx| input.set_value(value, window, cx));
+}
+
+fn set_textarea<V: 'static>(
+    input: &Entity<TextareaState>,
     value: &str,
     window: &mut Window,
     cx: &mut Context<V>,

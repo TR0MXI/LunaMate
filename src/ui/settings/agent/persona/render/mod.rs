@@ -6,7 +6,12 @@ use gpui::{
     AnyElement, Context, IntoElement, KeyDownEvent, MouseButton, Render, Window, div, prelude::*,
     px, svg,
 };
-use gpui_component::{StyledExt as _, input::Input, select::Select, tooltip::Tooltip};
+use gpui_component::{
+    StyledExt as _,
+    input::{Input, Textarea},
+    select::Select,
+    tooltip::Tooltip,
+};
 use rust_i18n::t;
 
 use crate::ui::UiPalette;
@@ -326,7 +331,7 @@ impl PersonaSettingsView {
                     .w_full()
                     .h(px(220.0))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(Input::new(&self.system_prompt_input).h_full()),
+                    .child(Textarea::new(&self.system_prompt_input).h_full()),
             )
             .child(section_label(
                 t!("persona.input_prompt").to_string(),
@@ -337,7 +342,7 @@ impl PersonaSettingsView {
                     .w_full()
                     .h(px(150.0))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(Input::new(&self.input_prompt_input).h_full()),
+                    .child(Textarea::new(&self.input_prompt_input).h_full()),
             )
             .into_any_element()
     }

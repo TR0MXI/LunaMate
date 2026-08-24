@@ -5,7 +5,7 @@ use std::{cell::Cell, collections::HashSet, path::PathBuf, rc::Rc};
 use gpui::{AppContext, Bounds, Context, Entity, ScrollHandle, SharedString, Subscription, Window};
 use gpui_component::{
     IndexPath,
-    input::{InputEvent, InputState, MaskPattern},
+    input::{InputEvent, InputState, MaskPattern, TextareaState},
     select::{SelectEvent, SelectState},
 };
 use lunamate_agent::AgentMemory;
@@ -18,7 +18,7 @@ use rust_i18n::t;
 use crate::config::CONFIG;
 
 use super::{
-    super::{InputEditSession, set_input},
+    super::{InputEditSession, set_input, set_textarea},
     Live2dModelOption, PersonaPage, PersonaSettingsDraft, PersonaSettingsView,
     options::{
         live2d_option_state, model_option_id, model_option_index, model_option_names,
@@ -117,8 +117,7 @@ impl PersonaSettingsView {
                 )
         });
         let system_prompt_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .rows(10)
                 .placeholder(t!("persona.system_prompt_placeholder").to_string())
                 .default_value(
@@ -128,8 +127,7 @@ impl PersonaSettingsView {
                 )
         });
         let input_prompt_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
+            TextareaState::new(window, cx)
                 .rows(6)
                 .placeholder(t!("persona.input_prompt_placeholder").to_string())
                 .default_value(
@@ -239,8 +237,8 @@ impl PersonaSettingsView {
         };
         view.form_subscriptions = vec![
             subscribe_form_input(&view.name_input, true, window, cx),
-            subscribe_form_input(&view.system_prompt_input, false, window, cx),
-            subscribe_form_input(&view.input_prompt_input, false, window, cx),
+            subscribe_form_textarea(&view.system_prompt_input, window, cx),
+            subscribe_form_textarea(&view.input_prompt_input, window, cx),
             subscribe_form_input(&view.context_messages_input, true, window, cx),
             subscribe_form_input(&view.context_tokens_input, true, window, cx),
             cx.subscribe(
@@ -415,7 +413,7 @@ impl PersonaSettingsView {
             window,
             cx,
         );
-        set_input(
+        set_textarea(
             &self.input_prompt_input,
             persona
                 .map(|persona| persona.input_prompt.as_str())
@@ -423,7 +421,7 @@ impl PersonaSettingsView {
             window,
             cx,
         );
-        set_input(
+        set_textarea(
             &self.system_prompt_input,
             persona
                 .map(|persona| persona.system_prompt.as_str())
@@ -631,6 +629,37 @@ fn subscribe_form_input(
                     .input_edit
                     .as_ref()
                     .is_some_and(|edit| edit.belongs_to(input))
+                {
+                    this.input_edit = None;
+                }
+                if !this.loading_form {
+                    this.save(cx);
+                }
+            }
+            InputEvent::Change | InputEvent::PressEnter { .. } => {}
+        },
+    )
+}
+
+fn subscribe_form_textarea(
+    input: &Entity<TextareaState>,
+    window: &mut Window,
+    cx: &mut Context<PersonaSettingsView>,
+) -> Subscription {
+    cx.subscribe_in(
+        input,
+        window,
+        move |this, input, event: &InputEvent, _, cx| match event {
+            InputEvent::Focus => {
+                if !this.loading_form {
+                    this.input_edit = Some(InputEditSession::begin_textarea(input, cx));
+                }
+            }
+            InputEvent::Blur => {
+                if this
+                    .input_edit
+                    .as_ref()
+                    .is_some_and(|edit| edit.belongs_to_textarea(input))
                 {
                     this.input_edit = None;
                 }

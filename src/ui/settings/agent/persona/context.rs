@@ -3,7 +3,7 @@
 use std::{cell::Cell, collections::HashSet, rc::Rc, time::Duration};
 
 use gpui::{AppContext, Context, Entity, Window};
-use gpui_component::input::{InputEvent, InputState};
+use gpui_component::input::{InputEvent, TextareaState};
 use gpui_tokio::Tokio;
 use lunamate_agent::config::{PersonaConfig, SharedLlmSettings};
 use lunamate_agent::memory::{ContextMessage, ContextUsage};
@@ -11,7 +11,7 @@ use lunamate_agent::{MAX_SESSION_TEXT_BYTES, chat_limits, context_message_tokens
 use rust_i18n::t;
 
 use super::{
-    super::set_input, ContextMessageEditor, ContextMessageLayout, ContextMutationCompletion,
+    super::set_textarea, ContextMessageEditor, ContextMessageLayout, ContextMutationCompletion,
     PersonaPage, PersonaSettingsEvent, PersonaSettingsView,
 };
 
@@ -176,7 +176,7 @@ impl PersonaSettingsView {
         let mut subscriptions = Vec::with_capacity(messages.len());
         for message in messages {
             let input = cx.new(|cx| {
-                InputState::new(window, cx)
+                TextareaState::new(window, cx)
                     .auto_grow(1, 12)
                     .default_value(message.content.clone())
             });
@@ -216,7 +216,7 @@ impl PersonaSettingsView {
     fn enforce_context_message_size(
         &mut self,
         message_id: u64,
-        input: Entity<InputState>,
+        input: Entity<TextareaState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -231,7 +231,7 @@ impl PersonaSettingsView {
         else {
             return;
         };
-        set_input(&input, &saved, window, cx);
+        set_textarea(&input, &saved, window, cx);
         self.set_status(t!("persona.context_message_file_too_large").to_string(), cx);
     }
 
@@ -249,7 +249,7 @@ impl PersonaSettingsView {
     fn commit_context_message(
         &mut self,
         message_id: u64,
-        input: Entity<InputState>,
+        input: Entity<TextareaState>,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
     ) {
@@ -270,7 +270,7 @@ impl PersonaSettingsView {
         }
         if value.is_empty() {
             if let Some(window) = window {
-                set_input(&input, &saved, window, cx);
+                set_textarea(&input, &saved, window, cx);
             }
             self.set_status(t!("persona.context_message_empty").to_string(), cx);
             return;
@@ -300,7 +300,7 @@ impl PersonaSettingsView {
             .saturating_add(new_tokens);
         if next_tokens > max_tokens {
             if let Some(window) = window {
-                set_input(&input, &saved, window, cx);
+                set_textarea(&input, &saved, window, cx);
             }
             self.set_status(t!("persona.context_message_too_large").to_string(), cx);
             return;
@@ -494,7 +494,7 @@ impl PersonaSettingsView {
         else {
             return;
         };
-        set_input(&input, &saved, window, cx);
+        set_textarea(&input, &saved, window, cx);
         self.context_editing = None;
         window.blur();
         cx.notify();
@@ -560,7 +560,7 @@ impl PersonaSettingsView {
             .find(|message| message.id == message_id)
             .map(|message| message.input.clone())
         {
-            set_input(&input, value, window, cx);
+            set_textarea(&input, value, window, cx);
         }
     }
 

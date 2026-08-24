@@ -2,10 +2,6 @@
 unmaintained = "workspace"
 unused-ignored-advisory = "deny"
 ignore = [
-    # quick-xml 0.30 只由 xcb 构建脚本解析构建机上的协议 XML，不进入 LunaMate 运行时，
-    # 也不处理模型、配置、网络响应或其他用户输入。xcb 升级到 quick-xml >= 0.41 后删除。
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml is build-only through xcb and parses trusted protocol XML" },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml is build-only through xcb and parses trusted protocol XML" },
     # SurrealDB 的嵌入式 SurrealKV 依赖图会编译 jsonwebtoken/rsa，但应用不启用远程协议、
     # 不加载 RSA 私钥，也不提供可观测私钥运算的网络入口。上游移除 rsa 或提供修复后删除。
     { id = "RUSTSEC-2023-0071", reason = "embedded SurrealKV does not perform RSA private-key operations" },
