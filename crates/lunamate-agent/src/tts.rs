@@ -390,7 +390,9 @@ fn decode_pcm(bytes: Vec<u8>) -> Result<Vec<i16>, SpeechSynthesisError> {
         return Err(SpeechSynthesisError::InvalidResponse);
     }
     Ok(bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
         .collect())
 }

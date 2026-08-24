@@ -41,6 +41,10 @@ Local changes:
 - WGPU vertex encoding clamps finite opacity and color channels to the same
   range used by LunaMate's CPU rasterizer; non-finite values remain rejected
   by the application validation layer.
+- Constant-width slice iteration uses `as_chunks` to satisfy the Clippy lint
+  enabled by the current stable Rust toolchain without changing the validated
+  mesh data handling. Remove this adaptation if the upstream source adopts the
+  same lint fix.
 - Dynamic WGPU vertex uploads use LunaMate's reusable staging belt instead of
   allocating one native staging resource per changed drawable. The mesh buffer
   cache also reuses its CPU encoding scratch and only rebuilds draw order when

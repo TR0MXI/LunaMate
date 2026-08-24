@@ -583,7 +583,7 @@ fn interpolate_art_mesh_positions_into(
         if positions.len() != first.len() || positions.len() % 2 != 0 {
             return None;
         }
-        for (target, position) in out.iter_mut().zip(positions.chunks_exact(2)) {
+        for (target, position) in out.iter_mut().zip(positions.as_chunks::<2>().0) {
             *target = Vector2::new(
                 target.x() + position[0] * slot.weight,
                 target.y() + position[1] * slot.weight,

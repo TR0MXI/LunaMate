@@ -515,7 +515,7 @@ impl Moc3Deformers {
         if source.len() != vertex_count.checked_mul(2)? {
             return None;
         }
-        for source in source.chunks_exact(2) {
+        for source in source.as_chunks::<2>().0 {
             grid.push(Vector2::new(
                 0.0 + source[0] * first_slot.weight,
                 0.0 + source[1] * first_slot.weight,
@@ -528,7 +528,7 @@ impl Moc3Deformers {
             if source.len() != grid.len().checked_mul(2)? {
                 return None;
             }
-            for (target, source) in grid.iter_mut().zip(source.chunks_exact(2)) {
+            for (target, source) in grid.iter_mut().zip(source.as_chunks::<2>().0) {
                 *target = Vector2::new(
                     target.x() + source[0] * slot.weight,
                     target.y() + source[1] * slot.weight,
