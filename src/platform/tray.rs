@@ -247,6 +247,8 @@ mod imp {
 
     pub(super) struct PlatformTray {
         tray_icon: TrayIcon,
+        #[cfg(target_os = "macos")]
+        menu: Menu,
         hide_desktop_pet: CheckMenuItem,
         settings: MenuItem,
         quit: MenuItem,
@@ -279,13 +281,20 @@ mod imp {
                 TRAY_ICON_SIZE,
             )
             .map_err(|error| format!("无法创建系统托盘图标：{error}"))?;
-            let tray_icon = TrayIconBuilder::new()
+            let tray_icon_builder = TrayIconBuilder::new()
                 .with_tooltip("LunaMate")
                 .with_icon(icon)
                 .with_icon_as_template(cfg!(target_os = "macos"))
+                .with_menu_on_left_click(false);
+            #[cfg(target_os = "windows")]
+            let tray_icon_builder = tray_icon_builder
                 .with_menu(Box::new(menu))
-                .with_menu_on_left_click(false)
-                .with_menu_on_right_click(use_native_menu)
+                .with_menu_on_right_click(use_native_menu);
+            // tray-icon#355：macOS 27 会在自定义事件视图收到左键前自动跟踪持久绑定的
+            // NSStatusItem.menu。菜单只由右键动作按需弹出；上游改为非持久绑定后删除该适配。
+            #[cfg(target_os = "macos")]
+            let tray_icon_builder = tray_icon_builder.with_menu_on_right_click(false);
+            let tray_icon = tray_icon_builder
                 .build()
                 .map_err(|error| format!("无法创建系统托盘：{error}"))?;
             let tray_id = tray_icon.id().clone();
@@ -324,7 +333,10 @@ mod imp {
                     MouseButton::Left => {
                         dispatch_action(&actions_for_click, SystemTrayAction::OpenSettings);
                     }
-                    MouseButton::Right if !native_menu_for_click.load(Ordering::Acquire) => {
+                    MouseButton::Right
+                        if cfg!(target_os = "macos")
+                            || !native_menu_for_click.load(Ordering::Acquire) =>
+                    {
                         let scale_factor = tray_scale_factor(position.x, position.y);
                         let anchor = TrayMenuAnchor::from_physical(
                             [position.x, position.y],
@@ -340,6 +352,8 @@ mod imp {
 
             Ok(Self {
                 tray_icon,
+                #[cfg(target_os = "macos")]
+                menu,
                 hide_desktop_pet,
                 settings,
                 quit,
@@ -374,6 +388,7 @@ mod imp {
 
         pub(super) fn set_use_native_menu(&self, enabled: bool) {
             self.use_native_menu.store(enabled, Ordering::Release);
+            #[cfg(target_os = "windows")]
             self.tray_icon.set_show_menu_on_right_click(enabled);
         }
 
@@ -382,7 +397,34 @@ mod imp {
         }
 
         pub(super) fn show_native_menu(&self) {
+            #[cfg(target_os = "windows")]
             self.tray_icon.show_menu();
+            #[cfg(target_os = "macos")]
+            {
+                use std::ffi::c_void;
+
+                use objc2::{MainThreadMarker, rc::Retained};
+                use tray_icon::menu::ContextMenu;
+
+                let Some(main_thread) = MainThreadMarker::new() else {
+                    log::warn!("event=tray_native_menu_failed reason=not_main_thread");
+                    return;
+                };
+                let Some(status_item) = self.tray_icon.ns_status_item() else {
+                    log::warn!("event=tray_native_menu_failed reason=status_item_missing");
+                    return;
+                };
+                let Some(button) = status_item.button(main_thread) else {
+                    log::warn!("event=tray_native_menu_failed reason=status_button_missing");
+                    return;
+                };
+                let button = Retained::as_ptr(&button).cast::<c_void>();
+                // SAFETY: button 指向上面取得且仍由 status_item 持有的 NSStatusBarButton；
+                // muda 仅在同步菜单跟踪期间使用该视图，self.menu 保证 NSMenu 同期有效。
+                unsafe {
+                    self.menu.show_context_menu_for_nsview(button, None);
+                }
+            }
         }
     }
 
