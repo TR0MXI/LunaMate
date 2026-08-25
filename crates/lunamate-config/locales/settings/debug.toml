@@ -1,0 +1,97 @@
+_version = 2
+
+[settings.debug]
+"zh-CN" = "调试"
+"zh-TW" = "除錯"
+"en" = "Debug"
+"ja" = "デバッグ"
+
+[settings.debug_title]
+"zh-CN" = "调试设置"
+"zh-TW" = "除錯設定"
+"en" = "Debug Settings"
+"ja" = "デバッグ設定"
+
+[debug.runtime]
+"zh-CN" = "运行时"
+"zh-TW" = "執行階段"
+"en" = "Runtime"
+"ja" = "ランタイム"
+
+[debug.show_fps]
+"zh-CN" = "显示实际帧率"
+"zh-TW" = "顯示實際幀率"
+"en" = "Show actual frame rate"
+"ja" = "実測フレームレートを表示"
+
+[debug.use_native_tray_menu]
+"zh-CN" = "使用系统托盘右键菜单"
+"zh-TW" = "使用系統匣右鍵選單"
+"en" = "Use the native tray context menu"
+"ja" = "システムのトレイコンテキストメニューを使用"
+
+[debug.logging]
+"zh-CN" = "日志"
+"zh-TW" = "日誌"
+"en" = "Logging"
+"ja" = "ログ"
+
+[debug.log_level]
+"zh-CN" = "日志等级"
+"zh-TW" = "日誌等級"
+"en" = "Log level"
+"ja" = "ログレベル"
+
+[debug.level_error]
+"zh-CN" = "错误"
+"zh-TW" = "錯誤"
+"en" = "Error"
+"ja" = "エラー"
+
+[debug.level_warn]
+"zh-CN" = "警告"
+"zh-TW" = "警告"
+"en" = "Warn"
+"ja" = "警告"
+
+[debug.level_info]
+"zh-CN" = "信息"
+"zh-TW" = "資訊"
+"en" = "Info"
+"ja" = "情報"
+
+[debug.level_debug]
+"zh-CN" = "调试"
+"zh-TW" = "除錯"
+"en" = "Debug"
+"ja" = "デバッグ"
+
+[debug.level_trace]
+"zh-CN" = "跟踪"
+"zh-TW" = "追蹤"
+"en" = "Trace"
+"ja" = "トレース"
+
+[debug.rotation]
+"zh-CN" = "启用日志轮转"
+"zh-TW" = "啟用日誌輪替"
+"en" = "Enable log rotation"
+"ja" = "ログローテーションを有効化"
+
+[debug.rotation_size]
+"zh-CN" = "文件大小阈值(MiB)"
+"zh-TW" = "檔案大小閾值(MiB)"
+"en" = "File size threshold (MiB)"
+"ja" = "ファイルサイズ上限(MiB)"
+
+[debug.compression]
+"zh-CN" = "压缩轮转日志"
+"zh-TW" = "壓縮輪替日誌"
+"en" = "Compress rotated logs"
+"ja" = "ローテーションログを圧縮"
+
+[debug.keep_files]
+"zh-CN" = "保留轮转项数"
+"zh-TW" = "保留輪替項目數"
+"en" = "Rotated logs to keep"
+"ja" = "保持するローテーションログ数"

@@ -1,0 +1,397 @@
+_version = 2
+
+[chat.input_placeholder]
+"zh-CN" = "输入消息"
+"zh-TW" = "輸入訊息"
+"en" = "Type a message"
+"ja" = "メッセージを入力"
+
+[chat.image_only_prompt]
+"zh-CN" = "请查看这张图片。"
+"zh-TW" = "請查看這張圖片。"
+"en" = "Please inspect this image."
+"ja" = "この画像を確認してください。"
+
+[chat.voice_interruption_marker]
+"zh-CN" = "[系统标注：此回复因用户开始说话而被截断。]"
+"zh-TW" = "[系統標註：此回覆因使用者開始說話而被截斷。]"
+"en" = "[System note: This response was interrupted when the user started speaking.]"
+"ja" = "[システム注記：ユーザーが話し始めたため、この応答は中断されました。]"
+
+[chat.event.model_part_clicked]
+"zh-CN" = "[事件] 用户点击了 Live2D 模型的“%{part}”部位。请以当前人格自然回应这次互动。"
+"zh-TW" = "[事件] 使用者點擊了 Live2D 模型的「%{part}」部位。請以目前人格自然回應這次互動。"
+"en" = "[Event] The user clicked the \"%{part}\" area of the Live2D model. Respond naturally to this interaction in character."
+"ja" = "[イベント] ユーザーが Live2D モデルの「%{part}」部位をクリックしました。現在のペルソナとして自然に反応してください。"
+
+[chat.history_image_unavailable]
+"zh-CN" = "这条历史消息中的图片已不可用。"
+"zh-TW" = "這則歷史訊息中的圖片已無法使用。"
+"en" = "The image from this historical message is no longer available."
+"ja" = "この過去のメッセージの画像は利用できなくなりました。"
+
+[chat.tool.screen_capture_description]
+"zh-CN" = "仅在回答确实需要当前视觉上下文时，将用户屏幕截取为静态图片。不得试探性调用，且每轮最多调用一次。"
+"zh-TW" = "僅在回答確實需要目前視覺內容時，將使用者螢幕擷取為靜態圖片。不得試探性呼叫，且每輪最多呼叫一次。"
+"en" = "Capture the user's screen as a still image only when current visual context is necessary to answer. Do not call it speculatively or more than once per turn."
+"ja" = "回答に現在の視覚情報が本当に必要な場合に限り、ユーザーの画面を静止画像としてキャプチャしてください。試行目的で呼び出さず、1ターンにつき1回だけ使用してください。"
+
+[chat.tool.screen_capture_handoff]
+"zh-CN" = "已获授权的 capture_screen 工具生成了这张截屏。请先查看图片再回答。"
+"zh-TW" = "已獲授權的 capture_screen 工具產生了這張截圖。請先查看圖片再回答。"
+"en" = "The authorized capture_screen tool produced this screenshot. Inspect it before answering."
+"ja" = "許可された capture_screen ツールがこのスクリーンショットを生成しました。回答する前に画像を確認してください。"
+
+[chat.tool.screen_capture_unavailable]
+"zh-CN" = "capture_screen 工具未能提供请求的截屏。请在没有截屏的情况下继续回答。"
+"zh-TW" = "capture_screen 工具無法提供要求的截圖。請在沒有截圖的情況下繼續回答。"
+"en" = "The capture_screen tool could not provide the requested screenshot. Continue without it."
+"ja" = "capture_screen ツールは要求されたスクリーンショットを取得できませんでした。画像なしで回答を続けてください。"
+
+[chat.tool.change_outfit_description]
+"zh-CN" = "将当前 Live2D 角色切换为指定服装。仅在符合当前情境或用户要求时调用，每轮最多调用一次。"
+"zh-TW" = "將目前的 Live2D 角色切換為指定服裝。僅在符合目前情境或使用者要求時呼叫，每輪最多呼叫一次。"
+"en" = "Change the current Live2D character into a specified outfit. Call this only when it fits the current context or the user's request, and at most once per turn."
+"ja" = "現在の Live2D キャラクターを指定した衣装に着替えさせます。現在の状況またはユーザーの要望に合う場合に限り、1ターンにつき1回だけ呼び出してください。"
+
+[chat.tool.change_outfit_argument]
+"zh-CN" = "要切换的服装，必须从当前模型的可用服装中选择。"
+"zh-TW" = "要切換的服裝，必須從目前模型的可用服裝中選擇。"
+"en" = "The outfit to change into. Choose one of the outfits available for the current model."
+"ja" = "着替える衣装です。現在のモデルで利用可能な衣装から選択してください。"
+
+[chat.tool.result_handoff]
+"zh-CN" = "本地工具执行结果如下：\n%{results}\n请根据结果继续回答。"
+"zh-TW" = "本機工具執行結果如下：\n%{results}\n請根據結果繼續回答。"
+"en" = "The local tool results are shown below:\n%{results}\nContinue your response using these results."
+"ja" = "ローカルツールの実行結果は次のとおりです：\n%{results}\nこの結果に基づいて回答を続けてください。"
+
+[chat.select_image]
+"zh-CN" = "选择图片"
+"zh-TW" = "選擇圖片"
+"en" = "Select Image"
+"ja" = "画像を選択"
+
+[chat.attach_image]
+"zh-CN" = "添加图片"
+"zh-TW" = "新增圖片"
+"en" = "Attach image"
+"ja" = "画像を添付"
+
+[chat.remove_image]
+"zh-CN" = "移除图片"
+"zh-TW" = "移除圖片"
+"en" = "Remove image"
+"ja" = "画像を削除"
+
+[chat.image_unavailable]
+"zh-CN" = "内容未恢复"
+"zh-TW" = "內容未還原"
+"en" = "Not restored"
+"ja" = "未復元"
+
+[chat.configure_model]
+"zh-CN" = "请先在设置中添加并选择语言模型"
+"zh-TW" = "請先在設定中新增並選擇語言模型"
+"en" = "Add and select a language model in Settings first"
+"ja" = "設定で言語モデルを追加して選択してください"
+
+[chat.context_window_exhausted]
+"zh-CN" = "模型上下文窗口没有为输入保留足够空间，请增大窗口或减小输出上限和系统提示词"
+"zh-TW" = "模型上下文視窗沒有為輸入保留足夠空間，請增大視窗或減小輸出上限和系統提示詞"
+"en" = "The model context window leaves no room for input; increase it or reduce the output limit and system prompt"
+"ja" = "モデルコンテキストウィンドウに入力領域がありません。ウィンドウを増やすか、出力上限とシステムプロンプトを減らしてください"
+
+[chat.persistence_unavailable]
+"zh-CN" = "本次运行无法保存会话：%{error}"
+"zh-TW" = "本次執行無法儲存對話：%{error}"
+"en" = "Conversation persistence is unavailable for this run: %{error}"
+"ja" = "今回の実行では会話を保存できません: %{error}"
+
+[chat.thinking]
+"zh-CN" = "正在思考"
+"zh-TW" = "正在思考"
+"en" = "Thinking"
+"ja" = "考えています"
+
+[chat.stopped]
+"zh-CN" = "已停止"
+"zh-TW" = "已停止"
+"en" = "Stopped"
+"ja" = "停止しました"
+
+[chat.stop_voice]
+"zh-CN" = "停止语音请求"
+"zh-TW" = "停止語音請求"
+"en" = "Stop voice request"
+"ja" = "音声リクエストを停止"
+
+[chat.interrupted]
+"zh-CN" = "回复已中断"
+"zh-TW" = "回覆已中斷"
+"en" = "Response interrupted"
+"ja" = "応答が中断されました"
+
+[chat.interrupted_by_voice]
+"zh-CN" = "已被你的语音打断"
+"zh-TW" = "已被你的語音打斷"
+"en" = "Interrupted by your voice"
+"ja" = "あなたの音声で中断しました"
+
+[chat.unconfigured]
+"zh-CN" = "未配置模型"
+"zh-TW" = "未設定模型"
+"en" = "No model configured"
+"ja" = "モデル未設定"
+
+[chat.start]
+"zh-CN" = "开始对话"
+"zh-TW" = "開始對話"
+"en" = "Start a conversation"
+"ja" = "会話を始める"
+
+[chat.generation_stopped]
+"zh-CN" = "已停止生成"
+"zh-TW" = "已停止生成"
+"en" = "Generation stopped"
+"ja" = "生成を停止しました"
+
+[chat.stream_ended]
+"zh-CN" = "模型流意外终止"
+"zh-TW" = "模型串流意外終止"
+"en" = "Model stream ended unexpectedly"
+"ja" = "モデルストリームが予期せず終了しました"
+
+[chat.task_ended]
+"zh-CN" = "模型任务异常终止：%{kind}"
+"zh-TW" = "模型工作異常終止：%{kind}"
+"en" = "Model task ended unexpectedly: %{kind}"
+"ja" = "モデルタスクが異常終了しました: %{kind}"
+
+[chat.reply_too_large]
+"zh-CN" = "回复超过会话上限"
+"zh-TW" = "回覆超過會話上限"
+"en" = "Response exceeded the conversation limit"
+"ja" = "応答が会話の上限を超えました"
+
+[chat.task_cancelled]
+"zh-CN" = "任务已取消"
+"zh-TW" = "工作已取消"
+"en" = "Task cancelled"
+"ja" = "タスクはキャンセルされました"
+
+[chat.task_panicked]
+"zh-CN" = "任务发生异常"
+"zh-TW" = "工作發生異常"
+"en" = "Task failed"
+"ja" = "タスクで異常が発生しました"
+
+[chat.task_unknown]
+"zh-CN" = "未知任务错误"
+"zh-TW" = "未知工作錯誤"
+"en" = "Unknown task error"
+"ja" = "不明なタスクエラー"
+
+[chat.error.total_timeout]
+"zh-CN" = "模型响应超过最长等待时间"
+"zh-TW" = "模型回應超過最長等待時間"
+"en" = "The model response exceeded the maximum wait time"
+"ja" = "モデルの応答が最大待機時間を超えました"
+
+[chat.error.first_content_timeout]
+"zh-CN" = "等待模型首段回复超时"
+"zh-TW" = "等待模型首段回覆逾時"
+"en" = "Timed out waiting for the model's first response"
+"ja" = "モデルの最初の応答を待機中にタイムアウトしました"
+
+[chat.error.idle_timeout]
+"zh-CN" = "模型回复流长时间没有新内容"
+"zh-TW" = "模型回覆串流長時間沒有新內容"
+"en" = "The model response stream was idle for too long"
+"ja" = "モデルの応答ストリームが長時間停止しました"
+
+[chat.error.empty_response]
+"zh-CN" = "模型没有返回可用正文"
+"zh-TW" = "模型沒有傳回可用正文"
+"en" = "The model returned no usable content"
+"ja" = "モデルから利用可能な本文が返されませんでした"
+
+[chat.error.stream_ended]
+"zh-CN" = "模型流意外结束"
+"zh-TW" = "模型串流意外結束"
+"en" = "The model stream ended unexpectedly"
+"ja" = "モデルストリームが予期せず終了しました"
+
+[chat.error.missing_api_key]
+"zh-CN" = "当前 Provider 缺少 API key"
+"zh-TW" = "目前 Provider 缺少 API key"
+"en" = "The current provider is missing an API key"
+"ja" = "現在の Provider に API key がありません"
+
+[chat.error.invalid_provider]
+"zh-CN" = "Provider 凭据或目标配置无效"
+"zh-TW" = "Provider 認證或目標設定無效"
+"en" = "The provider credentials or target configuration are invalid"
+"ja" = "Provider の認証情報または対象設定が無効です"
+
+[chat.error.http]
+"zh-CN" = "Provider 返回 HTTP %{status}"
+"zh-TW" = "Provider 傳回 HTTP %{status}"
+"en" = "Provider returned HTTP %{status}"
+"ja" = "Provider が HTTP %{status} を返しました"
+
+[chat.error.provider_mismatch]
+"zh-CN" = "模型与 Provider 不匹配"
+"zh-TW" = "模型與 Provider 不相符"
+"en" = "The model does not match the provider"
+"ja" = "モデルと Provider が一致しません"
+
+[chat.error.unsupported_request]
+"zh-CN" = "当前模型不支持该对话请求"
+"zh-TW" = "目前模型不支援此對話要求"
+"en" = "The current model does not support this chat request"
+"ja" = "現在のモデルはこの会話リクエストに対応していません"
+
+[chat.error.connection]
+"zh-CN" = "无法连接到模型服务"
+"zh-TW" = "無法連線到模型服務"
+"en" = "Could not connect to the model service"
+"ja" = "モデルサービスに接続できませんでした"
+
+[chat.error.invalid_response]
+"zh-CN" = "模型返回了无法解析的响应"
+"zh-TW" = "模型傳回了無法解析的回應"
+"en" = "The model returned an unreadable response"
+"ja" = "モデルから解析できない応答が返されました"
+
+[chat.error.request_failed]
+"zh-CN" = "模型请求失败"
+"zh-TW" = "模型要求失敗"
+"en" = "Model request failed"
+"ja" = "モデルリクエストに失敗しました"
+
+[chat.error.image_picker]
+"zh-CN" = "无法打开图片选择器"
+"zh-TW" = "無法開啟圖片選擇器"
+"en" = "Could not open the image picker"
+"ja" = "画像選択画面を開けませんでした"
+
+[chat.error.image_unreadable]
+"zh-CN" = "无法读取所选图片"
+"zh-TW" = "無法讀取所選圖片"
+"en" = "The selected image could not be read"
+"ja" = "選択した画像を読み取れませんでした"
+
+[chat.error.image_file_too_large]
+"zh-CN" = "图片文件超过 20 MiB 上限"
+"zh-TW" = "圖片檔案超過 20 MiB 上限"
+"en" = "The image exceeds the 20 MiB file limit"
+"ja" = "画像が 20 MiB のファイル上限を超えています"
+
+[chat.error.image_format]
+"zh-CN" = "仅支持 JPEG、PNG 和 WebP 图片"
+"zh-TW" = "僅支援 JPEG、PNG 和 WebP 圖片"
+"en" = "Only JPEG, PNG, and WebP images are supported"
+"ja" = "JPEG、PNG、WebP 画像のみ対応しています"
+
+[chat.error.image_dimensions]
+"zh-CN" = "图片尺寸或像素数量超过上限"
+"zh-TW" = "圖片尺寸或像素數量超過上限"
+"en" = "The image dimensions or pixel count exceed the limit"
+"ja" = "画像サイズまたは画素数が上限を超えています"
+
+[chat.error.image_decode]
+"zh-CN" = "图片内容已损坏或无法解码"
+"zh-TW" = "圖片內容已損壞或無法解碼"
+"en" = "The image is damaged or could not be decoded"
+"ja" = "画像が破損しているか、デコードできません"
+
+[chat.error.image_prepare]
+"zh-CN" = "无法为模型准备该图片"
+"zh-TW" = "無法為模型準備該圖片"
+"en" = "The image could not be prepared for the model"
+"ja" = "モデル用に画像を準備できませんでした"
+
+[chat.error.screen_capture]
+"zh-CN" = "截屏失败或系统未授予屏幕权限"
+"zh-TW" = "截圖失敗或系統未授予螢幕權限"
+"en" = "Screen capture failed or system permission was denied"
+"ja" = "画面キャプチャに失敗したか、システム権限が拒否されました"
+
+[chat.error.screen_permission_revoked]
+"zh-CN" = "截屏权限已关闭，截图未发送"
+"zh-TW" = "截圖權限已關閉，截圖未傳送"
+"en" = "Screen capture permission was disabled, so the screenshot was not sent"
+"ja" = "画面キャプチャ権限が無効になったため、画像は送信されませんでした"
+
+[chat.error.provider_image_unsupported]
+"zh-CN" = "当前 Provider 适配器不支持图片输入"
+"zh-TW" = "目前 Provider 介面卡不支援圖片輸入"
+"en" = "The current provider adapter does not support image input"
+"ja" = "現在の Provider アダプターは画像入力に対応していません"
+
+[chat.error.tool_loop]
+"zh-CN" = "模型重复请求工具，已终止本轮工具调用"
+"zh-TW" = "模型重複要求工具，已終止本輪工具呼叫"
+"en" = "The model repeatedly requested tools, so this tool turn was stopped"
+"ja" = "モデルがツールを繰り返し要求したため、ツール処理を停止しました"
+
+[chat.error.invalid_limits]
+"zh-CN" = "聊天消息上限必须至少容纳一轮对话"
+"zh-TW" = "聊天訊息上限必須至少容納一輪對話"
+"en" = "The chat message limit must allow at least one turn"
+"ja" = "会話のメッセージ上限には少なくとも1ターンが必要です"
+
+[chat.error.empty_message]
+"zh-CN" = "消息不能为空"
+"zh-TW" = "訊息不能為空"
+"en" = "Message cannot be empty"
+"ja" = "メッセージを空にすることはできません"
+
+[chat.error.busy]
+"zh-CN" = "当前回复尚未结束"
+"zh-TW" = "目前回覆尚未結束"
+"en" = "The current response is still in progress"
+"ja" = "現在の応答はまだ完了していません"
+
+[chat.error.message_too_large]
+"zh-CN" = "消息超过聊天上下文上限"
+"zh-TW" = "訊息超過聊天內容上限"
+"en" = "Message exceeds the chat context limit"
+"ja" = "メッセージが会話コンテキストの上限を超えています"
+
+[chat.error.stale_response]
+"zh-CN" = "流式响应已经过期"
+"zh-TW" = "串流回應已過期"
+"en" = "The streaming response has expired"
+"ja" = "ストリーミング応答は期限切れです"
+
+[chat.error.missing_response]
+"zh-CN" = "当前流式响应缺少助手消息"
+"zh-TW" = "目前串流回應缺少助理訊息"
+"en" = "The streaming response is missing an assistant message"
+"ja" = "ストリーミング応答にアシスタントメッセージがありません"
+
+[chat.error.missing_message]
+"zh-CN" = "上下文消息已不存在"
+"zh-TW" = "上下文訊息已不存在"
+"en" = "The context message no longer exists"
+"ja" = "コンテキストメッセージは存在しません"
+
+[chat.error.unsupported_snapshot]
+"zh-CN" = "聊天会话快照版本不受支持"
+"zh-TW" = "不支援此聊天工作階段快照版本"
+"en" = "This chat session snapshot version is unsupported"
+"ja" = "この会話スナップショットのバージョンは対応していません"
+
+[chat.error.invalid_snapshot]
+"zh-CN" = "聊天会话快照结构无效"
+"zh-TW" = "聊天工作階段快照結構無效"
+"en" = "The chat session snapshot is invalid"
+"ja" = "会話スナップショットの構造が無効です"
+
+[chat.persona_switching]
+"zh-CN" = "正在切换人格上下文，请稍候"
+"zh-TW" = "正在切換人格上下文，請稍候"
+"en" = "Switching persona context, please wait"
+"ja" = "ペルソナのコンテキストを切り替えています"

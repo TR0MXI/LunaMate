@@ -1,0 +1,13 @@
+_version = 2
+
+[voice.model_missing]
+"zh-CN" = "选择的 Transcription 模型不存在"
+"zh-TW" = "選擇的 Transcription 模型不存在"
+"en" = "The selected transcription model does not exist"
+"ja" = "選択した文字起こしモデルがありません"
+
+[voice.transcription_cancelled]
+"zh-CN" = "语音转写任务已取消"
+"zh-TW" = "語音轉寫工作已取消"
+"en" = "The transcription task was cancelled"
+"ja" = "文字起こしタスクはキャンセルされました"

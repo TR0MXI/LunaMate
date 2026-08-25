@@ -6,7 +6,7 @@ use rust_i18n::t;
 
 /// 内置和用户自定义的主题预设。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ThemePreset {
+pub enum ThemePreset {
     /// 根据当前窗口的系统外观选择亮色或暗色。
     #[default]
     System,
@@ -28,7 +28,7 @@ pub(crate) enum ThemePreset {
 
 impl ThemePreset {
     /// 返回配置文件中稳定的主题标识。
-    pub(crate) const fn id(self) -> &'static str {
+    pub const fn id(self) -> &'static str {
         match self {
             Self::System => "system",
             Self::Light => "light",
@@ -42,7 +42,7 @@ impl ThemePreset {
     }
 
     /// 从配置文件标识恢复主题；未知值回退到跟随系统。
-    pub(crate) fn from_id(value: &str) -> Option<Self> {
+    pub fn from_id(value: &str) -> Option<Self> {
         match value {
             "system" => Some(Self::System),
             "light" => Some(Self::Light),
@@ -59,13 +59,13 @@ impl ThemePreset {
 
 /// 自定义主题的基础颜色设置。
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CustomThemeSettings {
+pub struct CustomThemeSettings {
     /// 自定义强调色，使用 `#RRGGBB` 或 `#RRGGBBAA`。
-    pub(crate) accent: String,
+    pub accent: String,
     /// 自定义窗口和页面背景色。
-    pub(crate) background: String,
+    pub background: String,
     /// 自定义主题的明暗模式。
-    pub(crate) mode: ThemeMode,
+    pub mode: ThemeMode,
 }
 
 impl Default for CustomThemeSettings {
@@ -80,15 +80,15 @@ impl Default for CustomThemeSettings {
 
 /// 可持久化的外观配置快照。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct AppearanceSettings {
-    pub(crate) language: AppLanguage,
-    pub(crate) theme: ThemePreset,
-    pub(crate) custom: CustomThemeSettings,
+pub struct AppearanceSettings {
+    pub language: AppLanguage,
+    pub theme: ThemePreset,
+    pub custom: CustomThemeSettings,
 }
 
 impl AppearanceSettings {
     /// 校验并规范化用户输入的自定义颜色。
-    pub(crate) fn normalized(mut self) -> Result<Self, String> {
+    pub fn normalized(mut self) -> Result<Self, String> {
         self.custom.accent =
             normalize_hex(&self.custom.accent, t!("system.custom_accent").as_ref())?;
         self.custom.background = normalize_hex(

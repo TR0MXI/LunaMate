@@ -43,7 +43,7 @@ impl Default for LoadedConfig {
 }
 
 impl LunaConfig {
-    pub(super) fn load_from_optional_path(path: Option<PathBuf>) -> Self {
+    pub fn load_from_optional_path(path: Option<PathBuf>) -> Self {
         let (mut loaded, mut startup_warning) = match path.as_deref() {
             Some(path) => read_config_file(path),
             None => (
@@ -75,8 +75,6 @@ impl LunaConfig {
             appearance: ArcSwap::from_pointee(loaded.appearance),
             snapshot: ArcSwap::from_pointee(loaded.snapshot),
             window_positions: Mutex::new(loaded.window_positions),
-            llm: ArcSwap::from_pointee(loaded.llm),
-            persona: ArcSwap::from_pointee(loaded.persona),
             shortcuts: ArcSwap::from_pointee(loaded.shortcuts),
             voice: ArcSwap::from_pointee(loaded.voice),
             model_resources: ArcSwap::from_pointee(loaded.model_resources),
@@ -115,7 +113,7 @@ impl LunaConfig {
     }
 }
 
-pub(super) fn finalize_loaded_agent_config(
+pub fn finalize_loaded_agent_config(
     loaded: &mut LoadedConfig,
     startup_warning: &mut Option<String>,
 ) -> AgentConfigSnapshot {

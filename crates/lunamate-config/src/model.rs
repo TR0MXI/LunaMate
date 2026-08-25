@@ -13,12 +13,12 @@ use super::{
 
 const MAX_MODEL_RESOURCE_OVERRIDES: usize = 1_024;
 const MAX_MODEL_RESOURCE_ID_BYTES: usize = 512;
-pub(crate) const MAX_MODEL_RESOURCE_NAME_BYTES: usize = 256;
+pub const MAX_MODEL_RESOURCE_NAME_BYTES: usize = 256;
 const MAX_MODEL_RESOURCE_SETTINGS_BYTES: usize = 768 * 1_024;
 
 /// 可在 LunaMate 内覆盖显示名的模型资源类型。
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum ModelResourceKind {
+pub enum ModelResourceKind {
     Variant,
     Motion,
     Expression,
@@ -45,7 +45,7 @@ impl ModelResourceKind {
 
 /// 根目录外部表达式在设置界面中的用途。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ModelExpressionCategory {
+pub enum ModelExpressionCategory {
     #[default]
     Expression,
     Outfit,
@@ -53,14 +53,14 @@ pub(crate) enum ModelExpressionCategory {
 
 /// 一个不依赖显示名的模型资源配置键。
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct ModelResourceKey {
+pub struct ModelResourceKey {
     manifest: PathBuf,
     kind: ModelResourceKind,
     resource_id: String,
 }
 
 impl ModelResourceKey {
-    pub(crate) fn new(
+    pub fn new(
         manifest: impl Into<PathBuf>,
         kind: ModelResourceKind,
         resource_id: impl Into<String>,
@@ -103,22 +103,22 @@ impl Default for ModelResourceOverride {
 
 /// 一次性发布的全部模型资源名称与分类覆盖。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ModelResourceSettings {
+pub struct ModelResourceSettings {
     entries: BTreeMap<ModelResourceKey, ModelResourceOverride>,
 }
 
-pub(crate) type SharedModelResourceSettings = std::sync::Arc<ModelResourceSettings>;
+pub type SharedModelResourceSettings = std::sync::Arc<ModelResourceSettings>;
 
 impl ModelResourceSettings {
     /// 返回资源的自定义显示名；未重命名时由调用方使用模型原始名称。
-    pub(crate) fn name<'a>(&'a self, key: &ModelResourceKey) -> Option<&'a str> {
+    pub fn name<'a>(&'a self, key: &ModelResourceKey) -> Option<&'a str> {
         self.entries
             .get(key)
             .and_then(|entry| entry.name.as_deref())
     }
 
     /// 返回根目录外部表达式的分类；专属目录或清单表情应由调用方忽略此覆盖。
-    pub(crate) fn expression_category(&self, key: &ModelResourceKey) -> ModelExpressionCategory {
+    pub fn expression_category(&self, key: &ModelResourceKey) -> ModelExpressionCategory {
         self.entries
             .get(key)
             .map(|entry| entry.expression_category)
@@ -126,7 +126,7 @@ impl ModelResourceSettings {
     }
 
     /// 返回带有指定显示名覆盖的新快照；`None` 会恢复模型原始名称。
-    pub(crate) fn with_name(
+    pub fn with_name(
         &self,
         key: ModelResourceKey,
         name: Option<&str>,
@@ -141,7 +141,7 @@ impl ModelResourceSettings {
     }
 
     /// 返回带有指定表达式用途的新快照。
-    pub(crate) fn with_expression_category(
+    pub fn with_expression_category(
         &self,
         key: ModelResourceKey,
         category: ModelExpressionCategory,
@@ -194,7 +194,7 @@ impl ModelResourceSettings {
     }
 
     #[cfg(test)]
-    pub(in crate::config) fn entry_count_for_test(&self) -> usize {
+    pub fn entry_count_for_test(&self) -> usize {
         self.entries.len()
     }
 }
@@ -219,7 +219,7 @@ fn invalid(message: impl Into<String>) -> ConfigWriteError {
     ConfigWriteError::InvalidValue(message.into())
 }
 
-pub(super) fn parse_model_resource_settings(
+pub fn parse_model_resource_settings(
     document: &DocumentMut,
     warnings: &mut Vec<String>,
 ) -> ModelResourceSettings {
@@ -318,10 +318,7 @@ fn parse_resource_override(
     ))
 }
 
-pub(super) fn write_model_resource_settings(
-    document: &mut DocumentMut,
-    settings: &ModelResourceSettings,
-) {
+pub fn write_model_resource_settings(document: &mut DocumentMut, settings: &ModelResourceSettings) {
     ensure_table_like(&mut document["model"]);
     if settings.entries.is_empty() {
         remove_key(document, "model", "resources");

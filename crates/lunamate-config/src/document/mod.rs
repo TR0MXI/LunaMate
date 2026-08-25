@@ -15,7 +15,7 @@ use super::{
     parse_persona_settings, parse_shortcut_settings, parse_voice_settings,
 };
 
-pub(super) use io::{
+pub use io::{
     default_config_path, document_for_update, prepare_config_file, read_config_file,
     replace_config_file, sync_config_file_parent, write_config_file,
 };
@@ -326,7 +326,7 @@ fn warn_invalid_persona_optional_fields(
     }
 }
 
-pub(super) fn table_like_section<'a>(
+pub fn table_like_section<'a>(
     document: &'a DocumentMut,
     section: &str,
     warnings: &mut Vec<String>,
@@ -341,11 +341,7 @@ pub(super) fn table_like_section<'a>(
     }
 }
 
-pub(super) fn nested_item<'a>(
-    document: &'a DocumentMut,
-    table: &str,
-    key: &str,
-) -> Option<&'a Item> {
+pub fn nested_item<'a>(document: &'a DocumentMut, table: &str, key: &str) -> Option<&'a Item> {
     document.get(table)?.get(key)
 }
 
@@ -378,7 +374,7 @@ fn item_number(item: &Item) -> Option<f64> {
         .filter(|value| value.is_finite())
 }
 
-pub(super) fn validate_relative_path(path: &Path) -> Result<PathBuf, ConfigWriteError> {
+pub fn validate_relative_path(path: &Path) -> Result<PathBuf, ConfigWriteError> {
     if path.as_os_str().is_empty()
         || path.to_str().is_none()
         || path
@@ -393,7 +389,7 @@ pub(super) fn validate_relative_path(path: &Path) -> Result<PathBuf, ConfigWrite
     Ok(path.to_path_buf())
 }
 
-pub(super) fn write_window_position(
+pub fn write_window_position(
     document: &mut DocumentMut,
     window: ConfigWindow,
     position: Option<WindowPosition>,
@@ -416,7 +412,7 @@ pub(super) fn write_window_position(
     }
 }
 
-pub(super) fn write_appearance(document: &mut DocumentMut, settings: &AppearanceSettings) {
+pub fn write_appearance(document: &mut DocumentMut, settings: &AppearanceSettings) {
     ensure_table_like(&mut document["appearance"]);
     set_item_value(
         &mut document["appearance"]["language"],
@@ -440,7 +436,7 @@ pub(super) fn write_appearance(document: &mut DocumentMut, settings: &Appearance
     );
 }
 
-pub(super) fn write_logging_settings(document: &mut DocumentMut, settings: &LoggingSettings) {
+pub fn write_logging_settings(document: &mut DocumentMut, settings: &LoggingSettings) {
     ensure_table_like(&mut document["logging"]);
     set_item_value(
         &mut document["logging"]["level"],
@@ -464,7 +460,7 @@ pub(super) fn write_logging_settings(document: &mut DocumentMut, settings: &Logg
     );
 }
 
-pub(super) fn ensure_table_like(item: &mut Item) {
+pub fn ensure_table_like(item: &mut Item) {
     if item.is_table() {
         return;
     }
@@ -481,14 +477,14 @@ pub(super) fn ensure_table_like(item: &mut Item) {
     }
 }
 
-pub(super) fn set_item_value(item: &mut Item, mut next: Value) {
+pub fn set_item_value(item: &mut Item, mut next: Value) {
     if let Some(current) = item.as_value() {
         *next.decor_mut() = current.decor().clone();
     }
     *item = Item::Value(next);
 }
 
-pub(super) fn remove_key(document: &mut DocumentMut, table: &str, key: &str) {
+pub fn remove_key(document: &mut DocumentMut, table: &str, key: &str) {
     let Some(table) = document.get_mut(table).and_then(Item::as_table_like_mut) else {
         return;
     };

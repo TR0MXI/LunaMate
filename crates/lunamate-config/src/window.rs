@@ -11,7 +11,7 @@ use super::{
 
 impl LunaConfig {
     /// 仅提交仍然最新的桌宠主窗口尺寸写入。
-    pub(crate) fn set_model_window_size_at_revision(
+    pub fn set_model_window_size_at_revision(
         &self,
         size: ModelWindowSize,
         revision: u64,
@@ -36,7 +36,7 @@ impl LunaConfig {
     }
 
     /// 仅提交仍然最新的窗口位置记忆开关写入。
-    pub(crate) fn set_remember_window_positions_at_revision(
+    pub fn set_remember_window_positions_at_revision(
         &self,
         remember: bool,
         revision: u64,
@@ -62,7 +62,7 @@ impl LunaConfig {
     }
 
     /// 只更新内存中的窗口位置快照；拖动期间不会访问磁盘。
-    pub(crate) fn cache_window_position(&self, window: ConfigWindow, position: WindowPosition) {
+    pub fn cache_window_position(&self, window: ConfigWindow, position: WindowPosition) {
         let mut positions = self.window_positions.lock();
         if positions.window_position(window) != Some(position) {
             positions.set_window_position(window, Some(position));
@@ -76,7 +76,7 @@ impl LunaConfig {
     /// # Errors
     ///
     /// 配置目录或文件无法读取、创建或写入时返回错误。
-    pub(crate) fn persist_window_positions(&self) -> Result<(), ConfigWriteError> {
+    pub fn persist_window_positions(&self) -> Result<(), ConfigWriteError> {
         let _position_guard = self.window_position_write_lock.lock();
         if !self.remember_window_positions() {
             return Ok(());
@@ -89,7 +89,7 @@ impl LunaConfig {
     }
 
     /// 仅提交仍然最新的窗口位置重置。
-    pub(crate) fn reset_window_positions_at_revision(
+    pub fn reset_window_positions_at_revision(
         &self,
         revision: u64,
     ) -> Result<Option<()>, ConfigWriteError> {

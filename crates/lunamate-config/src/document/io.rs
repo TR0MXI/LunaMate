@@ -8,7 +8,7 @@ use std::{
 
 use toml_edit::DocumentMut;
 
-use crate::database::{
+use crate::config::atomic_file::{
     AtomicReplaceError, AtomicReplaceOperation, PreparedAtomicReplace, VisibleAtomicReplace,
     atomic_replace, prepare_atomic_replace,
 };
@@ -19,7 +19,7 @@ use super::parse_document;
 const MAX_CONFIG_FILE_BYTES: u64 = 1024 * 1024;
 
 /// 返回平台用户配置目录中的默认路径；无法确定绝对目录时不提供写入位置。
-pub(in crate::config) fn default_config_path() -> Option<PathBuf> {
+pub fn default_config_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     let directory = absolute_env_path("APPDATA");
     #[cfg(target_os = "macos")]
@@ -40,7 +40,7 @@ fn absolute_env_path(name: &str) -> Option<PathBuf> {
 }
 
 /// 读取并解析完整配置，失败时返回默认值与可展示的启动诊断。
-pub(in crate::config) fn read_config_file(path: &Path) -> (LoadedConfig, Option<String>) {
+pub fn read_config_file(path: &Path) -> (LoadedConfig, Option<String>) {
     match read_config_source(path) {
         Ok(Some(bytes)) => match std::str::from_utf8(&bytes) {
             Ok(source) => match source.parse::<DocumentMut>() {
@@ -74,10 +74,7 @@ pub(in crate::config) fn read_config_file(path: &Path) -> (LoadedConfig, Option<
 }
 
 /// 读取用于精确更新的 TOML；损坏内容会在备份原文件后于本次保存时重建。
-pub(in crate::config) fn document_for_update(
-    path: &Path,
-    nonce: u64,
-) -> Result<DocumentMut, ConfigWriteError> {
+pub fn document_for_update(path: &Path, nonce: u64) -> Result<DocumentMut, ConfigWriteError> {
     match read_config_source(path) {
         Ok(Some(bytes)) => match std::str::from_utf8(&bytes) {
             Ok(source) => match source.parse::<DocumentMut>() {
@@ -254,7 +251,7 @@ fn open_config_file(path: &Path) -> io::Result<Option<fs::File>> {
 }
 
 /// 原子写回一份完整 TOML 文档，并把共享 helper 错误转换为配置错误。
-pub(in crate::config) fn write_config_file(
+pub fn write_config_file(
     path: &Path,
     document: &DocumentMut,
     nonce: u64,
@@ -264,7 +261,7 @@ pub(in crate::config) fn write_config_file(
 }
 
 /// 完整写入并同步 revision 草稿，但暂不替换当前配置文件。
-pub(in crate::config) fn prepare_config_file(
+pub fn prepare_config_file(
     path: &Path,
     document: &DocumentMut,
     nonce: u64,
@@ -274,16 +271,14 @@ pub(in crate::config) fn prepare_config_file(
 }
 
 /// 原子替换已经同步的 revision 草稿，使其对读取方可见。
-pub(in crate::config) fn replace_config_file(
+pub fn replace_config_file(
     prepared: PreparedAtomicReplace,
 ) -> Result<VisibleAtomicReplace, ConfigWriteError> {
     prepared.replace().map_err(config_replace_error)
 }
 
 /// 在可见提交之后同步配置父目录；失败沿用已提交配置的降级成功语义。
-pub(in crate::config) fn sync_config_file_parent(
-    visible: VisibleAtomicReplace,
-) -> Result<(), ConfigWriteError> {
+pub fn sync_config_file_parent(visible: VisibleAtomicReplace) -> Result<(), ConfigWriteError> {
     finish_config_replace(visible.sync_parent())
 }
 

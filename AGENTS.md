@@ -27,7 +27,7 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
 二进制应用，`src/main.rs` 是其唯一入口，不要为根包新增 `src/lib.rs` 或 `[lib]` target；
 可独立嵌入的 Agent 能力由工作空间成员 `crates/lunamate-agent` 提供。
 
-- UI/窗口、Live2D 运行时与渲染、互动状态、LLM、语音、配置和持久化保持职责边界。Provider
+- UI/窗口、Live2D 运行时与渲染、互动状态、LLM、语音、配置和持久化保持职责边界。配置文件、配置领域与一致性发布由 `crates/lunamate-config` 拥有；根包只保留私有 `LazyLock` 入口。Provider
   细节不得进入 UI，Live2D 层不得发起网络请求，音频层不得访问 Agent 内部会话或 Provider。
 - 通用 GPUI 视图、主题和窗口布局通过 `src/ui` façade 暴露；Agent 对话适配器位于
   `src/ui/agent`，供应商与人格编辑器位于 `src/ui/settings/agent`。原生窗口适配、屏幕捕获、
@@ -57,9 +57,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
 - `Agent` 直接组合可热更新的 `genai::Client`、`ModelIden`、`ChatOptions`、system prompt 与
   `AgentMemory`。Client 并发使用不加锁，运行时替换通过短持有的统一 `RwLock` 发布，请求启动后
   使用自己的不可变 clone，任何同步锁不得跨网络、工具或持久化 `await`。
-- 根配置层仍用带单调 generation 的 `AgentConfigSnapshot` 保证自身域一致性，但只在宿主适配层
+- `lunamate-config` 用带单调 generation 的 `AgentConfigSnapshot` 保证应用配置域一致性，但只在根包
   将其解析为 Client、模型、options、prompt、memory 等直接组件；`Agent` 公共 API 不依赖该快照
-  类型。配置编辑器直接写根配置层，不得重新引入拉取全局状态的配置回调或 service locator。
+  类型。配置编辑器通过根包私有配置入口提交，不得在 Agent 内部重新拉取全局状态。
   截图授权与捕获通过每次请求独立构造的 `ScreenshotCapability` 注入，会话加载、保存、删除和
   记忆统计、清理通过完整的 `AgentPersistenceCallbacks` 注册。会话排序、取消与迟到 revision
   隔离由 Agent 逻辑负责。
@@ -73,8 +73,8 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
 - 人格绑定的 Live2D 模型只持久化 `models/` 下经过校验的相对清单路径；切换人格时通过
   `src/model` façade 解析并切换。绑定缺失时保留原值并回退有效全局模型，不得静默清除绑定
   或把人格选择反写为全局模型选择。
-- `src/database` 统一提供嵌入式数据库 façade 和配置文件原子替换；外部模块不得依赖
-  SurrealDB 类型。只有根应用组合层把数据库操作注册为 Agent 持久化回调，并负责转换领域错误。
+- `src/database` 统一提供嵌入式数据库 façade；外部模块不得依赖 SurrealDB 类型。配置文件原子替换
+  属于 `lunamate-config`，只有根应用组合层把数据库操作注册为 Agent 持久化回调，并负责转换领域错误。
 - 模块按稳定职责拆分，跨模块使用明确的状态、事件或接口；避免循环依赖、隐藏全局状态
   和双向调用。公共接口默认最小可见性，不为规划中的能力预建抽象。
 

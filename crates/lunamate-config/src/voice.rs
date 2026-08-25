@@ -9,7 +9,7 @@ use super::{ConfigWriteError, ensure_table_like, set_item_value, table_like_sect
 
 /// 控制麦克风何时采集和提交语音。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum VoiceMode {
+pub enum VoiceMode {
     /// 不打开麦克风，也不加载语音模型。
     #[default]
     Off,
@@ -21,7 +21,7 @@ pub(crate) enum VoiceMode {
 
 impl VoiceMode {
     /// 返回配置文件使用的稳定标识。
-    pub(crate) const fn id(self) -> &'static str {
+    pub const fn id(self) -> &'static str {
         match self {
             Self::Off => "off",
             Self::Auto => "auto",
@@ -30,16 +30,16 @@ impl VoiceMode {
     }
 
     /// 是否持续采集并使用 VAD 自动划分语音。
-    pub(crate) const fn uses_vad(self) -> bool {
+    pub const fn uses_vad(self) -> bool {
         matches!(self, Self::Auto)
     }
 
     /// 是否允许语音输入快捷键控制录音。
-    pub(crate) const fn supports_push_to_talk(self) -> bool {
+    pub const fn supports_push_to_talk(self) -> bool {
         matches!(self, Self::Auto | Self::PushToTalk)
     }
 
-    pub(super) fn from_id(id: &str) -> Option<Self> {
+    pub fn from_id(id: &str) -> Option<Self> {
         match id {
             "off" => Some(Self::Off),
             "auto" => Some(Self::Auto),
@@ -51,19 +51,19 @@ impl VoiceMode {
 
 /// 一次性发布的语音录音模式配置。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct VoiceSettings {
-    pub(crate) mode: VoiceMode,
+pub struct VoiceSettings {
+    pub mode: VoiceMode,
 }
 
-pub(crate) type SharedVoiceSettings = Arc<VoiceSettings>;
+pub type SharedVoiceSettings = Arc<VoiceSettings>;
 
 impl VoiceSettings {
     /// 规范化当前语音模式。
-    pub(crate) fn normalized(self) -> Result<Self, ConfigWriteError> {
+    pub fn normalized(self) -> Result<Self, ConfigWriteError> {
         Ok(self)
     }
 
-    pub(crate) fn runtime(&self, models: &LlmSettings) -> VoiceRuntimeSettings {
+    pub fn runtime(&self, models: &LlmSettings) -> VoiceRuntimeSettings {
         let selected = models.selected_transcription();
         let (backend, use_gpu, whisper_language) = selected
             .and_then(|model| match model.provider {
@@ -97,25 +97,22 @@ impl VoiceSettings {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum VoiceTranscriptionBackend {
+pub enum VoiceTranscriptionBackend {
     LocalWhisper(PathBuf),
     Remote(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct VoiceRuntimeSettings {
-    pub(crate) mode: VoiceMode,
-    pub(crate) backend: Option<VoiceTranscriptionBackend>,
-    pub(crate) use_gpu: bool,
-    pub(crate) whisper_language: Option<String>,
+pub struct VoiceRuntimeSettings {
+    pub mode: VoiceMode,
+    pub backend: Option<VoiceTranscriptionBackend>,
+    pub use_gpu: bool,
+    pub whisper_language: Option<String>,
 }
 
-pub(crate) type SharedVoiceRuntimeSettings = Arc<VoiceRuntimeSettings>;
+pub type SharedVoiceRuntimeSettings = Arc<VoiceRuntimeSettings>;
 
-pub(super) fn parse_voice_settings(
-    document: &DocumentMut,
-    warnings: &mut Vec<String>,
-) -> VoiceSettings {
+pub fn parse_voice_settings(document: &DocumentMut, warnings: &mut Vec<String>) -> VoiceSettings {
     let mut settings = VoiceSettings::default();
     let Some(voice) = table_like_section(document, "voice", warnings) else {
         return settings;
@@ -136,7 +133,7 @@ pub(super) fn parse_voice_settings(
     }
 }
 
-pub(super) fn write_voice_settings(document: &mut DocumentMut, settings: &VoiceSettings) {
+pub fn write_voice_settings(document: &mut DocumentMut, settings: &VoiceSettings) {
     ensure_table_like(&mut document["voice"]);
     set_item_value(
         &mut document["voice"]["mode"],

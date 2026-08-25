@@ -2,7 +2,6 @@
 //!
 //! 生产环境只连接 SurrealKV；内存引擎仅在本模块测试中用于隔离测试数据。
 
-mod atomic_file;
 mod engine;
 mod memory;
 mod schema;
@@ -12,10 +11,6 @@ mod tests;
 
 use std::{error::Error, fmt, io, path::PathBuf};
 
-pub(crate) use atomic_file::{
-    AtomicReplaceError, AtomicReplaceOperation, PreparedAtomicReplace, VisibleAtomicReplace,
-    atomic_replace, prepare_atomic_replace,
-};
 pub(crate) use engine::Database;
 pub(crate) use memory::MemoryTier;
 #[cfg(test)]

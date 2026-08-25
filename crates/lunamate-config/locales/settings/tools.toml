@@ -1,0 +1,55 @@
+_version = 2
+
+[settings.tool]
+"zh-CN" = "工具"
+"zh-TW" = "工具"
+"en" = "Tools"
+"ja" = "ツール"
+
+[settings.tool_title]
+"zh-CN" = "工具设置"
+"zh-TW" = "工具設定"
+"en" = "Tool Settings"
+"ja" = "ツール設定"
+
+[tools.permissions]
+"zh-CN" = "权限"
+"zh-TW" = "權限"
+"en" = "Permissions"
+"ja" = "権限"
+
+[tools.allow_agent_screenshot]
+"zh-CN" = "允许 Agent 按需截取屏幕"
+"zh-TW" = "允許 Agent 視需要擷取螢幕"
+"en" = "Allow Agent to capture the screen"
+"ja" = "Agent に画面のキャプチャを許可"
+
+[tools.allow_agent_outfit_change]
+"zh-CN" = "允许 Agent 自主换装"
+"zh-TW" = "允許 Agent 自主換裝"
+"en" = "Allow Agent to change outfits"
+"ja" = "Agent に衣装の変更を許可"
+
+[tools.outfit_change_notice]
+"zh-CN" = "开启后，仅当当前模型存在默认服装以外的有效服装时，才会向模型提供换装工具。"
+"zh-TW" = "開啟後，僅在目前模型存在預設服裝以外的有效服裝時，才會向模型提供換裝工具。"
+"en" = "When enabled, the outfit tool is provided only if the current model has a valid outfit besides its default."
+"ja" = "有効にすると、現在のモデルにデフォルト以外の有効な衣装がある場合のみ、衣装変更ツールがモデルに提供されます。"
+
+[tools.screenshot_notice]
+"zh-CN" = "截屏只会在模型调用工具时执行，并发送给当前模型 Provider。"
+"zh-TW" = "截圖只會在模型呼叫工具時執行，並傳送給目前的模型 Provider。"
+"en" = "A screenshot is taken only when the model calls the tool and is sent to the current model provider."
+"ja" = "画面はモデルがツールを呼び出した場合のみキャプチャされ、現在のモデル Provider に送信されます。"
+
+[tools.screenshot_disable_retry_notice]
+"zh-CN" = "截屏已在本次运行中关闭，但关闭状态尚未写入磁盘。退出前请重试，否则重启后旧授权可能恢复。"
+"zh-TW" = "截圖已在本次執行中關閉，但關閉狀態尚未寫入磁碟。結束前請重試，否則重新啟動後舊授權可能恢復。"
+"en" = "Screen capture is disabled for this run, but that state was not saved. Retry before exiting or the previous permission may return after restart."
+"ja" = "この実行中は画面キャプチャを無効にしましたが、無効状態を保存できませんでした。終了前に再試行しないと、再起動後に以前の権限が復元される可能性があります。"
+
+[tools.retry_screenshot_disable]
+"zh-CN" = "重试关闭"
+"zh-TW" = "重試關閉"
+"en" = "Retry disable"
+"ja" = "無効化を再試行"

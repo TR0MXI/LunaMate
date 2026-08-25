@@ -9,7 +9,7 @@ use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value};
 
 /// 可由全局快捷键触发的应用动作。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum ShortcutAction {
+pub enum ShortcutAction {
     VoiceInput,
     ToggleDesktopPet,
     ToggleSettings,
@@ -17,7 +17,7 @@ pub(crate) enum ShortcutAction {
 }
 
 impl ShortcutAction {
-    pub(crate) const ALL: [Self; 4] = [
+    pub const ALL: [Self; 4] = [
         Self::VoiceInput,
         Self::ToggleDesktopPet,
         Self::ToggleSettings,
@@ -25,7 +25,7 @@ impl ShortcutAction {
     ];
 
     /// 返回日志和配置文件使用的稳定动作标识。
-    pub(crate) const fn id(self) -> &'static str {
+    pub const fn id(self) -> &'static str {
         match self {
             Self::VoiceInput => "voice_input",
             Self::ToggleDesktopPet => "toggle_desktop_pet",
@@ -35,18 +35,18 @@ impl ShortcutAction {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn from_id(id: &str) -> Option<Self> {
+    pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|action| action.id() == id)
     }
 }
 
 /// 一组已经规范化、可交给系统注册的键盘按键。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct KeyboardShortcut(HotKey);
+pub struct KeyboardShortcut(HotKey);
 
 impl KeyboardShortcut {
     /// 从配置文件中的稳定标识恢复快捷键；Esc 专用于录入时清空。
-    pub(crate) fn from_id(id: &str) -> Result<Self, String> {
+    pub fn from_id(id: &str) -> Result<Self, String> {
         let hotkey = id
             .trim()
             .parse::<HotKey>()
@@ -60,7 +60,7 @@ impl KeyboardShortcut {
         Ok(Self(hotkey))
     }
 
-    pub(crate) fn from_hotkey(hotkey: HotKey) -> Result<Self, String> {
+    pub fn from_hotkey(hotkey: HotKey) -> Result<Self, String> {
         if hotkey.key == Code::Escape {
             return Err("Esc 保留用于清空快捷键".to_owned());
         }
@@ -71,11 +71,11 @@ impl KeyboardShortcut {
     }
 
     /// 返回不依赖 TOML 布局的规范化快捷键标识。
-    pub(crate) fn id(self) -> String {
+    pub fn id(self) -> String {
         self.0.into_string()
     }
 
-    pub(crate) const fn hotkey(self) -> HotKey {
+    pub const fn hotkey(self) -> HotKey {
         self.0
     }
 }
@@ -192,7 +192,7 @@ fn key_is_supported(key: Code) -> bool {
 
 /// 四个应用动作的一次性快捷键配置快照；`None` 表示不注册该动作。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ShortcutSettings {
+pub struct ShortcutSettings {
     voice_input: Option<KeyboardShortcut>,
     toggle_desktop_pet: Option<KeyboardShortcut>,
     toggle_settings: Option<KeyboardShortcut>,
@@ -200,7 +200,7 @@ pub(crate) struct ShortcutSettings {
 }
 
 impl ShortcutSettings {
-    pub(crate) const fn shortcut(&self, action: ShortcutAction) -> Option<KeyboardShortcut> {
+    pub const fn shortcut(&self, action: ShortcutAction) -> Option<KeyboardShortcut> {
         match action {
             ShortcutAction::VoiceInput => self.voice_input,
             ShortcutAction::ToggleDesktopPet => self.toggle_desktop_pet,
@@ -210,7 +210,7 @@ impl ShortcutSettings {
     }
 
     /// 设置一个动作，并清空占用同一组合的旧动作。
-    pub(crate) fn assign(
+    pub fn assign(
         &mut self,
         action: ShortcutAction,
         shortcut: Option<KeyboardShortcut>,
@@ -227,14 +227,14 @@ impl ShortcutSettings {
         displaced
     }
 
-    pub(crate) fn configured_count(&self) -> usize {
+    pub fn configured_count(&self) -> usize {
         ShortcutAction::ALL
             .into_iter()
             .filter(|action| self.shortcut(*action).is_some())
             .count()
     }
 
-    pub(crate) fn normalized(self) -> Result<Self, ConfigWriteError> {
+    pub fn normalized(self) -> Result<Self, ConfigWriteError> {
         let mut used = HashSet::with_capacity(ShortcutAction::ALL.len());
         for action in ShortcutAction::ALL {
             if let Some(shortcut) = self.shortcut(action)
@@ -259,7 +259,7 @@ impl ShortcutSettings {
     }
 }
 
-pub(super) fn parse_shortcut_settings(
+pub fn parse_shortcut_settings(
     document: &DocumentMut,
     warnings: &mut Vec<String>,
 ) -> ShortcutSettings {
@@ -299,7 +299,7 @@ pub(super) fn parse_shortcut_settings(
     settings
 }
 
-pub(super) fn write_shortcut_settings(document: &mut DocumentMut, settings: &ShortcutSettings) {
+pub fn write_shortcut_settings(document: &mut DocumentMut, settings: &ShortcutSettings) {
     ensure_table_like(&mut document["shortcuts"]);
     for action in ShortcutAction::ALL {
         match settings.shortcut(action) {

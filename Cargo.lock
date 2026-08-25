@@ -5329,7 +5329,6 @@ dependencies = [
 name = "lunamate"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
  "ashpd",
  "async-channel",
  "cpal",
@@ -5345,6 +5344,7 @@ dependencies = [
  "ksni",
  "log",
  "lunamate-agent",
+ "lunamate-config",
  "mimalloc",
  "mocari",
  "objc2 0.6.4",
@@ -5363,7 +5363,6 @@ dependencies = [
  "surrealdb",
  "tempfile",
  "tokio",
- "toml_edit 0.25.13+spec-1.1.0",
  "tray-icon",
  "url",
  "wayland-client",
@@ -5395,6 +5394,22 @@ dependencies = [
  "tokio-tungstenite",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "lunamate-config"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "global-hotkey",
+ "gpui-component",
+ "log",
+ "lunamate-agent",
+ "parking_lot",
+ "rust-i18n",
+ "tempfile",
+ "tokio",
+ "toml_edit 0.25.13+spec-1.1.0",
 ]
 
 [[package]]

@@ -1,0 +1,97 @@
+_version = 2
+
+[common.save]
+"zh-CN" = "保存"
+"zh-TW" = "儲存"
+"en" = "Save"
+"ja" = "保存"
+
+[common.saving]
+"zh-CN" = "保存中"
+"zh-TW" = "儲存中"
+"en" = "Saving"
+"ja" = "保存中"
+
+[common.apply]
+"zh-CN" = "应用"
+"zh-TW" = "套用"
+"en" = "Apply"
+"ja" = "適用"
+
+[common.delete]
+"zh-CN" = "删除"
+"zh-TW" = "刪除"
+"en" = "Delete"
+"ja" = "削除"
+
+[common.clear]
+"zh-CN" = "清空"
+"zh-TW" = "清除"
+"en" = "Clear"
+"ja" = "クリア"
+
+[common.status_separator]
+"zh-CN" = "；"
+"zh-TW" = "；"
+"en" = "; "
+"ja" = "；"
+
+[common.default]
+"zh-CN" = "默认"
+"zh-TW" = "預設"
+"en" = "Default"
+"ja" = "デフォルト"
+
+[common.cancel]
+"zh-CN" = "取消"
+"zh-TW" = "取消"
+"en" = "Cancel"
+"ja" = "キャンセル"
+
+[config.error.expected_string]
+"zh-CN" = "%{field} 必须是字符串"
+"zh-TW" = "%{field} 必須是字串"
+"en" = "%{field} must be a string"
+"ja" = "%{field} は文字列である必要があります"
+
+[config.error.expected_string_ignored]
+"zh-CN" = "%{field} 必须是字符串，已忽略"
+"zh-TW" = "%{field} 必須是字串，已忽略"
+"en" = "%{field} must be a string and was ignored"
+"ja" = "%{field} は文字列である必要があるため、無視しました"
+
+[config.error.expected_boolean]
+"zh-CN" = "%{field} 必须是布尔值"
+"zh-TW" = "%{field} 必須是布林值"
+"en" = "%{field} must be a boolean"
+"ja" = "%{field} は真偽値である必要があります"
+
+[config.error.expected_nonnegative_integer]
+"zh-CN" = "%{field} 必须是非负整数"
+"zh-TW" = "%{field} 必須是非負整數"
+"en" = "%{field} must be a non-negative integer"
+"ja" = "%{field} は 0 以上の整数である必要があります"
+
+[config.error.expected_number]
+"zh-CN" = "%{field} 必须是数字"
+"zh-TW" = "%{field} 必須是數字"
+"en" = "%{field} must be a number"
+"ja" = "%{field} は数値である必要があります"
+
+[config.error.expected_table_array_ignored]
+"zh-CN" = "%{field} 必须是 TOML 表数组，已忽略"
+"zh-TW" = "%{field} 必須是 TOML 表陣列，已忽略"
+"en" = "%{field} must be an array of TOML tables and was ignored"
+"ja" = "%{field} は TOML テーブルの配列である必要があるため、無視しました"
+
+[config.error.expected_array_ignored]
+"zh-CN" = "%{field} 必须是数组，已忽略"
+"zh-TW" = "%{field} 必須是陣列，已忽略"
+"en" = "%{field} must be an array and was ignored"
+"ja" = "%{field} は配列である必要があるため、無視しました"
+
+[config.error.entry_ignored]
+"zh-CN" = "%{entry} 已忽略：%{error}"
+"zh-TW" = "%{entry} 已忽略：%{error}"
+"en" = "%{entry} was ignored: %{error}"
+"ja" = "%{entry} を無視しました：%{error}"

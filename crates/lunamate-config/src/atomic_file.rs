@@ -15,7 +15,7 @@ static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// 标识原子替换失败时正在执行的文件系统操作。
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum AtomicReplaceOperation {
+pub enum AtomicReplaceOperation {
     CreateTemporary,
     #[cfg(unix)]
     SetPermissions,
@@ -28,7 +28,7 @@ pub(crate) enum AtomicReplaceOperation {
 
 /// 保留底层操作、路径与 I/O 错误，供调用方转换为领域错误。
 #[derive(Debug)]
-pub(crate) struct AtomicReplaceError {
+pub struct AtomicReplaceError {
     operation: AtomicReplaceOperation,
     path: PathBuf,
     source: io::Error,
@@ -36,14 +36,14 @@ pub(crate) struct AtomicReplaceError {
 
 impl AtomicReplaceError {
     /// 将错误拆为调用方构造领域错误所需的上下文。
-    pub(crate) fn into_parts(self) -> (AtomicReplaceOperation, PathBuf, io::Error) {
+    pub fn into_parts(self) -> (AtomicReplaceOperation, PathBuf, io::Error) {
         (self.operation, self.path, self.source)
     }
 }
 
 /// 持有一份已经完整写入并同步、但尚未替换目标的同目录临时文件。
 #[derive(Debug)]
-pub(crate) struct PreparedAtomicReplace {
+pub struct PreparedAtomicReplace {
     temporary_path: PathBuf,
     target_path: PathBuf,
     replaced: bool,
@@ -59,7 +59,7 @@ impl PreparedAtomicReplace {
     /// # Errors
     ///
     /// 重命名失败时返回完整 I/O 上下文，目标仍保持替换前状态。
-    pub(crate) fn replace(mut self) -> Result<VisibleAtomicReplace, AtomicReplaceError> {
+    pub fn replace(mut self) -> Result<VisibleAtomicReplace, AtomicReplaceError> {
         fs::rename(&self.temporary_path, &self.target_path).map_err(|source| {
             atomic_error(AtomicReplaceOperation::Replace, &self.target_path, source)
         })?;
@@ -74,12 +74,12 @@ impl PreparedAtomicReplace {
     }
 
     #[cfg(test)]
-    pub(crate) fn block_parent_sync_for_test(&mut self, barrier: Arc<Barrier>) {
+    pub fn block_parent_sync_for_test(&mut self, barrier: Arc<Barrier>) {
         self.parent_sync_barrier_for_test = Some(barrier);
     }
 
     #[cfg(all(test, unix))]
-    pub(crate) fn fail_parent_sync_for_test(&mut self) {
+    pub fn fail_parent_sync_for_test(&mut self) {
         self.parent_sync_failure_for_test = true;
     }
 }
@@ -103,7 +103,7 @@ impl Drop for PreparedAtomicReplace {
 /// 表示目标已经原子可见，但父目录尚未完成耐久性同步。
 #[derive(Debug)]
 #[must_use = "必须同步父目录才能完成原子替换的耐久性保证"]
-pub(crate) struct VisibleAtomicReplace {
+pub struct VisibleAtomicReplace {
     target_path: PathBuf,
     #[cfg(test)]
     parent_sync_barrier_for_test: Option<Arc<Barrier>>,
@@ -117,7 +117,7 @@ impl VisibleAtomicReplace {
     /// # Errors
     ///
     /// 父目录无法打开或同步时返回完整 I/O 上下文；此时目标新内容已经可见。
-    pub(crate) fn sync_parent(self) -> Result<(), AtomicReplaceError> {
+    pub fn sync_parent(self) -> Result<(), AtomicReplaceError> {
         #[cfg(test)]
         if let Some(barrier) = self.parent_sync_barrier_for_test {
             barrier.wait();
@@ -143,7 +143,7 @@ impl VisibleAtomicReplace {
 /// # Errors
 ///
 /// 临时文件创建、权限设置、写入或同步失败时返回完整 I/O 上下文。
-pub(crate) fn prepare_atomic_replace(
+pub fn prepare_atomic_replace(
     path: &Path,
     contents: &[u8],
     caller_nonce: u64,
@@ -170,7 +170,7 @@ pub(crate) fn prepare_atomic_replace(
 /// # Errors
 ///
 /// 临时文件创建、权限设置、写入、同步、重命名或父目录同步失败时返回完整 I/O 上下文。
-pub(crate) fn atomic_replace(
+pub fn atomic_replace(
     path: &Path,
     contents: &[u8],
     caller_nonce: u64,

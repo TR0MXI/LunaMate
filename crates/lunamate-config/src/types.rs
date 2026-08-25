@@ -4,12 +4,12 @@ use std::{error::Error, fmt, io, num::NonZeroU16, path::PathBuf};
 
 use rust_i18n::t;
 
-pub(super) const UNLIMITED_FRAME_RATE_NAME: &str = "unlimited";
-pub(super) const FOLLOW_DISPLAY_FRAME_RATE_NAME: &str = "display";
-pub(super) const CUSTOM_FRAME_RATE_NAME: &str = "custom";
-pub(super) const CUSTOM_FRAME_RATE_KEY: &str = "custom_frame_rate";
-pub(crate) const CUSTOM_FRAME_RATE_MIN: u16 = 1;
-pub(crate) const CUSTOM_FRAME_RATE_MAX: u16 = u16::MAX;
+pub const UNLIMITED_FRAME_RATE_NAME: &str = "unlimited";
+pub const FOLLOW_DISPLAY_FRAME_RATE_NAME: &str = "display";
+pub const CUSTOM_FRAME_RATE_NAME: &str = "custom";
+pub const CUSTOM_FRAME_RATE_KEY: &str = "custom_frame_rate";
+pub const CUSTOM_FRAME_RATE_MIN: u16 = 1;
+pub const CUSTOM_FRAME_RATE_MAX: u16 = u16::MAX;
 const UNLIMITED_FRAME_RATE_VALUE: u32 = 0;
 const CUSTOM_FRAME_RATE_TAG: u32 = 1 << 16;
 const FOLLOW_DISPLAY_FRAME_RATE_VALUE: u32 = 2 << 16;
@@ -21,14 +21,14 @@ const MODEL_WINDOW_SIZE_LARGE: u16 = 360;
 const MODEL_WINDOW_SIZE_EXTRA_LARGE: u16 = 420;
 const LOGGING_DEFAULT_MAX_SIZE_MB: u32 = 10;
 const LOGGING_DEFAULT_KEEP_FILES: u32 = 10;
-pub(crate) const LOGGING_MIN_FILE_SIZE_MB: u32 = 1;
-pub(crate) const LOGGING_MAX_FILE_SIZE_MB: u32 = 1_024;
-pub(crate) const LOGGING_MIN_KEEP_FILES: u32 = 1;
-pub(crate) const LOGGING_MAX_KEEP_FILES: u32 = 100;
+pub const LOGGING_MIN_FILE_SIZE_MB: u32 = 1;
+pub const LOGGING_MAX_FILE_SIZE_MB: u32 = 1_024;
+pub const LOGGING_MIN_KEEP_FILES: u32 = 1;
+pub const LOGGING_MAX_KEEP_FILES: u32 = 100;
 
 /// 区分需要单独恢复位置的应用窗口。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ConfigWindow {
+pub enum ConfigWindow {
     /// 透明桌宠主窗口。
     DesktopPet,
     /// 独立设置窗口。
@@ -36,7 +36,7 @@ pub(crate) enum ConfigWindow {
 }
 
 impl ConfigWindow {
-    pub(super) fn table_name(self) -> &'static str {
+    pub fn table_name(self) -> &'static str {
         match self {
             Self::DesktopPet => "desktop_pet",
             Self::Settings => "settings",
@@ -46,23 +46,23 @@ impl ConfigWindow {
 
 /// 可跨线程保存的逻辑窗口坐标。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct WindowPosition {
+pub struct WindowPosition {
     /// 屏幕逻辑坐标横轴。
-    pub(crate) x: f32,
+    pub x: f32,
     /// 屏幕逻辑坐标纵轴。
-    pub(crate) y: f32,
+    pub y: f32,
 }
 
 impl WindowPosition {
     /// 只接受有限坐标，避免损坏配置传入窗口后端。
-    pub(crate) fn new(x: f32, y: f32) -> Option<Self> {
+    pub fn new(x: f32, y: f32) -> Option<Self> {
         (x.is_finite() && y.is_finite()).then_some(Self { x, y })
     }
 }
 
 /// 表示桌宠主窗口的预设尺寸；自动档位根据显示器大小计算。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum ModelWindowSize {
+pub enum ModelWindowSize {
     /// 按当前显示器自动计算尺寸。
     #[default]
     Auto,
@@ -78,7 +78,7 @@ pub(crate) enum ModelWindowSize {
 
 impl ModelWindowSize {
     /// 返回配置文件中的稳定标识。
-    pub(crate) const fn id(self) -> &'static str {
+    pub const fn id(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::Compact => "compact",
@@ -89,7 +89,7 @@ impl ModelWindowSize {
     }
 
     /// 返回固定档位的目标宽度；自动档位返回 `None`。
-    pub(crate) const fn width(self) -> Option<f32> {
+    pub const fn width(self) -> Option<f32> {
         match self {
             Self::Auto => None,
             Self::Compact => Some(240.0),
@@ -99,7 +99,7 @@ impl ModelWindowSize {
         }
     }
 
-    pub(super) fn atomic_value(self) -> u16 {
+    pub fn atomic_value(self) -> u16 {
         match self {
             Self::Auto => MODEL_WINDOW_SIZE_AUTO,
             Self::Compact => MODEL_WINDOW_SIZE_COMPACT,
@@ -109,7 +109,7 @@ impl ModelWindowSize {
         }
     }
 
-    pub(super) fn from_atomic_value(value: u16) -> Self {
+    pub fn from_atomic_value(value: u16) -> Self {
         match value {
             MODEL_WINDOW_SIZE_COMPACT => Self::Compact,
             MODEL_WINDOW_SIZE_STANDARD => Self::Standard,
@@ -119,7 +119,7 @@ impl ModelWindowSize {
         }
     }
 
-    pub(super) fn from_id(value: &str) -> Option<Self> {
+    pub fn from_id(value: &str) -> Option<Self> {
         match value {
             "auto" => Some(Self::Auto),
             "compact" => Some(Self::Compact),
@@ -133,7 +133,7 @@ impl ModelWindowSize {
 
 /// 表示内置、自定义、显示器同步或无帧率上限模式。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum FrameRate {
+pub enum FrameRate {
     /// 低功耗内置档位。
     #[default]
     Fps30,
@@ -151,14 +151,14 @@ pub(crate) enum FrameRate {
 
 impl FrameRate {
     /// 创建保留自定义档位身份的正整数帧率。
-    pub(crate) fn custom(fps: u16) -> Result<Self, FrameRateError> {
+    pub fn custom(fps: u16) -> Result<Self, FrameRateError> {
         NonZeroU16::new(fps)
             .map(Self::Custom)
             .ok_or(FrameRateError { fps })
     }
 
     /// 返回软件限帧模式的每秒目标渲染帧数。
-    pub(crate) fn limit(self) -> Option<u16> {
+    pub fn limit(self) -> Option<u16> {
         match self {
             Self::Fps30 => Some(30),
             Self::Fps60 => Some(60),
@@ -169,17 +169,17 @@ impl FrameRate {
     }
 
     /// 返回是否由显示系统而不是软件定时器决定下一帧时刻。
-    pub(crate) fn follows_display(self) -> bool {
+    pub fn follows_display(self) -> bool {
         matches!(self, Self::FollowDisplay)
     }
 
     /// 返回是否允许在持续超预算时自动降低到半帧或四分之一帧。
-    pub(crate) fn allows_frame_rate_degradation(self) -> bool {
+    pub fn allows_frame_rate_degradation(self) -> bool {
         matches!(self, Self::Fps30 | Self::Fps60 | Self::Fps120)
     }
 
     /// 返回 GPU presentation 是否必须使用无撕裂 FIFO 模式。
-    pub(crate) fn uses_vsync(self) -> bool {
+    pub fn uses_vsync(self) -> bool {
         matches!(
             self,
             Self::Fps30 | Self::Fps60 | Self::Fps120 | Self::FollowDisplay
@@ -187,7 +187,7 @@ impl FrameRate {
     }
 
     /// 返回适合界面状态提示的简短名称。
-    pub(crate) fn display_name(self) -> String {
+    pub fn display_name(self) -> String {
         match self {
             Self::Fps30 => "30 FPS".to_owned(),
             Self::Fps60 => "60 FPS".to_owned(),
@@ -198,7 +198,7 @@ impl FrameRate {
         }
     }
 
-    pub(super) fn atomic_value(self) -> u32 {
+    pub fn atomic_value(self) -> u32 {
         match self {
             Self::Fps30 => 30,
             Self::Fps60 => 60,
@@ -209,7 +209,7 @@ impl FrameRate {
         }
     }
 
-    pub(super) fn from_atomic_value(value: u32) -> Self {
+    pub fn from_atomic_value(value: u32) -> Self {
         match value {
             UNLIMITED_FRAME_RATE_VALUE => Self::Unlimited,
             30 => Self::Fps30,
@@ -231,7 +231,7 @@ impl FrameRate {
 
 /// 控制日志宏送入 flexi_logger 的最低严重等级。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum LogLevel {
+pub enum LogLevel {
     /// 只记录错误。
     Error,
     /// 记录警告和错误。
@@ -247,7 +247,7 @@ pub(crate) enum LogLevel {
 
 impl LogLevel {
     /// 返回配置文件中的稳定标识和 flexi_logger 可接受的过滤字符串。
-    pub(crate) const fn id(self) -> &'static str {
+    pub const fn id(self) -> &'static str {
         match self {
             Self::Error => "error",
             Self::Warn => "warn",
@@ -257,7 +257,7 @@ impl LogLevel {
         }
     }
 
-    pub(super) fn from_id(value: &str) -> Option<Self> {
+    pub fn from_id(value: &str) -> Option<Self> {
         match value {
             "error" => Some(Self::Error),
             "warn" => Some(Self::Warn),
@@ -271,17 +271,17 @@ impl LogLevel {
 
 /// 描述日志过滤和文件轮转策略；文件目录、异步写入和每日轮转周期由运行时固定。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LoggingSettings {
+pub struct LoggingSettings {
     /// 当前日志过滤等级。
-    pub(crate) level: LogLevel,
+    pub level: LogLevel,
     /// 是否启用按日期或文件大小轮转。
-    pub(crate) rotation: bool,
+    pub rotation: bool,
     /// 轮转后的文件是否压缩为 gzip。
-    pub(crate) compression: bool,
+    pub compression: bool,
     /// 文件超过多少 MiB 时触发轮转。
-    pub(crate) max_size_mb: u32,
+    pub max_size_mb: u32,
     /// 最多保留多少个轮转文件。
-    pub(crate) keep_files: u32,
+    pub keep_files: u32,
 }
 
 impl Default for LoggingSettings {
@@ -298,7 +298,7 @@ impl Default for LoggingSettings {
 
 impl LoggingSettings {
     /// 校验来自配置文件或 UI 的数值，避免把异常参数传给日志后台线程。
-    pub(crate) fn normalized(self) -> Result<Self, String> {
+    pub fn normalized(self) -> Result<Self, String> {
         if !(LOGGING_MIN_FILE_SIZE_MB..=LOGGING_MAX_FILE_SIZE_MB).contains(&self.max_size_mb) {
             return Err(format!(
                 "日志轮转大小必须在 {LOGGING_MIN_FILE_SIZE_MB} 到 {LOGGING_MAX_FILE_SIZE_MB} MiB 之间"
@@ -313,7 +313,7 @@ impl LoggingSettings {
     }
 
     /// 返回 flexi_logger 使用的字节轮转阈值。
-    pub(crate) fn max_size_bytes(self) -> u64 {
+    pub fn max_size_bytes(self) -> u64 {
         u64::from(self.max_size_mb) * 1024 * 1024
     }
 }
@@ -334,7 +334,7 @@ impl TryFrom<u16> for FrameRate {
 
 /// 描述无法用于实时渲染调度的帧率值。
 #[derive(Debug)]
-pub(crate) struct FrameRateError {
+pub struct FrameRateError {
     fps: u16,
 }
 
@@ -348,7 +348,7 @@ impl Error for FrameRateError {}
 
 /// 描述配置修改无法持久化的原因。
 #[derive(Debug)]
-pub(crate) enum ConfigWriteError {
+pub enum ConfigWriteError {
     /// 外部值不满足配置约束。
     InvalidValue(String),
     /// 启动时无法确定可信的平台用户配置目录。
@@ -366,7 +366,7 @@ pub(crate) enum ConfigWriteError {
 
 impl ConfigWriteError {
     /// 返回适合日志聚合的稳定分类，不暴露配置路径或用户输入。
-    pub(crate) const fn diagnostic_kind(&self) -> &'static str {
+    pub const fn diagnostic_kind(&self) -> &'static str {
         match self {
             Self::InvalidValue(_) => "invalid_value",
             Self::PersistenceUnavailable => "persistence_unavailable",

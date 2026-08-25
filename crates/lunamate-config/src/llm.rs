@@ -16,7 +16,7 @@ use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value, tab
 const MAX_MODELS: usize = 64;
 
 #[cfg(test)]
-pub(in crate::config) fn normalize_endpoint(
+pub fn normalize_endpoint(
     provider: LlmProvider,
     endpoint: Option<&str>,
     language: AppLanguage,
@@ -24,7 +24,7 @@ pub(in crate::config) fn normalize_endpoint(
     lunamate_agent::config::normalize_endpoint(provider, endpoint, language).map_err(Into::into)
 }
 
-pub(super) fn parse_llm_settings(
+pub fn parse_llm_settings(
     document: &DocumentMut,
     warnings: &mut Vec<String>,
     language: AppLanguage,
@@ -383,7 +383,7 @@ fn optional_ratio(
     }
 }
 
-pub(super) fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSettings) {
+pub fn write_llm_settings(document: &mut DocumentMut, settings: &LlmSettings) {
     ensure_table_like(&mut document["llm"]);
     if let Some(mut key) = document.as_table_mut().key_mut("llm") {
         key.fmt();

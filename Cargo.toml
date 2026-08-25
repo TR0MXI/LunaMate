@@ -1,6 +1,6 @@
 [workspace]
-members = [".", "crates/lunamate-agent", "crates/lunamate-mocari"]
-default-members = [".", "crates/lunamate-agent"]
+members = [".", "crates/lunamate-agent", "crates/lunamate-config", "crates/lunamate-mocari"]
+default-members = [".", "crates/lunamate-agent", "crates/lunamate-config"]
 resolver = "3"
 
 [workspace.package]
@@ -24,6 +24,7 @@ gpui_wgpu = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 log = "0.4.34"
 lunamate-agent = { path = "crates/lunamate-agent" }
+lunamate-config = { path = "crates/lunamate-config" }
 mocari = { version = "0.4.0", path = "crates/lunamate-mocari", features = ["wgpu"] }
 objc2 = "=0.6.4"
 objc2-app-kit = "=0.3.2"
@@ -54,8 +55,6 @@ gpui_platform.workspace = true
 gpui-component.workspace = true
 image.workspace = true
 async-channel.workspace = true
-arc-swap.workspace = true
-toml_edit.workspace = true
 gpui_tokio.workspace = true
 futures.workspace = true
 tokio.workspace = true
@@ -70,6 +69,7 @@ gpui_wgpu.workspace = true
 log.workspace = true
 flexi_logger.workspace = true
 lunamate-agent.workspace = true
+lunamate-config.workspace = true
 # 生产构建仅包含本地 SurrealKV，不引入远程协议、原生 TLS、脚本或 ML。
 surrealdb.workspace = true
 ringbuf.workspace = true

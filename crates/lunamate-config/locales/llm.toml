@@ -1,0 +1,481 @@
+_version = 2
+
+[llm.chat_completions]
+"zh-CN" = "对话补全"
+"zh-TW" = "對話補全"
+"en" = "Chat Completions"
+"ja" = "チャット補完"
+
+[llm.speech_synthesis]
+"zh-CN" = "语音合成"
+"zh-TW" = "語音合成"
+"en" = "Speech Synthesis"
+"ja" = "音声合成"
+
+[llm.transcription]
+"zh-CN" = "语音转写"
+"zh-TW" = "語音轉寫"
+"en" = "Transcription"
+"ja" = "音声文字起こし"
+
+[llm.selected_transcription]
+"zh-CN" = "当前 Transcription 模型"
+"zh-TW" = "目前 Transcription 模型"
+"en" = "Selected transcription model"
+"ja" = "選択中の文字起こしモデル"
+
+[llm.gpu_acceleration]
+"zh-CN" = "GPU 加速"
+"zh-TW" = "GPU 加速"
+"en" = "GPU acceleration"
+"ja" = "GPU アクセラレーション"
+
+[llm.whisper_language]
+"zh-CN" = "目标语言"
+"zh-TW" = "目標語言"
+"en" = "Target language"
+"ja" = "対象言語"
+
+[llm.whisper_language_default]
+"zh-CN" = "默认（自动识别）"
+"zh-TW" = "預設（自動識別）"
+"en" = "Default (auto-detect)"
+"ja" = "デフォルト（自動検出）"
+
+[llm.whisper_language_search]
+"zh-CN" = "搜索语言或语言代码"
+"zh-TW" = "搜尋語言或語言代碼"
+"en" = "Search languages or codes"
+"ja" = "言語または言語コードを検索"
+
+[llm.whisper_language_hint]
+"zh-CN" = "已知音频语种时指定目标语言，可减少语言识别歧义并提高转写准确率。"
+"zh-TW" = "已知音訊語種時指定目標語言，可減少語言識別歧義並提高轉寫準確率。"
+"en" = "When the spoken language is known, selecting it reduces language-detection ambiguity and can improve transcription accuracy."
+"ja" = "音声の言語が分かっている場合は指定することで、言語検出の曖昧さを減らし文字起こし精度を高められます。"
+
+[llm.voice]
+"zh-CN" = "Voice"
+"zh-TW" = "Voice"
+"en" = "Voice"
+"ja" = "Voice"
+
+[llm.voice_type]
+"zh-CN" = "Voice Type"
+"zh-TW" = "Voice Type"
+"en" = "Voice Type"
+"ja" = "Voice Type"
+
+[llm.local_model_path]
+"zh-CN" = "本地模型路径"
+"zh-TW" = "本機模型路徑"
+"en" = "Local model path"
+"ja" = "ローカルモデルパス"
+
+[llm.language_models]
+"zh-CN" = "语言模型  %{count}"
+"zh-TW" = "語言模型  %{count}"
+"en" = "Language models  %{count}"
+"ja" = "言語モデル  %{count}"
+
+[llm.models]
+"zh-CN" = "语言模型"
+"zh-TW" = "語言模型"
+"en" = "Language models"
+"ja" = "言語モデル"
+
+[llm.add_model]
+"zh-CN" = "添加模型"
+"zh-TW" = "新增模型"
+"en" = "Add model"
+"ja" = "モデルを追加"
+
+[llm.none]
+"zh-CN" = "此类别尚未添加模型"
+"zh-TW" = "此類別尚未新增模型"
+"en" = "No models in this category"
+"ja" = "このカテゴリにはモデルがありません"
+
+[llm.no_model_selected]
+"zh-CN" = "未选择语言模型"
+"zh-TW" = "未選擇語言模型"
+"en" = "No language model selected"
+"ja" = "言語モデルが選択されていません"
+
+[llm.model_unset]
+"zh-CN" = "尚未指定模型"
+"zh-TW" = "尚未指定模型"
+"en" = "Model not specified"
+"ja" = "モデル未指定"
+
+[llm.selected]
+"zh-CN" = "已选择"
+"zh-TW" = "已選擇"
+"en" = "Selected"
+"ja" = "選択中"
+
+[llm.connection]
+"zh-CN" = "模型连接"
+"zh-TW" = "模型連線"
+"en" = "Model Connection"
+"ja" = "モデル接続"
+
+[llm.name]
+"zh-CN" = "名称"
+"zh-TW" = "名稱"
+"en" = "Name"
+"ja" = "名前"
+
+[llm.provider]
+"zh-CN" = "Provider"
+"zh-TW" = "Provider"
+"en" = "Provider"
+"ja" = "Provider"
+
+[llm.endpoint]
+"zh-CN" = "Endpoint"
+"zh-TW" = "Endpoint"
+"en" = "Endpoint"
+"ja" = "Endpoint"
+
+[llm.model_name_placeholder]
+"zh-CN" = "模型名称"
+"zh-TW" = "模型名稱"
+"en" = "Model name"
+"ja" = "モデル名"
+
+[llm.provider_model_id]
+"zh-CN" = "Provider 模型 ID"
+"zh-TW" = "Provider 模型 ID"
+"en" = "Provider model ID"
+"ja" = "Provider モデル ID"
+
+[llm.default_endpoint]
+"zh-CN" = "使用 Provider 默认 Endpoint"
+"zh-TW" = "使用 Provider 預設 Endpoint"
+"en" = "Use the Provider default endpoint"
+"ja" = "Provider のデフォルト Endpoint を使用"
+
+[llm.no_api_key]
+"zh-CN" = "无需 API key"
+"zh-TW" = "不需要 API key"
+"en" = "No API key required"
+"ja" = "API key は不要です"
+
+[llm.system_prompt]
+"zh-CN" = "系统提示词"
+"zh-TW" = "系統提示詞"
+"en" = "System Prompt"
+"ja" = "システムプロンプト"
+
+[llm.search_provider]
+"zh-CN" = "搜索 Provider"
+"zh-TW" = "搜尋 Provider"
+"en" = "Search providers"
+"ja" = "Provider を検索"
+
+[llm.model_id]
+"zh-CN" = "模型 ID"
+"zh-TW" = "模型 ID"
+"en" = "Model ID"
+"ja" = "モデル ID"
+
+[llm.api_key]
+"zh-CN" = "API key"
+"zh-TW" = "API key"
+"en" = "API key"
+"ja" = "API key"
+
+[llm.api_key_placeholder]
+"zh-CN" = "直接输入 API key（可选）"
+"zh-TW" = "直接輸入 API key（可選）"
+"en" = "Enter the API key directly (optional)"
+"ja" = "API key を直接入力（任意）"
+
+[llm.delete_model]
+"zh-CN" = "删除模型"
+"zh-TW" = "刪除模型"
+"en" = "Delete model"
+"ja" = "モデルを削除"
+
+[llm.draft_selected]
+"zh-CN" = "模型草稿已切换"
+"zh-TW" = "模型草稿已切換"
+"en" = "Model draft selected"
+"ja" = "モデル下書きを切り替えました"
+
+[llm.draft_added]
+"zh-CN" = "已添加模型草稿"
+"zh-TW" = "已新增模型草稿"
+"en" = "Model draft added"
+"ja" = "モデル下書きを追加しました"
+
+[llm.draft_deleted]
+"zh-CN" = "模型草稿已删除"
+"zh-TW" = "模型草稿已刪除"
+"en" = "Model draft deleted"
+"ja" = "モデル下書きを削除しました"
+
+[llm.saving]
+"zh-CN" = "正在保存模型配置"
+"zh-TW" = "正在儲存模型設定"
+"en" = "Saving model settings"
+"ja" = "モデル設定を保存しています"
+
+[llm.saved]
+"zh-CN" = "模型配置已保存"
+"zh-TW" = "模型設定已儲存"
+"en" = "Model settings saved"
+"ja" = "モデル設定を保存しました"
+
+[llm.save_replaced]
+"zh-CN" = "保存请求已被更新草稿替代"
+"zh-TW" = "儲存要求已被新的草稿取代"
+"en" = "Save was superseded by a newer draft"
+"ja" = "保存は新しい下書きに置き換えられました"
+
+[llm.save_failed]
+"zh-CN" = "模型配置保存失败：%{error}"
+"zh-TW" = "模型設定儲存失敗：%{error}"
+"en" = "Could not save model settings: %{error}"
+"ja" = "モデル設定を保存できませんでした: %{error}"
+
+[llm.error.required]
+"zh-CN" = "%{field}不能为空"
+"zh-TW" = "%{field}不能為空"
+"en" = "%{field} cannot be empty"
+"ja" = "%{field}を空にすることはできません"
+
+[llm.error.max_models]
+"zh-CN" = "模型配置数量不能超过 %{max}"
+"zh-TW" = "模型設定數量不能超過 %{max}"
+"en" = "The number of model configurations cannot exceed %{max}"
+"ja" = "モデル設定は %{max} 件以内にしてください"
+
+[llm.error.system_prompt_too_long]
+"zh-CN" = "系统提示词不能超过 %{max} 个 UTF-8 字节"
+"zh-TW" = "系統提示詞不能超過 %{max} 個 UTF-8 位元組"
+"en" = "The system prompt cannot exceed %{max} UTF-8 bytes"
+"ja" = "システムプロンプトは UTF-8 で %{max} バイト以内にしてください"
+
+[llm.error.too_long]
+"zh-CN" = "%{field}不能超过 %{max} 个 UTF-8 字节"
+"zh-TW" = "%{field}不能超過 %{max} 個 UTF-8 位元組"
+"en" = "%{field} cannot exceed %{max} UTF-8 bytes"
+"ja" = "%{field} は UTF-8 で %{max} バイト以内にしてください"
+
+[llm.error.id_characters]
+"zh-CN" = "%{field} 只能包含 ASCII 字母、数字、- 和 _"
+"zh-TW" = "%{field} 只能包含 ASCII 字母、數字、- 和 _"
+"en" = "%{field} may contain only ASCII letters, digits, - and _"
+"ja" = "%{field}には ASCII の英字、数字、-、_ のみ使用できます"
+
+[llm.error.duplicate_id]
+"zh-CN" = "模型配置 ID 重复：%{id}"
+"zh-TW" = "模型設定 ID 重複：%{id}"
+"en" = "Duplicate model configuration ID: %{id}"
+"ja" = "モデル設定 ID が重複しています: %{id}"
+
+[llm.error.missing_selected]
+"zh-CN" = "当前模型不存在：%{id}"
+"zh-TW" = "目前模型不存在：%{id}"
+"en" = "Selected model does not exist: %{id}"
+"ja" = "選択したモデルが存在しません: %{id}"
+
+[llm.error.unknown_provider]
+"zh-CN" = "未知 Provider：%{provider}"
+"zh-TW" = "未知 Provider：%{provider}"
+"en" = "Unknown Provider: %{provider}"
+"ja" = "不明な Provider です：%{provider}"
+
+[llm.error.unknown_kind]
+"zh-CN" = "未知模型能力：%{kind}"
+"zh-TW" = "未知模型能力：%{kind}"
+"en" = "Unknown model capability: %{kind}"
+"ja" = "不明なモデル機能です：%{kind}"
+
+[llm.error.unknown_reasoning_effort]
+"zh-CN" = "未知思考强度：%{effort}"
+"zh-TW" = "未知思考強度：%{effort}"
+"en" = "Unknown reasoning effort: %{effort}"
+"ja" = "不明な推論強度です：%{effort}"
+
+[llm.error.endpoint_unsupported]
+"zh-CN" = "%{provider} 在当前 genai 版本中不支持可靠的自定义 endpoint"
+"zh-TW" = "%{provider} 在目前 genai 版本中不支援可靠的自訂 endpoint"
+"en" = "%{provider} does not reliably support custom endpoints in this genai version"
+"ja" = "この genai バージョンでは %{provider} のカスタム endpoint を安定して使用できません"
+
+[llm.error.endpoint_invalid]
+"zh-CN" = "Endpoint 无效：%{error}"
+"zh-TW" = "Endpoint 無效：%{error}"
+"en" = "Invalid endpoint: %{error}"
+"ja" = "Endpoint が無効です: %{error}"
+
+[llm.error.endpoint_requirements]
+"zh-CN" = "Endpoint 必须包含主机，且不能包含凭据、查询参数或片段"
+"zh-TW" = "Endpoint 必須包含主機，且不能包含認證、查詢參數或片段"
+"en" = "Endpoint must include a host and cannot contain credentials, query parameters, or fragments"
+"ja" = "Endpoint にはホストが必要で、認証情報、クエリパラメータ、フラグメントは使用できません"
+
+[llm.error.endpoint_scheme]
+"zh-CN" = "Endpoint 必须使用 HTTP 或 HTTPS"
+"zh-TW" = "Endpoint 必須使用 HTTP 或 HTTPS"
+"en" = "Endpoint must use HTTP or HTTPS"
+"ja" = "Endpoint には HTTP または HTTPS が必要です"
+
+[llm.new_model]
+"zh-CN" = "新模型"
+"zh-TW" = "新模型"
+"en" = "New model"
+"ja" = "新しいモデル"
+
+[llm.advanced]
+"zh-CN" = "高级设置"
+"zh-TW" = "進階設定"
+"en" = "Advanced"
+"ja" = "詳細設定"
+
+[llm.advanced_summary]
+"zh-CN" = "上下文窗口、思考强度、输出长度与采样参数"
+"zh-TW" = "上下文視窗、思考強度、輸出長度與取樣參數"
+"en" = "Context window, reasoning effort, output length, and sampling"
+"ja" = "コンテキストウィンドウ、推論強度、出力長、サンプリング"
+
+[llm.advanced_default_hint]
+"zh-CN" = "未启用，沿用 Provider 默认值"
+"zh-TW" = "未啟用，沿用 Provider 預設值"
+"en" = "Disabled; the provider default is used"
+"ja" = "無効。Provider の既定値を使用します"
+
+[llm.advanced_range_hint]
+"zh-CN" = "模型窗口 ≤ %{context} token，输出长度 ≤ %{tokens} token，temperature ≤ %{temperature}，top_p ≤ %{top_p}。模型窗口仅用于本地历史裁剪。"
+"zh-TW" = "模型視窗 ≤ %{context} token，輸出長度 ≤ %{tokens} token，temperature ≤ %{temperature}，top_p ≤ %{top_p}。模型視窗僅用於本機歷史裁剪。"
+"en" = "Model window ≤ %{context} tokens, output ≤ %{tokens} tokens, temperature ≤ %{temperature}, top_p ≤ %{top_p}. The model window is used only for local history trimming."
+"ja" = "モデルウィンドウ ≤ %{context} トークン、出力 ≤ %{tokens} トークン、temperature ≤ %{temperature}、top_p ≤ %{top_p}。モデルウィンドウはローカル履歴の調整にのみ使用されます。"
+
+[llm.context_window_tokens]
+"zh-CN" = "模型上下文窗口 (token)"
+"zh-TW" = "模型上下文視窗 (token)"
+"en" = "Model context window (tokens)"
+"ja" = "モデルコンテキストウィンドウ (トークン)"
+
+[llm.context_window_default_hint]
+"zh-CN" = "未启用，不按模型窗口额外裁剪历史"
+"zh-TW" = "未啟用，不依模型視窗額外裁剪歷史"
+"en" = "Disabled; history is not additionally trimmed to a model window"
+"ja" = "無効。モデルウィンドウによる追加の履歴調整は行いません"
+
+[llm.reasoning_effort]
+"zh-CN" = "思考强度"
+"zh-TW" = "思考強度"
+"en" = "Reasoning effort"
+"ja" = "推論強度"
+
+[llm.reasoning_auto]
+"zh-CN" = "自动（Provider 默认）"
+"zh-TW" = "自動（Provider 預設）"
+"en" = "Automatic (provider default)"
+"ja" = "自動（Provider の既定）"
+
+[llm.reasoning_off]
+"zh-CN" = "关闭思考"
+"zh-TW" = "關閉思考"
+"en" = "Disable reasoning"
+"ja" = "推論を無効化"
+
+[llm.reasoning_minimal]
+"zh-CN" = "极低（兼容旧模型）"
+"zh-TW" = "極低（相容舊模型）"
+"en" = "Minimal (legacy models)"
+"ja" = "最小（旧モデル互換）"
+
+[llm.reasoning_low]
+"zh-CN" = "低"
+"zh-TW" = "低"
+"en" = "Low"
+"ja" = "低"
+
+[llm.reasoning_medium]
+"zh-CN" = "中"
+"zh-TW" = "中"
+"en" = "Medium"
+"ja" = "中"
+
+[llm.reasoning_high]
+"zh-CN" = "高"
+"zh-TW" = "高"
+"en" = "High"
+"ja" = "高"
+
+[llm.reasoning_xhigh]
+"zh-CN" = "很高"
+"zh-TW" = "很高"
+"en" = "Extra high"
+"ja" = "非常に高い"
+
+[llm.reasoning_max]
+"zh-CN" = "最高"
+"zh-TW" = "最高"
+"en" = "Maximum"
+"ja" = "最大"
+
+[llm.reasoning_budget_option]
+"zh-CN" = "自定义思考预算"
+"zh-TW" = "自訂思考預算"
+"en" = "Custom thinking budget"
+"ja" = "カスタム思考予算"
+
+[llm.reasoning_budget]
+"zh-CN" = "思考预算 token"
+"zh-TW" = "思考預算 token"
+"en" = "Thinking budget tokens"
+"ja" = "思考予算トークン"
+
+[llm.reasoning_budget_unused]
+"zh-CN" = "仅在选择自定义思考预算时可填"
+"zh-TW" = "僅在選擇自訂思考預算時可填"
+"en" = "Available only for a custom thinking budget"
+"ja" = "カスタム思考予算を選んだ場合のみ入力できます"
+
+[llm.max_output_tokens]
+"zh-CN" = "输出长度上限"
+"zh-TW" = "輸出長度上限"
+"en" = "Max output tokens"
+"ja" = "最大出力トークン"
+
+[llm.temperature]
+"zh-CN" = "temperature"
+"zh-TW" = "temperature"
+"en" = "temperature"
+"ja" = "temperature"
+
+[llm.top_p]
+"zh-CN" = "top_p"
+"zh-TW" = "top_p"
+"en" = "top_p"
+"ja" = "top_p"
+
+[llm.error.out_of_range]
+"zh-CN" = "%{field}必须在 %{min} 到 %{max} 之间"
+"zh-TW" = "%{field}必須在 %{min} 到 %{max} 之間"
+"en" = "%{field} must be between %{min} and %{max}"
+"ja" = "%{field} は %{min} から %{max} の範囲で指定してください"
+
+[llm.error.context_window_output]
+"zh-CN" = "模型上下文窗口 %{context} token 扣除输出上限 %{output} token 后，必须保留本地请求余量和至少一轮消息空间"
+"zh-TW" = "模型上下文視窗 %{context} token 扣除輸出上限 %{output} token 後，必須保留本機請求餘量和至少一輪訊息空間"
+"en" = "After reserving the %{output}-token output limit, the %{context}-token model window must leave local request overhead and room for one turn"
+"ja" = "%{context} トークンのモデルウィンドウは %{output} トークンの出力上限を確保した後、ローカル要求の余裕と 1 ターン分の領域を残す必要があります"
+
+[llm.error.missing_selected_transcription]
+"zh-CN" = "当前 Transcription 模型不存在：%{id}"
+"zh-TW" = "目前 Transcription 模型不存在：%{id}"
+"en" = "Selected transcription model does not exist: %{id}"
+"ja" = "選択した文字起こしモデルが存在しません: %{id}"
+
+[llm.error.whisper_language]
+"zh-CN" = "Whisper 不支持目标语言：%{language}"
+"zh-TW" = "Whisper 不支援目標語言：%{language}"
+"en" = "Whisper does not support the target language: %{language}"
+"ja" = "Whisper は対象言語をサポートしていません: %{language}"

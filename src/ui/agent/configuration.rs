@@ -2,13 +2,11 @@
 
 use gpui::Context;
 use gpui_tokio::Tokio;
-use lunamate_agent::{
-    Client, chat_limits, client_from_model, config::AgentConfigSnapshot,
-    model_and_options_from_config,
-};
+use lunamate_agent::{Client, chat_limits, client_from_model, model_and_options_from_config};
 use rust_i18n::t;
 
 use super::AgentView;
+use crate::config::AgentConfigSnapshot;
 
 impl AgentView {
     #[cfg(test)]

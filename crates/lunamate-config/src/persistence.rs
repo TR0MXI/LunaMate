@@ -6,7 +6,7 @@ use std::{fs, path::Path, sync::atomic::AtomicU64};
 use std::sync::atomic::Ordering;
 use toml_edit::DocumentMut;
 
-use crate::database::PreparedAtomicReplace;
+use crate::config::atomic_file::PreparedAtomicReplace;
 
 use super::{
     ConfigWriteError, LunaConfig,
@@ -18,7 +18,7 @@ use super::{
 };
 
 impl LunaConfig {
-    pub(super) fn edit_document(
+    pub fn edit_document(
         &self,
         edit: impl FnOnce(&mut DocumentMut),
     ) -> Result<(), ConfigWriteError> {
@@ -35,7 +35,7 @@ impl LunaConfig {
         write_config_file(path, &document, nonce)
     }
 
-    pub(super) fn prepare_document_locked(
+    pub fn prepare_document_locked(
         &self,
         edit: impl FnOnce(&mut DocumentMut),
     ) -> Result<PreparedAtomicReplace, ConfigWriteError> {
@@ -90,7 +90,7 @@ impl LunaConfig {
         Ok((path, document, nonce))
     }
 
-    pub(super) fn commit_prepared_config_at_revision<T>(
+    pub fn commit_prepared_config_at_revision<T>(
         &self,
         counter: &AtomicU64,
         revision: u64,
@@ -113,7 +113,7 @@ impl LunaConfig {
         Ok(Some(published))
     }
 
-    pub(super) fn edit_config_at_revision(
+    pub fn edit_config_at_revision(
         &self,
         counter: &AtomicU64,
         revision: u64,
@@ -136,11 +136,7 @@ impl LunaConfig {
     }
 }
 
-pub(super) fn log_config_update(
-    setting: &str,
-    revision: u64,
-    outcome: Result<bool, &ConfigWriteError>,
-) {
+pub fn log_config_update(setting: &str, revision: u64, outcome: Result<bool, &ConfigWriteError>) {
     match outcome {
         Ok(true) => log::info!("event=config_updated setting={setting} revision={revision}"),
         Ok(false) => {

@@ -1,15 +1,14 @@
-//! 验证运行时配置快照只接受并保存规范化后的两个配置域。
-
-use std::sync::Arc;
+//! 验证 Agent 配置领域的规范化与交叉引用校验。
 
 use crate::config::{
-    AgentConfigSnapshot, AppLanguage, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings,
-    ModelKind, ModelProvider, PersonaConfig, PersonaSettings, WHISPER_LANGUAGE_CODES,
+    AppLanguage, LlmAdvancedOptions, LlmModelConfig, LlmProvider, LlmSettings, ModelKind,
+    ModelProvider, PersonaConfig, PersonaSettings, WHISPER_LANGUAGE_CODES,
+    validate_persona_model_bindings,
 };
 
 #[test]
-fn snapshot_constructor_normalizes_both_settings_domains() {
-    let settings = Arc::new(LlmSettings {
+fn settings_domains_normalize_before_host_publication() {
+    let settings = LlmSettings {
         models: vec![LlmModelConfig {
             id: " local-model ".to_owned(),
             label: " Local Model ".to_owned(),
@@ -27,22 +26,23 @@ fn snapshot_constructor_normalizes_both_settings_domains() {
         }],
         selected_model: Some(" local-model ".to_owned()),
         selected_transcription_model: None,
-    });
+    }
+    .normalized(AppLanguage::TraditionalChinese)
+    .expect("可规范化的模型目录应当被接受");
     let mut persona = PersonaConfig::new(" assistant ", " Assistant ");
     persona.model = Some(" local-model ".to_owned());
-    let personas = Arc::new(PersonaSettings {
+    let personas = PersonaSettings {
         personas: vec![persona],
         selected: Some(" assistant ".to_owned()),
         pending_deletions: vec![" removed ".to_owned(), "removed".to_owned()],
-    });
+    }
+    .normalized(AppLanguage::TraditionalChinese)
+    .expect("可规范化的人格目录应当被接受");
 
-    let snapshot =
-        AgentConfigSnapshot::try_new(41, settings, personas, AppLanguage::TraditionalChinese)
-            .expect("可规范化的两个配置域应当被接受");
+    validate_persona_model_bindings(&settings, &personas, AppLanguage::TraditionalChinese)
+        .expect("规范化后的跨域绑定应当有效");
 
-    assert_eq!(snapshot.generation(), 41);
-    assert_eq!(snapshot.language(), AppLanguage::TraditionalChinese);
-    let model = &snapshot.settings().models[0];
+    let model = &settings.models[0];
     assert_eq!(model.id, "local-model");
     assert_eq!(model.label, "Local Model");
     assert_eq!(model.model, "qwen3:8b");
@@ -51,21 +51,18 @@ fn snapshot_constructor_normalizes_both_settings_domains() {
         Some("http://localhost:11434/v1/")
     );
     assert_eq!(model.api_key.as_deref(), Some("local-key"));
-    assert_eq!(
-        snapshot.settings().selected_model.as_deref(),
-        Some("local-model")
-    );
-    let persona = &snapshot.personas().personas[0];
+    assert_eq!(settings.selected_model.as_deref(), Some("local-model"));
+    let persona = &personas.personas[0];
     assert_eq!(persona.id, "assistant");
     assert_eq!(persona.name, "Assistant");
     assert_eq!(persona.model.as_deref(), Some("local-model"));
-    assert_eq!(snapshot.personas().selected.as_deref(), Some("assistant"));
-    assert_eq!(snapshot.personas().pending_deletions, ["removed"]);
+    assert_eq!(personas.selected.as_deref(), Some("assistant"));
+    assert_eq!(personas.pending_deletions, ["removed"]);
 }
 
 #[test]
-fn snapshot_constructor_rejects_invalid_provider_settings() {
-    let settings = Arc::new(LlmSettings {
+fn invalid_provider_settings_are_rejected_by_domain_normalization() {
+    let settings = LlmSettings {
         models: vec![LlmModelConfig {
             id: "invalid/id".to_owned(),
             label: "Invalid".to_owned(),
@@ -83,40 +80,24 @@ fn snapshot_constructor_rejects_invalid_provider_settings() {
         }],
         selected_model: None,
         selected_transcription_model: None,
-    });
+    };
 
-    assert!(
-        AgentConfigSnapshot::try_new(
-            1,
-            settings,
-            Arc::new(PersonaSettings::default()),
-            AppLanguage::English,
-        )
-        .is_err()
-    );
+    assert!(settings.normalized(AppLanguage::English).is_err());
 }
 
 #[test]
-fn snapshot_constructor_rejects_invalid_persona_settings() {
-    let personas = Arc::new(PersonaSettings {
+fn invalid_persona_settings_are_rejected_by_domain_normalization() {
+    let personas = PersonaSettings {
         personas: Vec::new(),
         selected: None,
         pending_deletions: Vec::new(),
-    });
+    };
 
-    assert!(
-        AgentConfigSnapshot::try_new(
-            1,
-            Arc::new(LlmSettings::default()),
-            personas,
-            AppLanguage::English,
-        )
-        .is_err()
-    );
+    assert!(personas.normalized(AppLanguage::English).is_err());
 }
 
 #[test]
-fn snapshot_validation_uses_its_explicit_language() {
+fn domain_validation_uses_its_explicit_language() {
     let cases = [
         (
             AppLanguage::SimplifiedChinese,
@@ -156,14 +137,9 @@ fn snapshot_validation_uses_its_explicit_language() {
             selected_model: None,
             selected_transcription_model: None,
         };
-        let error = AgentConfigSnapshot::try_new(
-            1,
-            Arc::new(settings),
-            Arc::new(PersonaSettings::default_for(language)),
-            language,
-        )
-        .err()
-        .expect("非法模型 ID 必须被拒绝");
+        let error = settings
+            .normalized(language)
+            .expect_err("非法模型 ID 必须被拒绝");
 
         assert_eq!(error.to_string(), expected);
     }
@@ -275,23 +251,22 @@ fn persona_tts_binding_must_reference_a_speech_synthesis_model() {
         whisper_language: None,
         advanced: LlmAdvancedOptions::default(),
     };
-    let settings = Arc::new(LlmSettings {
+    let settings = LlmSettings {
         models: vec![chat],
         selected_model: Some("chat".to_owned()),
         selected_transcription_model: None,
-    });
+    };
     let mut persona = PersonaConfig::new("default", "Default");
     persona.tts_model = Some("chat".to_owned());
 
     assert!(
-        AgentConfigSnapshot::try_new(
-            1,
-            settings,
-            Arc::new(PersonaSettings {
+        validate_persona_model_bindings(
+            &settings,
+            &PersonaSettings {
                 personas: vec![persona],
                 selected: Some("default".to_owned()),
                 pending_deletions: Vec::new(),
-            }),
+            },
             AppLanguage::English,
         )
         .is_err()

@@ -1,4 +1,4 @@
-//! 定义人格配置、上下文限制和宿主发布的配置快照。
+//! 定义人格配置、上下文限制与人格-模型关系校验。
 
 use std::{
     collections::HashSet,
@@ -10,7 +10,7 @@ use rust_i18n::t;
 
 use super::{
     AgentConfigError, AppLanguage, LlmSettings, MAX_ID_BYTES, MAX_SYSTEM_PROMPT_BYTES, ModelKind,
-    SharedLlmSettings, invalid, normalize_optional, normalized_required, normalized_safe_id,
+    invalid, normalize_optional, normalized_required, normalized_safe_id,
 };
 
 const MAX_PERSONA_NAME_BYTES: usize = 128;
@@ -242,56 +242,10 @@ impl PersonaSettings {
 
 pub type SharedPersonaSettings = Arc<PersonaSettings>;
 
-/// 宿主在一个 generation 上发布给 Agent 的完整不可变配置。
-#[derive(Clone)]
-pub struct AgentConfigSnapshot {
-    generation: u64,
-    settings: SharedLlmSettings,
-    personas: SharedPersonaSettings,
-    language: AppLanguage,
-}
-
-impl AgentConfigSnapshot {
-    /// 规范化并校验 Provider 与人格配置后创建不可变快照。
-    ///
-    /// # Errors
-    ///
-    /// 任一配置域不满足当前格式约束时返回错误。
-    pub fn try_new(
-        generation: u64,
-        settings: SharedLlmSettings,
-        personas: SharedPersonaSettings,
-        language: AppLanguage,
-    ) -> Result<Self, AgentConfigError> {
-        let settings = Arc::new(settings.as_ref().clone().normalized(language)?);
-        let personas = Arc::new(personas.as_ref().clone().normalized(language)?);
-        validate_persona_models(&settings, &personas, language)?;
-        Ok(Self {
-            generation,
-            settings,
-            personas,
-            language,
-        })
-    }
-
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    pub fn settings(&self) -> &SharedLlmSettings {
-        &self.settings
-    }
-
-    pub fn personas(&self) -> &SharedPersonaSettings {
-        &self.personas
-    }
-
-    pub const fn language(&self) -> AppLanguage {
-        self.language
-    }
-}
-
-fn validate_persona_models(
+/// 校验人格绑定的模型存在且具有相应能力。
+///
+/// 该关系由 Agent 配置领域定义，但配置发布时机和 generation 由宿主负责。
+pub fn validate_persona_model_bindings(
     settings: &LlmSettings,
     personas: &PersonaSettings,
     language: AppLanguage,

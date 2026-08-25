@@ -1,0 +1,223 @@
+_version = 2
+
+[status.model_saving]
+"zh-CN" = "正在保存模型配置"
+"zh-TW" = "正在儲存模型設定"
+"en" = "Saving model settings"
+"ja" = "モデル設定を保存しています"
+
+[status.model_saved]
+"zh-CN" = "模型配置已保存"
+"zh-TW" = "模型設定已儲存"
+"en" = "Model settings saved"
+"ja" = "モデル設定を保存しました"
+
+[status.model_replaced]
+"zh-CN" = "模型配置保存已被更新选择替代"
+"zh-TW" = "模型設定儲存已被新的選擇取代"
+"en" = "Model save was superseded by a newer selection"
+"ja" = "モデル設定の保存は新しい選択に置き換えられました"
+
+[status.model_save_failed]
+"zh-CN" = "模型已切换，配置保存失败：%{error}"
+"zh-TW" = "模型已切換，設定儲存失敗：%{error}"
+"en" = "Model changed, but settings could not be saved: %{error}"
+"ja" = "モデルは切り替わりましたが、設定を保存できませんでした: %{error}"
+
+[status.scanning_models]
+"zh-CN" = "正在扫描 models 目录"
+"zh-TW" = "正在掃描 models 目錄"
+"en" = "Scanning the models directory"
+"ja" = "models ディレクトリをスキャンしています"
+
+[status.scan_stale]
+"zh-CN" = "模型已在扫描期间切换，已忽略过期结果"
+"zh-TW" = "掃描期間模型已切換，已忽略過期結果"
+"en" = "The model changed during scanning; stale results were ignored"
+"ja" = "スキャン中にモデルが変更されたため、古い結果を無視しました"
+
+[status.scan_result]
+"zh-CN" = "已发现 %{families} 个模型、%{outfits} 套服装"
+"zh-TW" = "已找到 %{families} 個模型、%{outfits} 套服裝"
+"en" = "Found %{families} models and %{outfits} outfits"
+"ja" = "モデル %{families} 体、衣装 %{outfits} 着を検出しました"
+
+[status.scan_result_warning]
+"zh-CN" = "已发现 %{families} 个模型、%{outfits} 套服装；%{warning}"
+"zh-TW" = "已找到 %{families} 個模型、%{outfits} 套服裝；%{warning}"
+"en" = "Found %{families} models and %{outfits} outfits; %{warning}"
+"ja" = "モデル %{families} 体、衣装 %{outfits} 着を検出しました。%{warning}"
+
+[status.scan_failed]
+"zh-CN" = "模型目录扫描失败：%{error}"
+"zh-TW" = "模型目錄掃描失敗：%{error}"
+"en" = "Could not scan the models directory: %{error}"
+"ja" = "models ディレクトリをスキャンできませんでした: %{error}"
+
+[status.opening_model_directory]
+"zh-CN" = "正在打开模型文件夹"
+"zh-TW" = "正在開啟模型資料夾"
+"en" = "Opening the models folder"
+"ja" = "モデルフォルダーを開いています"
+
+[status.open_model_directory_failed]
+"zh-CN" = "无法打开模型文件夹：%{error}"
+"zh-TW" = "無法開啟模型資料夾：%{error}"
+"en" = "Could not open the models folder: %{error}"
+"ja" = "モデルフォルダーを開けませんでした: %{error}"
+
+[status.model_action_failed]
+"zh-CN" = "模型操作失败：%{error}"
+"zh-TW" = "模型操作失敗：%{error}"
+"en" = "Model operation failed: %{error}"
+"ja" = "モデル操作に失敗しました: %{error}"
+
+[status.model_resource_saved]
+"zh-CN" = "模型资源名称与分类已保存"
+"zh-TW" = "模型資源名稱與分類已儲存"
+"en" = "Model resource names and categories saved"
+"ja" = "モデルリソースの名前と分類を保存しました"
+
+[status.model_resource_save_failed]
+"zh-CN" = "无法保存模型资源配置：%{error}"
+"zh-TW" = "無法儲存模型資源設定：%{error}"
+"en" = "Could not save model resource settings: %{error}"
+"ja" = "モデルリソース設定を保存できませんでした: %{error}"
+
+[status.startup_warning]
+"zh-CN" = "启动时发现配置问题：%{warning}"
+"zh-TW" = "啟動時發現設定問題：%{warning}"
+"en" = "Configuration issue found at startup: %{warning}"
+"ja" = "起動時に設定の問題が見つかりました: %{warning}"
+
+[status.outfit_preview]
+"zh-CN" = "正在主窗口预览服装：%{name}"
+"zh-TW" = "正在主視窗預覽服裝：%{name}"
+"en" = "Previewing outfit in the main window: %{name}"
+"ja" = "メインウィンドウで衣装をプレビュー中: %{name}"
+
+[status.motion_preview]
+"zh-CN" = "正在主窗口预览动作：%{name}"
+"zh-TW" = "正在主視窗預覽動作：%{name}"
+"en" = "Previewing motion in the main window: %{name}"
+"ja" = "メインウィンドウでモーションをプレビュー中: %{name}"
+
+[status.expression_preview]
+"zh-CN" = "正在主窗口预览表情：%{name}"
+"zh-TW" = "正在主視窗預覽表情：%{name}"
+"en" = "Previewing expression in the main window: %{name}"
+"ja" = "メインウィンドウで表情をプレビュー中: %{name}"
+
+[status.render_saving]
+"zh-CN" = "正在保存渲染配置"
+"zh-TW" = "正在儲存渲染設定"
+"en" = "Saving rendering settings"
+"ja" = "レンダリング設定を保存しています"
+
+[status.frame_rate_set]
+"zh-CN" = "渲染帧率已设为 %{fps}"
+"zh-TW" = "渲染幀率已設為 %{fps}"
+"en" = "Rendering frame rate set to %{fps}"
+"ja" = "レンダリングフレームレートを %{fps} に設定しました"
+
+[status.frame_rate_replaced]
+"zh-CN" = "帧率保存已被更新选择替代"
+"zh-TW" = "幀率儲存已被新的選擇取代"
+"en" = "Frame rate save was superseded by a newer selection"
+"ja" = "フレームレートの保存は新しい選択に置き換えられました"
+
+[status.frame_rate_failed]
+"zh-CN" = "无法保存并应用帧率：%{error}"
+"zh-TW" = "無法儲存並套用幀率：%{error}"
+"en" = "Could not save and apply the frame rate: %{error}"
+"ja" = "フレームレートを保存して適用できませんでした: %{error}"
+
+[status.window_size_set]
+"zh-CN" = "模型窗口尺寸已设为 %{size}"
+"zh-TW" = "模型視窗尺寸已設為 %{size}"
+"en" = "Model window size set to %{size}"
+"ja" = "モデルウィンドウサイズを %{size} に設定しました"
+
+[status.system_saving]
+"zh-CN" = "正在保存系统配置"
+"zh-TW" = "正在儲存系統設定"
+"en" = "Saving system settings"
+"ja" = "システム設定を保存しています"
+
+[status.remember_on]
+"zh-CN" = "窗口位置记忆已开启"
+"zh-TW" = "視窗位置記憶已開啟"
+"en" = "Window position memory enabled"
+"ja" = "ウィンドウ位置の記憶を有効にしました"
+
+[status.remember_off]
+"zh-CN" = "窗口位置记忆已关闭"
+"zh-TW" = "視窗位置記憶已關閉"
+"en" = "Window position memory disabled"
+"ja" = "ウィンドウ位置の記憶を無効にしました"
+
+[status.setting_replaced]
+"zh-CN" = "设置保存已被更新选择替代"
+"zh-TW" = "設定儲存已被新的選擇取代"
+"en" = "The save was superseded by a newer selection"
+"ja" = "設定の保存は新しい選択に置き換えられました"
+
+[status.setting_failed]
+"zh-CN" = "设置已生效，配置保存失败：%{error}"
+"zh-TW" = "設定已生效，設定檔儲存失敗：%{error}"
+"en" = "Setting applied, but could not be saved: %{error}"
+"ja" = "設定は適用されましたが、保存できませんでした: %{error}"
+
+[status.logging_file_policy_saved_restart]
+"zh-CN" = "日志设置已保存，重启后应用文件策略"
+"zh-TW" = "日誌設定已儲存，重新啟動後套用檔案策略"
+"en" = "Logging settings saved; restart to apply the file policy"
+"ja" = "ログ設定を保存しました。ファイルポリシーは再起動後に適用されます"
+
+[status.logging_save_failed]
+"zh-CN" = "无法保存日志设置：%{error}"
+"zh-TW" = "無法儲存日誌設定：%{error}"
+"en" = "Could not save logging settings: %{error}"
+"ja" = "ログ設定を保存できませんでした: %{error}"
+
+[status.logging_level_apply_failed]
+"zh-CN" = "日志设置已保存，但无法立即应用日志等级：%{error}"
+"zh-TW" = "日誌設定已儲存，但無法立即套用日誌等級：%{error}"
+"en" = "Logging settings were saved, but the log level could not be applied now: %{error}"
+"ja" = "ログ設定は保存されましたが、ログレベルをすぐに適用できませんでした: %{error}"
+
+[status.positions_clearing]
+"zh-CN" = "正在清除窗口位置"
+"zh-TW" = "正在清除視窗位置"
+"en" = "Clearing saved window positions"
+"ja" = "保存されたウィンドウ位置を消去しています"
+
+[status.positions_reset]
+"zh-CN" = "已清除保存位置并请求窗口复位"
+"zh-TW" = "已清除儲存位置並要求視窗重設"
+"en" = "Saved positions cleared and windows reset"
+"ja" = "保存位置を消去し、ウィンドウをリセットしました"
+
+[status.position_reset_replaced]
+"zh-CN" = "窗口位置重置已被更新请求替代"
+"zh-TW" = "視窗位置重設已被新的要求取代"
+"en" = "Position reset was superseded by a newer request"
+"ja" = "位置のリセットは新しい要求に置き換えられました"
+
+[status.position_reset_failed]
+"zh-CN" = "位置已重置，配置保存失败：%{error}"
+"zh-TW" = "位置已重設，設定儲存失敗：%{error}"
+"en" = "Positions reset, but could not be saved: %{error}"
+"ja" = "位置はリセットされましたが、保存できませんでした: %{error}"
+
+[status.appearance_saved]
+"zh-CN" = "外观设置已保存"
+"zh-TW" = "外觀設定已儲存"
+"en" = "Appearance settings saved"
+"ja" = "外観設定を保存しました"
+
+[status.appearance_failed]
+"zh-CN" = "外观已生效，配置保存失败：%{error}"
+"zh-TW" = "外觀已套用，設定儲存失敗：%{error}"
+"en" = "Appearance applied, but could not be saved: %{error}"
+"ja" = "外観は適用されましたが、保存できませんでした: %{error}"

@@ -11,7 +11,7 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value};
 
 use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value};
 
-pub(super) fn parse_persona_settings(
+pub fn parse_persona_settings(
     document: &DocumentMut,
     warnings: &mut Vec<String>,
     language: AppLanguage,
@@ -173,7 +173,7 @@ pub(super) fn parse_persona_settings(
 }
 
 /// 清除解析后无法解析为对应模型能力的人格绑定，避免把宽松读取结果交给严格快照。
-pub(super) fn clear_invalid_model_bindings(
+pub fn clear_invalid_model_bindings(
     llm: &LlmSettings,
     settings: &mut PersonaSettings,
     warnings: &mut Vec<String>,
@@ -341,7 +341,7 @@ fn parse_persona(table: &Table, language: AppLanguage) -> Result<PersonaConfig, 
     })
 }
 
-pub(super) fn write_persona_settings(document: &mut DocumentMut, settings: &PersonaSettings) {
+pub fn write_persona_settings(document: &mut DocumentMut, settings: &PersonaSettings) {
     ensure_table_like(&mut document["persona"]);
     if let Some(mut key) = document.as_table_mut().key_mut("persona") {
         key.fmt();

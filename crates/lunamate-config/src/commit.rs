@@ -22,7 +22,7 @@ use super::{
 
 impl LunaConfig {
     /// 仅提交仍然最新的帧率写入。
-    pub(crate) fn set_frame_rate_at_revision(
+    pub fn set_frame_rate_at_revision(
         &self,
         frame_rate: FrameRate,
         revision: u64,
@@ -61,7 +61,7 @@ impl LunaConfig {
     }
 
     /// 仅提交仍然最新的帧率显示开关写入。
-    pub(crate) fn set_show_fps_at_revision(
+    pub fn set_show_fps_at_revision(
         &self,
         show: bool,
         revision: u64,
@@ -80,7 +80,7 @@ impl LunaConfig {
     }
 
     /// 仅提交仍然最新的原生托盘右键菜单开关写入。
-    pub(crate) fn set_use_native_tray_menu_at_revision(
+    pub fn set_use_native_tray_menu_at_revision(
         &self,
         enabled: bool,
         revision: u64,
@@ -102,7 +102,7 @@ impl LunaConfig {
     }
 
     /// 仅提交仍然最新的 Agent 换装工具开关写入。
-    pub(crate) fn set_allow_agent_outfit_change_at_revision(
+    pub fn set_allow_agent_outfit_change_at_revision(
         &self,
         allowed: bool,
         revision: u64,
@@ -127,7 +127,7 @@ impl LunaConfig {
     }
 
     /// 仅提交仍然最新的 Agent 截屏授权；磁盘成功前不会开放权限。
-    pub(crate) fn set_allow_agent_screenshot_at_revision(
+    pub fn set_allow_agent_screenshot_at_revision(
         &self,
         allowed: bool,
         revision: u64,
@@ -207,7 +207,7 @@ impl LunaConfig {
     }
 
     /// 仅持久化并发布仍是最新请求的日志配置。
-    pub(crate) fn set_logging_settings_at_revision(
+    pub fn set_logging_settings_at_revision(
         &self,
         settings: LoggingSettings,
         revision: u64,
@@ -227,7 +227,7 @@ impl LunaConfig {
     }
 
     /// 仅提交仍然最新的眼部跟随开关写入。
-    pub(crate) fn set_eye_tracking_at_revision(
+    pub fn set_eye_tracking_at_revision(
         &self,
         enabled: bool,
         revision: u64,
@@ -249,7 +249,7 @@ impl LunaConfig {
     }
 
     /// 校验、持久化并一次性发布最新的外观配置。
-    pub(crate) fn set_appearance_at_revision(
+    pub fn set_appearance_at_revision(
         &self,
         settings: AppearanceSettings,
         revision: u64,
@@ -274,9 +274,10 @@ impl LunaConfig {
                     let language_changed = self.appearance.load().language != settings.language;
                     self.appearance.store(settings.clone());
                     if language_changed {
+                        let current = self.agent_config.load_full();
                         self.publish_agent_config(
-                            self.llm.load_full(),
-                            self.persona.load_full(),
+                            current.settings().clone(),
+                            current.personas().clone(),
                             settings.language,
                         );
                     }
@@ -293,7 +294,7 @@ impl LunaConfig {
     }
 
     /// 仅提交仍然最新的模型选择写入。
-    pub(crate) fn set_selected_model_at_revision(
+    pub fn set_selected_model_at_revision(
         &self,
         relative_path: Option<&Path>,
         revision: u64,
@@ -328,7 +329,7 @@ impl LunaConfig {
     }
 
     /// 原子持久化并发布仍是最新请求的模型资源覆盖。
-    pub(crate) fn set_model_resource_settings_at_revision(
+    pub fn set_model_resource_settings_at_revision(
         &self,
         settings: ModelResourceSettings,
         revision: u64,
@@ -351,7 +352,7 @@ impl LunaConfig {
     /// # Errors
     ///
     /// 模型字段不合法，或配置文件无法持久化时返回错误。
-    pub(crate) fn set_llm_settings_at_revision(
+    pub fn set_llm_settings_at_revision(
         &self,
         settings: LlmSettings,
         revision: u64,
@@ -364,10 +365,11 @@ impl LunaConfig {
                 return Ok(None);
             }
             let generation = self.agent_config.load().generation().wrapping_add(1).max(1);
+            let current = self.agent_config.load_full();
             let candidate = AgentConfigSnapshot::try_new(
                 generation,
                 settings,
-                self.persona.load_full(),
+                current.personas().clone(),
                 self.appearance.load().language,
             )
             .map_err(ConfigWriteError::from)?;
@@ -379,7 +381,6 @@ impl LunaConfig {
                 revision,
                 prepared,
                 || {
-                    self.llm.store(settings.clone());
                     self.agent_config.store(Arc::new(candidate));
                     settings
                 },
@@ -398,7 +399,7 @@ impl LunaConfig {
     /// # Errors
     ///
     /// 人格字段不合法，或配置文件无法持久化时返回错误。
-    pub(crate) fn set_persona_settings_at_revision(
+    pub fn set_persona_settings_at_revision(
         &self,
         settings: PersonaSettings,
         revision: u64,
@@ -411,9 +412,10 @@ impl LunaConfig {
                 return Ok(None);
             }
             let generation = self.agent_config.load().generation().wrapping_add(1).max(1);
+            let current = self.agent_config.load_full();
             let candidate = AgentConfigSnapshot::try_new(
                 generation,
-                self.llm.load_full(),
+                current.settings().clone(),
                 settings,
                 self.appearance.load().language,
             )
@@ -426,7 +428,6 @@ impl LunaConfig {
                 revision,
                 prepared,
                 || {
-                    self.persona.store(settings.clone());
                     self.agent_config.store(Arc::new(candidate));
                     settings
                 },
@@ -441,7 +442,7 @@ impl LunaConfig {
     }
 
     /// 校验、持久化并一次性发布仍为最新请求的快捷键配置。
-    pub(crate) fn set_shortcut_settings_at_revision(
+    pub fn set_shortcut_settings_at_revision(
         &self,
         settings: ShortcutSettings,
         revision: u64,
@@ -473,7 +474,7 @@ impl LunaConfig {
     }
 
     /// 校验、持久化并一次性发布仍是最新请求的语音配置。
-    pub(crate) fn set_voice_settings_at_revision(
+    pub fn set_voice_settings_at_revision(
         &self,
         settings: VoiceSettings,
         revision: u64,
