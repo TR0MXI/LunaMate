@@ -4,8 +4,6 @@ mod cursor;
 mod native;
 mod placement;
 mod tray_menu;
-#[cfg(target_os = "linux")]
-mod xcb;
 
 pub(crate) use cursor::GlobalCursorTracker;
 pub(crate) use native::{

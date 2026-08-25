@@ -127,7 +127,7 @@ impl LatestFrameSlot {
 }
 
 impl GpuUnderlay {
-    /// 尝试为当前平台窗口建立 GPU underlay；X11 和不支持的平台返回 `None`。
+    /// 尝试为当前平台窗口建立 GPU underlay；不支持的平台返回 `None`。
     ///
     /// # Errors
     ///

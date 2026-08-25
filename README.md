@@ -55,12 +55,12 @@ brew install cmake pkg-config
 ### Linux
 
 以下命令适用于 Ubuntu 或 Debian。其他发行版请安装对应的软件包：C/C++ 编译器、CMake、
-`pkg-config`、ALSA、Wayland、X11、Vulkan 开发库和 `glslc`。
+`pkg-config`、ALSA、Wayland、Vulkan 开发库和 `glslc`。
 
 ```bash
 sudo apt update
 sudo apt install build-essential cmake pkg-config libasound2-dev \
-  libfontconfig1-dev libwayland-dev libx11-dev libxkbcommon-dev \
+  libfontconfig1-dev libwayland-dev libxkbcommon-dev \
   libvulkan-dev glslc
 ```
 

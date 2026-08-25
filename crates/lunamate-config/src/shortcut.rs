@@ -2,7 +2,9 @@
 
 use std::collections::HashSet;
 
-use global_hotkey::hotkey::{Code, HotKey};
+#[cfg(not(target_os = "linux"))]
+use global_hotkey::hotkey::HotKey;
+use keyboard_types::{Code, Modifiers};
 use toml_edit::{DocumentMut, Value};
 
 use super::{ConfigWriteError, ensure_table_like, remove_key, set_item_value};
@@ -40,43 +42,93 @@ impl ShortcutAction {
     }
 }
 
-/// 一组已经规范化、可交给系统注册的键盘按键。
+/// 一组已经规范化、可交给系统注册或 XDG portal 使用的键盘按键。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct KeyboardShortcut(HotKey);
+pub struct KeyboardShortcut {
+    modifiers: Modifiers,
+    key: Code,
+}
 
 impl KeyboardShortcut {
     /// 从配置文件中的稳定标识恢复快捷键；Esc 专用于录入时清空。
     pub fn from_id(id: &str) -> Result<Self, String> {
-        let hotkey = id
-            .trim()
-            .parse::<HotKey>()
-            .map_err(|error| format!("无法识别快捷键：{error}"))?;
-        if hotkey.key == Code::Escape {
-            return Err("Esc 保留用于清空快捷键".to_owned());
+        let mut parts = id.split('+').map(str::trim).collect::<Vec<_>>();
+        let key = parts.pop().ok_or_else(|| "快捷键缺少主键".to_owned())?;
+        if key.is_empty() {
+            return Err("快捷键缺少主键".to_owned());
         }
-        if !key_is_supported(hotkey.key) {
-            return Err(format!("当前按键不受全局快捷键支持：{}", hotkey.key));
+        let mut modifiers = Modifiers::empty();
+        for modifier in parts {
+            if modifier.is_empty() {
+                return Err("快捷键包含空按键段".to_owned());
+            }
+            match modifier.to_ascii_uppercase().as_str() {
+                "SHIFT" => modifiers |= Modifiers::SHIFT,
+                "CONTROL" | "CTRL" => modifiers |= Modifiers::CONTROL,
+                "ALT" | "OPTION" => modifiers |= Modifiers::ALT,
+                "SUPER" | "COMMAND" | "CMD" => modifiers |= Modifiers::SUPER,
+                "COMMANDORCONTROL" | "COMMANDORCTRL" | "CMDORCTRL" | "CMDORCONTROL" => {
+                    if cfg!(target_os = "macos") {
+                        modifiers |= Modifiers::SUPER;
+                    } else {
+                        modifiers |= Modifiers::CONTROL;
+                    }
+                }
+                _ => return Err(format!("无法识别快捷键修饰键：{modifier}")),
+            }
         }
-        Ok(Self(hotkey))
+        let key = normalize_key(key)?;
+        Self::from_parts(modifiers, key)
     }
 
-    pub fn from_hotkey(hotkey: HotKey) -> Result<Self, String> {
-        if hotkey.key == Code::Escape {
+    pub fn from_parts(mut modifiers: Modifiers, key: Code) -> Result<Self, String> {
+        if key == Code::Escape {
             return Err("Esc 保留用于清空快捷键".to_owned());
         }
-        if !key_is_supported(hotkey.key) {
-            return Err(format!("当前按键不受全局快捷键支持：{}", hotkey.key));
+        if !key_is_supported(key) {
+            return Err(format!("当前按键不受全局快捷键支持：{key}"));
         }
-        Ok(Self(hotkey))
+        if modifiers.contains(Modifiers::META) {
+            modifiers.remove(Modifiers::META);
+            modifiers.insert(Modifiers::SUPER);
+        }
+        let supported = Modifiers::SHIFT | Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER;
+        if modifiers.intersects(!supported) {
+            return Err("快捷键包含不支持的修饰键".to_owned());
+        }
+        Ok(Self { modifiers, key })
     }
 
     /// 返回不依赖 TOML 布局的规范化快捷键标识。
     pub fn id(self) -> String {
-        self.0.into_string()
+        let mut parts = Vec::with_capacity(5);
+        if self.modifiers.contains(Modifiers::SHIFT) {
+            parts.push("shift".to_owned());
+        }
+        if self.modifiers.contains(Modifiers::CONTROL) {
+            parts.push("control".to_owned());
+        }
+        if self.modifiers.contains(Modifiers::ALT) {
+            parts.push("alt".to_owned());
+        }
+        if self.modifiers.contains(Modifiers::SUPER) {
+            parts.push("super".to_owned());
+        }
+        parts.push(self.key.to_string());
+        parts.join("+")
     }
 
-    pub const fn hotkey(self) -> HotKey {
-        self.0
+    pub const fn modifiers(self) -> Modifiers {
+        self.modifiers
+    }
+
+    pub const fn key(self) -> Code {
+        self.key
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn hotkey(self) -> HotKey {
+        HotKey::new(Some(self.modifiers), self.key)
     }
 }
 
@@ -189,6 +241,86 @@ fn key_is_supported(key: Code) -> bool {
             | Code::F24
     )
 }
+fn normalize_key(key: &str) -> Result<Code, String> {
+    let uppercase = key.to_ascii_uppercase();
+    if let Some(letter) = uppercase.strip_prefix("KEY").filter(|key| key.len() == 1)
+        && letter.as_bytes()[0].is_ascii_alphabetic()
+    {
+        return format!("Key{letter}").parse().map_err(|_| key_error(key));
+    }
+    if uppercase.len() == 1 && uppercase.as_bytes()[0].is_ascii_alphabetic() {
+        return format!("Key{uppercase}")
+            .parse()
+            .map_err(|_| key_error(key));
+    }
+    if let Some(digit) = uppercase.strip_prefix("DIGIT").filter(|key| key.len() == 1)
+        && digit.as_bytes()[0].is_ascii_digit()
+    {
+        return format!("Digit{digit}").parse().map_err(|_| key_error(key));
+    }
+    if uppercase.len() == 1 && uppercase.as_bytes()[0].is_ascii_digit() {
+        return format!("Digit{uppercase}")
+            .parse()
+            .map_err(|_| key_error(key));
+    }
+    if let Some(number) = uppercase.strip_prefix('F')
+        && let Ok(number) = number.parse::<u8>()
+        && (1..=24).contains(&number)
+    {
+        return format!("F{number}").parse().map_err(|_| key_error(key));
+    }
+    if let Some(number) = uppercase.strip_prefix("NUMPAD")
+        && number.len() == 1
+        && number.as_bytes()[0].is_ascii_digit()
+    {
+        return format!("Numpad{number}")
+            .parse()
+            .map_err(|_| key_error(key));
+    }
+    let normalized = match uppercase.as_str() {
+        "BACKQUOTE" | "`" => "Backquote",
+        "BACKSLASH" | "\\" => "Backslash",
+        "BRACKETLEFT" | "[" => "BracketLeft",
+        "BRACKETRIGHT" | "]" => "BracketRight",
+        "COMMA" | "," => "Comma",
+        "EQUAL" | "=" => "Equal",
+        "MINUS" | "-" => "Minus",
+        "PERIOD" | "." => "Period",
+        "QUOTE" | "'" => "Quote",
+        "SEMICOLON" | ";" => "Semicolon",
+        "SLASH" | "/" => "Slash",
+        "BACKSPACE" => "Backspace",
+        "CAPSLOCK" => "CapsLock",
+        "ENTER" | "RETURN" => "Enter",
+        "SPACE" | " " => "Space",
+        "TAB" => "Tab",
+        "DELETE" | "FORWARDDELETE" => "Delete",
+        "END" => "End",
+        "HOME" => "Home",
+        "INSERT" => "Insert",
+        "PAGEDOWN" => "PageDown",
+        "PAGEUP" => "PageUp",
+        "ARROWDOWN" | "DOWN" => "ArrowDown",
+        "ARROWLEFT" | "LEFT" => "ArrowLeft",
+        "ARROWRIGHT" | "RIGHT" => "ArrowRight",
+        "ARROWUP" | "UP" => "ArrowUp",
+        "PRINTSCREEN" => "PrintScreen",
+        "SCROLLLOCK" => "ScrollLock",
+        "PAUSE" | "PAUSEBREAK" => "Pause",
+        "NUMPADADD" => "NumpadAdd",
+        "NUMPADDECIMAL" => "NumpadDecimal",
+        "NUMPADDIVIDE" => "NumpadDivide",
+        "NUMPADMULTIPLY" => "NumpadMultiply",
+        "NUMPADSUBTRACT" => "NumpadSubtract",
+        "ESCAPE" | "ESC" => "Escape",
+        _ => key,
+    };
+    normalized.parse().map_err(|_| key_error(key))
+}
+
+fn key_error(key: &str) -> String {
+    format!("当前按键不受全局快捷键支持：{key}")
+}
 
 /// 四个应用动作的一次性快捷键配置快照；`None` 表示不注册该动作。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -200,7 +332,7 @@ pub struct ShortcutSettings {
 }
 
 impl ShortcutSettings {
-    pub const fn shortcut(&self, action: ShortcutAction) -> Option<KeyboardShortcut> {
+    pub fn shortcut(&self, action: ShortcutAction) -> Option<KeyboardShortcut> {
         match action {
             ShortcutAction::VoiceInput => self.voice_input,
             ShortcutAction::ToggleDesktopPet => self.toggle_desktop_pet,
@@ -215,9 +347,9 @@ impl ShortcutSettings {
         action: ShortcutAction,
         shortcut: Option<KeyboardShortcut>,
     ) -> Option<ShortcutAction> {
-        let displaced = shortcut.and_then(|shortcut| {
+        let displaced = shortcut.as_ref().and_then(|shortcut| {
             ShortcutAction::ALL.into_iter().find(|candidate| {
-                *candidate != action && self.shortcut(*candidate) == Some(shortcut)
+                *candidate != action && self.shortcut(*candidate).as_ref() == Some(shortcut)
             })
         });
         if let Some(displaced) = displaced {

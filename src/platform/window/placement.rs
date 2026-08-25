@@ -113,62 +113,21 @@ impl WindowMover {
 
 /// 将现有窗口移动到与首次启动一致的默认居中位置。
 ///
-/// X11 和 Windows 允许客户端更新顶层窗口坐标；Wayland 由合成器独占位置控制，
-/// 此时返回 `false`，但调用方仍可清除保存的位置供下次创建窗口使用。
+/// Windows 允许客户端更新顶层窗口坐标；Wayland 由合成器独占位置控制，此时返回
+/// `false`，但调用方仍可清除保存的位置供下次创建窗口使用。
 pub(crate) fn move_window_to_default(window: &Window, cx: &App) -> bool {
     let size = window.window_bounds().get_bounds().size;
     let origin = WindowBounds::centered(size, cx).get_bounds().origin;
     move_window(window, origin)
 }
 
-#[cfg(target_os = "linux")]
-fn move_window(window: &Window, origin: Point<Pixels>) -> bool {
-    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
-
-    use super::xcb::{xcb_configure_window, xcb_flush};
-
-    let Ok(window_handle) = HasWindowHandle::window_handle(window) else {
-        return false;
-    };
-    let RawWindowHandle::Xcb(window_handle) = window_handle.as_raw() else {
-        return false;
-    };
-    let Ok(display_handle) = HasDisplayHandle::display_handle(window) else {
-        return false;
-    };
-    let RawDisplayHandle::Xcb(display_handle) = display_handle.as_raw() else {
-        return false;
-    };
-    let Some(connection) = display_handle.connection else {
-        return false;
-    };
-    let values = [
-        window_coordinate(origin.x, window.scale_factor()) as u32,
-        window_coordinate(origin.y, window.scale_factor()) as u32,
-    ];
-    const X_AND_Y: u16 = (1 << 0) | (1 << 1);
-
-    // SAFETY: 连接和窗口 ID 均来自仍存活的当前 GPUI X11 窗口；`values` 在调用期间
-    // 保持有效并按 XCB 协议提供与掩码顺序一致的两个 32 位坐标。调用发生在 UI 线程，
-    // 不会与 GPUI 对同一连接的事件处理跨线程并发。
-    unsafe {
-        let _ = xcb_configure_window(
-            connection.as_ptr(),
-            window_handle.window.get(),
-            X_AND_Y,
-            values.as_ptr().cast(),
-        );
-        xcb_flush(connection.as_ptr()) > 0
-    }
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(target_os = "windows"))]
 fn move_window(_window: &Window, _origin: Point<Pixels>) -> bool {
     false
 }
 
 /// 将 GPUI 逻辑坐标换算为原生窗口系统使用的物理像素坐标。
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn window_coordinate(value: Pixels, scale_factor: f32) -> i32 {
     (f32::from(value) * scale_factor)
         .round()

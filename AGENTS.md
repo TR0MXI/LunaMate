@@ -90,7 +90,7 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
   不要用个人 fork 或另一版 GPUI 绕过类型冲突。
 - GPUI 的 `test-support` feature 只作为 dev-dependency 启用，用于无头 `TestAppContext`；
   它必须与生产 `gpui` 解析到同一 commit，且不得被生产代码路径依赖。
-- `global-hotkey` 只用于 Windows、macOS 与 X11 的系统级快捷键；原生 Wayland 使用 XDG
+- `global-hotkey` 只用于 Windows 与 macOS 的系统级快捷键；Linux 只使用 XDG
   GlobalShortcuts portal、稳定应用/动作 ID 和合成器返回的绑定子集，不得把 preferred trigger
   或本地配置伪装为注册成功。发布包必须安装与应用 ID 匹配的 desktop entry。
 - `crates/lunamate-mocari` 是仓库内维护的第三方源码边界；保留 MIT `LICENSE`、原始 manifest 和
@@ -134,9 +134,9 @@ LunaMate 是基于 Rust、GPUI、Mocari 和 genai 的 Live2D 桌面宠物。根�
 
 ## Live2D 与平台渲染
 
-- 平台窗口、输入适配与 underlay surface attachment 集中隔离。Windows、macOS 和原生
-  Wayland 使用独立 WGPU underlay；X11、不支持的平台，以及 attach、adapter、透明
-  Alpha、surface 或 device 失败时永久回退 CPU renderer。
+- 平台窗口、输入适配与 underlay surface attachment 集中隔离。Windows、macOS 和
+  Wayland 使用独立 WGPU underlay；不支持的平台，以及 attach、adapter、透明 Alpha、surface
+  或 device 失败时永久回退 CPU renderer。
 - Wayland underlay 复用 GPUI 的 `wl_display` guest connection 创建 child surface，
   不得销毁或主动 commit parent；缺少协议或 fractional scale 支持时回退 CPU，也不得
   假定客户端可以指定顶层窗口坐标。

@@ -6,16 +6,18 @@ mod wayland;
 #[cfg(test)]
 mod tests;
 
+#[cfg(not(target_os = "linux"))]
 use std::sync::LazyLock;
 
-use async_channel::{Receiver, Sender};
-use global_hotkey::{
-    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
-    hotkey::{Code, HotKey, Modifiers},
-};
+use async_channel::Receiver;
+#[cfg(not(target_os = "linux"))]
+use async_channel::Sender;
+#[cfg(not(target_os = "linux"))]
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState, hotkey::HotKey};
 #[cfg(test)]
 use gpui::Keystroke;
 use gpui::{KeybindingKeystroke, Window};
+use keyboard_types::{Code, Modifiers};
 
 use crate::config::{KeyboardShortcut, ShortcutAction, ShortcutSettings};
 #[cfg(target_os = "linux")]
@@ -24,16 +26,17 @@ use crate::platform::wayland_activation_target;
 /// 已注册快捷键产生的低频按下或松开事件。
 #[derive(Debug)]
 pub(crate) enum ShortcutEvent {
+    #[cfg(not(target_os = "linux"))]
     Native {
         revision: u64,
         id: u32,
-        state: HotKeyState,
+        state: ShortcutState,
     },
     #[cfg(target_os = "linux")]
     Portal {
         revision: u64,
         action: ShortcutAction,
-        state: HotKeyState,
+        state: ShortcutState,
         activation_token: Option<String>,
     },
     #[cfg(target_os = "linux")]
@@ -70,6 +73,7 @@ impl ShortcutRuntimeBinding {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 static SHORTCUT_EVENTS: LazyLock<(Sender<ShortcutEvent>, Receiver<ShortcutEvent>)> =
     LazyLock::new(|| {
         // global-hotkey 只发送离散按下/松开边沿；无界通道确保松开事件不会因瞬时 UI
@@ -81,12 +85,16 @@ static SHORTCUT_EVENTS: LazyLock<(Sender<ShortcutEvent>, Receiver<ShortcutEvent>
             let _ = handler_sender.try_send(ShortcutEvent::Native {
                 revision,
                 id: event.id,
-                state: event.state,
+                state: match event.state {
+                    HotKeyState::Pressed => ShortcutState::Pressed,
+                    HotKeyState::Released => ShortcutState::Released,
+                },
             });
         }));
         (sender, events)
     });
 
+#[cfg(not(target_os = "linux"))]
 static NATIVE_EVENT_REVISION: LazyLock<parking_lot::Mutex<u64>> =
     LazyLock::new(|| parking_lot::Mutex::new(0));
 
@@ -94,7 +102,7 @@ static NATIVE_EVENT_REVISION: LazyLock<parking_lot::Mutex<u64>> =
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedShortcutEvent {
     action: ShortcutAction,
-    state: HotKeyState,
+    state: ShortcutState,
     activation_token: Option<String>,
 }
 
@@ -104,7 +112,7 @@ impl ResolvedShortcutEvent {
     }
 
     pub(crate) const fn is_pressed(&self) -> bool {
-        matches!(self.state, HotKeyState::Pressed)
+        matches!(self.state, ShortcutState::Pressed)
     }
 
     pub(crate) fn activation_token(&self) -> Option<&str> {
@@ -112,12 +120,21 @@ impl ResolvedShortcutEvent {
     }
 }
 
+/// 统一原生注册器和 Wayland portal 的按键边沿。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ShortcutState {
+    Pressed,
+    Released,
+}
+
+#[cfg(not(target_os = "linux"))]
 struct NativeShortcutManager {
     manager: GlobalHotKeyManager,
     registered: Vec<(ShortcutAction, HotKey)>,
 }
 
 enum ShortcutBackend {
+    #[cfg(not(target_os = "linux"))]
     Native(NativeShortcutManager),
     #[cfg(target_os = "linux")]
     Wayland(wayland::WaylandShortcutManager),
@@ -129,6 +146,7 @@ pub(crate) struct ShortcutManager {
     settings: ShortcutSettings,
     events: Receiver<ShortcutEvent>,
     suspended: bool,
+    #[cfg(not(target_os = "linux"))]
     native_revision: u64,
 }
 
@@ -140,39 +158,44 @@ impl ShortcutManager {
         runtime: &tokio::runtime::Handle,
     ) -> Result<(Self, Vec<String>), String> {
         #[cfg(target_os = "linux")]
-        if let Some(target) = wayland_activation_target(window)? {
+        {
+            let target = wayland_activation_target(window)?;
             let (manager, events) =
                 wayland::WaylandShortcutManager::new(settings.clone(), target, runtime);
-            return Ok((
+            Ok((
                 Self {
                     backend: ShortcutBackend::Wayland(manager),
                     settings,
                     events,
                     suspended: false,
+                    #[cfg(not(target_os = "linux"))]
                     native_revision: 0,
                 },
                 Vec::new(),
-            ));
+            ))
         }
 
         #[cfg(not(target_os = "linux"))]
-        let _ = runtime;
-        ensure_native_platform_supported(window)?;
-        let manager = GlobalHotKeyManager::new()
-            .map_err(|error| format!("无法创建全局快捷键管理器：{error}"))?;
-        let events = SHORTCUT_EVENTS.1.clone();
-        let mut this = Self {
-            backend: ShortcutBackend::Native(NativeShortcutManager {
-                manager,
-                registered: Vec::new(),
-            }),
-            settings: ShortcutSettings::default(),
-            events,
-            suspended: false,
-            native_revision: 0,
-        };
-        let errors = this.configure(settings);
-        Ok((this, errors))
+        {
+            let _ = runtime;
+            ensure_native_platform_supported(window)?;
+            let manager = GlobalHotKeyManager::new()
+                .map_err(|error| format!("无法创建全局快捷键管理器：{error}"))?;
+            let events = SHORTCUT_EVENTS.1.clone();
+            let mut this = Self {
+                backend: ShortcutBackend::Native(NativeShortcutManager {
+                    manager,
+                    registered: Vec::new(),
+                }),
+                settings: ShortcutSettings::default(),
+                events,
+                suspended: false,
+                #[cfg(not(target_os = "linux"))]
+                native_revision: 0,
+            };
+            let errors = this.configure(settings);
+            Ok((this, errors))
+        }
     }
 
     pub(crate) fn events(&self) -> Receiver<ShortcutEvent> {
@@ -182,6 +205,7 @@ impl ShortcutManager {
     /// 用完整快照替换全部注册；单个系统冲突不会阻止其他动作生效。
     pub(crate) fn configure(&mut self, settings: ShortcutSettings) -> Vec<String> {
         let errors = match &mut self.backend {
+            #[cfg(not(target_os = "linux"))]
             ShortcutBackend::Native(manager) => manager.configure(&settings, self.suspended),
             #[cfg(target_os = "linux")]
             ShortcutBackend::Wayland(manager) => {
@@ -190,6 +214,7 @@ impl ShortcutManager {
             }
         };
         self.settings = settings;
+        #[cfg(not(target_os = "linux"))]
         if matches!(&self.backend, ShortcutBackend::Native(_)) {
             self.advance_native_revision();
         }
@@ -203,6 +228,7 @@ impl ShortcutManager {
         }
         self.suspended = suspended;
         let errors = match &mut self.backend {
+            #[cfg(not(target_os = "linux"))]
             ShortcutBackend::Native(manager) => manager.set_suspended(&self.settings, suspended),
             #[cfg(target_os = "linux")]
             ShortcutBackend::Wayland(manager) => {
@@ -210,6 +236,7 @@ impl ShortcutManager {
                 Vec::new()
             }
         };
+        #[cfg(not(target_os = "linux"))]
         if matches!(&self.backend, ShortcutBackend::Native(_)) {
             self.advance_native_revision();
         }
@@ -231,6 +258,7 @@ impl ShortcutManager {
             return None;
         }
         match (&self.backend, event) {
+            #[cfg(not(target_os = "linux"))]
             (
                 ShortcutBackend::Native(manager),
                 ShortcutEvent::Native {
@@ -269,7 +297,6 @@ impl ShortcutManager {
                     activation_token: activation_token.clone(),
                 })
             }
-            #[cfg(target_os = "linux")]
             _ => None,
         }
     }
@@ -319,10 +346,12 @@ impl ShortcutManager {
         match &self.backend {
             #[cfg(target_os = "linux")]
             ShortcutBackend::Wayland(manager) => manager.activate(_token),
+            #[cfg(not(target_os = "linux"))]
             ShortcutBackend::Native(_) => Ok(()),
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
     fn advance_native_revision(&mut self) {
         let mut revision = NATIVE_EVENT_REVISION.lock();
         while self.events.try_recv().is_ok() {}
@@ -331,6 +360,7 @@ impl ShortcutManager {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 impl NativeShortcutManager {
     fn configure(&mut self, settings: &ShortcutSettings, suspended: bool) -> Vec<String> {
         let registered = std::mem::take(&mut self.registered);
@@ -402,19 +432,6 @@ impl NativeShortcutManager {
             }
         }
         errors
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn ensure_native_platform_supported(window: &Window) -> Result<(), String> {
-    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    let handle = HasWindowHandle::window_handle(window)
-        .map_err(|error| format!("无法取得快捷键窗口后端：{error}"))?;
-    match handle.as_raw() {
-        RawWindowHandle::Xcb(_) | RawWindowHandle::Xlib(_) => Ok(()),
-        RawWindowHandle::Wayland(_) => Err("无法取得 Wayland portal 快捷键目标".to_owned()),
-        _ => Err("当前 Linux 窗口后端不支持全局快捷键".to_owned()),
     }
 }
 
@@ -498,27 +515,27 @@ fn shortcut_from_parts(
     if source_modifiers.platform {
         modifiers |= Modifiers::SUPER;
     }
-    KeyboardShortcut::from_hotkey(HotKey::new(Some(modifiers), code)).map(Some)
+    KeyboardShortcut::from_parts(modifiers, code).map(Some)
 }
 
 /// 返回适合逐个渲染为键帽的短标签。
 pub(crate) fn shortcut_keycaps(shortcut: KeyboardShortcut) -> Vec<String> {
-    let hotkey = shortcut.hotkey();
+    let modifiers = shortcut.modifiers();
     let mut labels = Vec::with_capacity(5);
-    if hotkey.mods.contains(Modifiers::CONTROL) {
+    if modifiers.contains(Modifiers::CONTROL) {
         labels.push("Ctrl".to_owned());
     }
-    if hotkey.mods.contains(Modifiers::ALT) {
+    if modifiers.contains(Modifiers::ALT) {
         labels.push(if cfg!(target_os = "macos") {
             "Option".to_owned()
         } else {
             "Alt".to_owned()
         });
     }
-    if hotkey.mods.contains(Modifiers::SHIFT) {
+    if modifiers.contains(Modifiers::SHIFT) {
         labels.push("Shift".to_owned());
     }
-    if hotkey.mods.contains(Modifiers::SUPER) {
+    if modifiers.contains(Modifiers::SUPER) {
         labels.push(if cfg!(target_os = "macos") {
             "Cmd".to_owned()
         } else if cfg!(target_os = "windows") {
@@ -527,7 +544,7 @@ pub(crate) fn shortcut_keycaps(shortcut: KeyboardShortcut) -> Vec<String> {
             "Super".to_owned()
         });
     }
-    labels.push(keycap_label(hotkey.key));
+    labels.push(keycap_label(shortcut.key()));
     labels
 }
 

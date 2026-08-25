@@ -49,24 +49,24 @@ struct WaylandActivator {
     surface: wl_surface::WlSurface,
 }
 
-/// 从当前窗口取得 Wayland 原生句柄；X11 窗口返回 `None`。
+/// 从当前窗口取得 Wayland 原生句柄。
 pub(crate) fn wayland_activation_target(
     window: &Window,
-) -> Result<Option<WaylandActivationTarget>, String> {
+) -> Result<WaylandActivationTarget, String> {
     let window_handle = HasWindowHandle::window_handle(window)
         .map_err(|error| format!("无法取得快捷键 Wayland 窗口句柄：{error}"))?;
     let RawWindowHandle::Wayland(window_handle) = window_handle.as_raw() else {
-        return Ok(None);
+        return Err("当前 Linux 窗口后端不是 Wayland".to_owned());
     };
     let display_handle = HasDisplayHandle::display_handle(window)
         .map_err(|error| format!("无法取得快捷键 Wayland display 句柄：{error}"))?;
     let RawDisplayHandle::Wayland(display_handle) = display_handle.as_raw() else {
         return Err("快捷键窗口与 display 的 Wayland 类型不一致".to_owned());
     };
-    Ok(Some(WaylandActivationTarget {
+    Ok(WaylandActivationTarget {
         display: display_handle.display.as_ptr() as usize,
         surface: window_handle.surface.as_ptr() as usize,
-    }))
+    })
 }
 
 impl WaylandActivationController {

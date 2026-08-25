@@ -55,12 +55,12 @@ brew install cmake pkg-config
 ### Linux
 
 The following commands apply to Ubuntu or Debian. Other distributions should install the equivalent
-C/C++ toolchain, CMake, `pkg-config`, ALSA, Wayland, X11, Vulkan development packages, and `glslc`.
+C/C++ toolchain, CMake, `pkg-config`, ALSA, Wayland, Vulkan development packages, and `glslc`.
 
 ```bash
 sudo apt update
 sudo apt install build-essential cmake pkg-config libasound2-dev \
-  libfontconfig1-dev libwayland-dev libx11-dev libxkbcommon-dev \
+  libfontconfig1-dev libwayland-dev libxkbcommon-dev \
   libvulkan-dev glslc
 ```
 

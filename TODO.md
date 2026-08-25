@@ -23,7 +23,7 @@ GPUI 点击
 - [x] Windows 使用同一 HWND 的 non-topmost DirectComposition target。
 - [x] macOS 使用位于 GPUI view 下方的 sibling `NSView` 与 `CAMetalLayer`。
 - [x] Wayland 使用 `wl_subsurface.place_below(parent)` 和独立 Vulkan surface。
-- [x] X11 及 GPU 初始化、透明 Alpha、surface/device 失败时回退 CPU renderer。
+- [x] GPU 初始化、透明 Alpha、surface/device 失败时回退 CPU renderer。
 - [x] 使用 Mocari WGPU renderer 处理网格、绘制顺序、蒙版和混合模式。
 - [x] 将 Mocari 0.4.0 源码与 MIT 许可证纳入 `crates/lunamate-mocari` 维护，记录上游 commit 和本地差异。
 - [x] 将 Mocari backend 适配到 `gpui_wgpu::wgpu` 29，移除 WGPU 30 及其 core、HAL 和 Naga 依赖副本。
@@ -200,8 +200,7 @@ GPUI 点击
 - [x] 移除本地 `whisper-rs-sys` patch，VAD 只通过 whisper-rs 公开安全接口推理。
 - [x] 移除同步 abort setter 不需要的 `raw-api` feature。
 - [ ] whisper-rs 修复 safe abort callback 的 trampoline 类型与所有权后，移除本地 abort FFI。
-- [x] 提供可录入单键或多修饰键组合的四个全局动作，并通过 `global-hotkey` 支持 Windows、macOS
-  与 X11。
+- [x] 提供可录入单键或多修饰键组合的四个全局动作，并通过 `global-hotkey` 支持 Windows 与 macOS。
 - [x] 通过 XDG GlobalShortcuts portal 补齐原生 Wayland 快捷键，以稳定应用/动作 ID 恢复授权，
   并只接收合成器确认绑定的动作。
 - [ ] 在 GNOME、KDE 和 wlroots portal 后端验证首次授权、拒绝、系统侧改键、重启恢复与按住松开。
@@ -240,7 +239,7 @@ GPUI 点击
 - [ ] 在真实 Windows/macOS 与混合 DPI 多显示器上验证托盘菜单定位、圆角、毛玻璃和
   原生回退开关。
 - [ ] 将系统级透明区域点击穿透作为独立平台功能设计。
-- [ ] 分别验证 Windows、Wayland、X11 和 macOS 的输入区域能力。
+- [ ] 分别验证 Windows、Wayland 和 macOS 的输入区域能力。
 - [ ] 点击穿透启用时仍保证设置、关闭和移动按钮可交互。
 - [ ] 评估点击穿透与当前全窗口视线跟随之间的冲突。
 - [ ] 在不同缩放显示器之间移动窗口时保持视觉与命中坐标一致。

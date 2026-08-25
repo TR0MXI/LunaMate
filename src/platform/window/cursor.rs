@@ -1,6 +1,8 @@
 //! 查询桌宠窗口外的全局光标位置。
 
-use gpui::{Pixels, Point, Window, px};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use gpui::px;
+use gpui::{Pixels, Point, Window};
 
 /// 在原生平台允许时查询桌宠窗口外的当前光标位置。
 pub(crate) struct GlobalCursorTracker;
@@ -34,17 +36,8 @@ fn supports_global_cursor_tracking(window: &Window) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn supports_global_cursor_tracking(window: &Window) -> bool {
-    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
-
-    let Ok(window_handle) = HasWindowHandle::window_handle(window) else {
-        return false;
-    };
-    let Ok(display_handle) = HasDisplayHandle::display_handle(window) else {
-        return false;
-    };
-    matches!(window_handle.as_raw(), RawWindowHandle::Xcb(_))
-        && matches!(display_handle.as_raw(), RawDisplayHandle::Xcb(_))
+fn supports_global_cursor_tracking(_window: &Window) -> bool {
+    false
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -105,42 +98,8 @@ fn global_cursor_position(window: &Window) -> Option<Point<Pixels>> {
 }
 
 #[cfg(target_os = "linux")]
-fn global_cursor_position(window: &Window) -> Option<Point<Pixels>> {
-    use std::ptr::NonNull;
-
-    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
-
-    use super::xcb::{free, xcb_query_pointer, xcb_query_pointer_reply};
-
-    let window_handle = HasWindowHandle::window_handle(window).ok()?;
-    let RawWindowHandle::Xcb(window_handle) = window_handle.as_raw() else {
-        return None;
-    };
-    let display_handle = HasDisplayHandle::display_handle(window).ok()?;
-    let RawDisplayHandle::Xcb(display_handle) = display_handle.as_raw() else {
-        return None;
-    };
-    let connection = display_handle.connection?;
-
-    // SAFETY: XCB 连接和窗口 ID 来自当前 UI 线程中仍存活的 GPUI X11 窗口；请求与
-    // GPUI 的 X11 事件处理在同一线程串行执行。reply 由 libxcb 分配并在读取后立即释放。
-    let reply = unsafe {
-        let cookie = xcb_query_pointer(connection.as_ptr(), window_handle.window.get());
-        xcb_query_pointer_reply(connection.as_ptr(), cookie, std::ptr::null_mut())
-    };
-    let reply = NonNull::new(reply)?;
-    // SAFETY: 非空 reply 指向完整的 xcb_query_pointer_reply_t，释放前只按值读取字段。
-    let (same_screen, x, y) = unsafe {
-        let reply_ref = reply.as_ref();
-        (
-            reply_ref.same_screen != 0,
-            f32::from(reply_ref.win_x),
-            f32::from(reply_ref.win_y),
-        )
-    };
-    // SAFETY: reply 由上面的 xcb_query_pointer_reply 唯一返回，尚未释放或转移。
-    unsafe { free(reply.as_ptr().cast()) };
-    same_screen.then(|| logical_cursor_position(x, y, window.scale_factor()))
+fn global_cursor_position(_window: &Window) -> Option<Point<Pixels>> {
+    None
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -148,7 +107,7 @@ fn global_cursor_position(_window: &Window) -> Option<Point<Pixels>> {
     None
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(target_os = "windows")]
 fn logical_cursor_position(x: f32, y: f32, scale_factor: f32) -> Point<Pixels> {
     let scale_factor = if scale_factor.is_finite() && scale_factor > 0.0 {
         scale_factor

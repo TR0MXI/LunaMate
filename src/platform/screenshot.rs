@@ -80,7 +80,7 @@ fn capture_primary_screen_blocking() -> Result<ImageAttachment, ImageInputError>
     )
 }
 
-/// Linux 使用桌面门户，由合成器负责权限确认以及 Wayland/X11 兼容。
+/// Linux 使用桌面门户，由 Wayland 合成器负责权限确认。
 #[cfg(target_os = "linux")]
 pub(crate) async fn capture_primary_screen() -> Result<ImageAttachment, ImageInputError> {
     let _capture_permit = SCREEN_CAPTURE_GATE

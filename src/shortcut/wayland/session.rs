@@ -9,10 +9,12 @@ use ashpd::{
 };
 use async_channel::Sender;
 use futures::StreamExt as _;
-use global_hotkey::HotKeyState;
 use tokio::sync::watch;
 
-use crate::{config::ShortcutAction, logging::sanitize_log_field, platform::APPLICATION_ID};
+use crate::{
+    config::ShortcutAction, logging::sanitize_log_field, platform::APPLICATION_ID,
+    shortcut::ShortcutState,
+};
 
 use super::{
     PORTAL_HEALTH_INTERVAL, PORTAL_HEALTH_TIMEOUT, PortalConnectionExit, PortalState,
@@ -240,7 +242,7 @@ pub(super) async fn run_portal_connection(
                         ShortcutEvent::Portal {
                             revision,
                             action,
-                            state: HotKeyState::Pressed,
+                            state: ShortcutState::Pressed,
                             activation_token,
                         },
                     )
@@ -268,7 +270,7 @@ pub(super) async fn run_portal_connection(
                         ShortcutEvent::Portal {
                             revision,
                             action,
-                            state: HotKeyState::Released,
+                            state: ShortcutState::Released,
                             activation_token: None,
                         },
                     )
@@ -292,7 +294,7 @@ pub(super) async fn run_portal_connection(
                             ShortcutEvent::Portal {
                                 revision,
                                 action,
-                                state: HotKeyState::Released,
+                                state: ShortcutState::Released,
                                 activation_token: None,
                             },
                         )
@@ -344,7 +346,7 @@ pub(super) async fn run_portal_connection(
                                             ShortcutEvent::Portal {
                                                 revision,
                                                 action,
-                                                state: HotKeyState::Released,
+                                                state: ShortcutState::Released,
                                                 activation_token: None,
                                             },
                                         ).await {
@@ -396,7 +398,7 @@ pub(super) async fn run_portal_connection(
                 ShortcutEvent::Portal {
                     revision,
                     action,
-                    state: HotKeyState::Released,
+                    state: ShortcutState::Released,
                     activation_token: None,
                 },
             )

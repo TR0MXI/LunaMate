@@ -17,11 +17,12 @@ futures = "0.3.34"
 genai = "0.6.5"
 global-hotkey = "0.8.0"
 gpui = { git = "https://github.com/zed-industries/zed" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", version = "0.5.2" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland", "x11"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", version = "0.5.2", default-features = false }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "wayland"] }
 gpui_tokio = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
 gpui_wgpu = { git = "https://github.com/zed-industries/zed", version = "0.1.0" }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+keyboard-types = "0.7.0"
 log = "0.4.34"
 lunamate-agent = { path = "crates/lunamate-agent" }
 lunamate-config = { path = "crates/lunamate-config" }
@@ -54,6 +55,7 @@ gpui.workspace = true
 gpui_platform.workspace = true
 gpui-component.workspace = true
 image.workspace = true
+keyboard-types.workspace = true
 async-channel.workspace = true
 gpui_tokio.workspace = true
 futures.workspace = true
@@ -75,7 +77,6 @@ surrealdb.workspace = true
 ringbuf.workspace = true
 cpal = "0.18.2"
 rubato = "0.16.2"
-global-hotkey.workspace = true
 tempfile = "3.27.0"
 resvg = { version = "0.46.0", default-features = false }
 rapidhash.workspace = true
@@ -103,6 +104,8 @@ wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
 whisper-rs = { version = "0.16.0", features = ["log_backend", "vulkan"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+# 仅 Windows 与 macOS 使用原生全局快捷键注册；Linux 统一通过 XDG portal。
+global-hotkey = "0.8.0"
 # Windows 与 macOS 直接复用各自原生事件循环，不启用 GTK 相关默认 feature。
 tray-icon = { version = "0.24.2", default-features = false }
 # 只启用静态截图 API；不启用全格式 image 或 Windows Graphics Capture feature。

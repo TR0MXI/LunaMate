@@ -105,53 +105,14 @@ pub(crate) fn set_desktop_pet_window_visible(window: &Window, visible: bool) -> 
 /// 显示或隐藏桌宠原生窗口，同时保留 GPUI 实体与 Live2D 运行时。
 #[cfg(target_os = "linux")]
 pub(crate) fn set_desktop_pet_window_visible(window: &Window, visible: bool) -> Result<(), String> {
-    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
-
-    use super::xcb::{xcb_flush, xcb_map_window, xcb_unmap_window};
-
-    let handle = HasWindowHandle::window_handle(window)
-        .map_err(|error| format!("无法取得桌宠 Linux 窗口句柄：{error}"))?;
-    match handle.as_raw() {
-        RawWindowHandle::Xcb(handle) => {
-            let display = HasDisplayHandle::display_handle(window)
-                .map_err(|error| format!("无法取得桌宠 XCB display：{error}"))?;
-            let RawDisplayHandle::Xcb(display) = display.as_raw() else {
-                return Err("桌宠窗口与 display 的 XCB 类型不一致".to_owned());
-            };
-            let Some(connection) = display.connection else {
-                return Err("桌宠 XCB display 没有可用连接".to_owned());
-            };
-
-            // SAFETY: 连接和窗口 ID 均来自仍存活的当前 GPUI X11 窗口；调用发生在 UI
-            // 线程，不会与 GPUI 对同一连接的事件处理跨线程并发，随后立即 flush 请求。
-            let flushed = unsafe {
-                if visible {
-                    let _ = xcb_map_window(connection.as_ptr(), handle.window.get());
-                } else {
-                    let _ = xcb_unmap_window(connection.as_ptr(), handle.window.get());
-                }
-                xcb_flush(connection.as_ptr())
-            };
-            if flushed <= 0 {
-                return Err("提交桌宠 X11 显隐请求失败".to_owned());
-            }
-            if visible {
-                window.activate_window();
-            }
-            Ok(())
-        }
-        RawWindowHandle::Wayland(_) => {
-            // xdg-shell 没有客户端主动取消最小化的请求；隐藏使用最小化，恢复交给合成器
-            // 处理 GPUI 的激活请求，避免绕过 GPUI 破坏 surface role。
-            if visible {
-                window.activate_window();
-            } else {
-                window.minimize_window();
-            }
-            Ok(())
-        }
-        _ => Err("当前 Linux 窗口后端不支持桌宠显隐".to_owned()),
+    // xdg-shell 没有客户端主动取消最小化的请求；隐藏使用最小化，恢复交给合成器处理
+    // GPUI 的激活请求，避免绕过 GPUI 破坏 surface role。
+    if visible {
+        window.activate_window();
+    } else {
+        window.minimize_window();
     }
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

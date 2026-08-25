@@ -81,8 +81,6 @@ jobs:
             libva-dev \
             libvulkan-dev \
             libwayland-dev \
-            libx11-xcb-dev \
-            libxkbcommon-x11-dev \
             libzstd-dev \
             lld \
             llvm \

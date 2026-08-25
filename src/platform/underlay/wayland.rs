@@ -32,7 +32,7 @@ pub(crate) struct SurfaceFactory {
     parent: usize,
 }
 
-/// 取得当前 Wayland 窗口句柄；X11 会返回 `None`。
+/// 取得当前 Wayland 窗口句柄。
 pub(super) fn attach(
     window: &Window,
 ) -> Result<Option<(SurfaceFactory, NativeAttachment)>, String> {
